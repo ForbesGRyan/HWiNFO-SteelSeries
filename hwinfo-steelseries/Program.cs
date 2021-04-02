@@ -56,8 +56,7 @@ namespace hwinfo_steelseiresOLED
     {
         public const string GAME = "HWINFO";
         static void Main(string[] args)
-        {
-            
+        {   
             Dictionary<string, Dictionary<string, List<string>>> Readings = GetHwinfoData();
             List<string> keys = new List<string>();
             foreach (string sensor in Readings.Keys)
@@ -102,6 +101,10 @@ namespace hwinfo_steelseiresOLED
             string address = GetSSEAddress().Address;
 
             Pages pages = new Pages();
+
+            //ImageBind(address, "IMAGE", pages);
+            //SendEvent(address, "IMAGE", pages, "", new List<string> { "0","1","2","3","4" });
+            
             Console.WriteLine("Path:\n1 = Register, Bind, Send Event\n2 = Remove Event\n3 = Send only event data");
             Console.Write("[ 1 / 2 / 3 ]: ");
             string answer = Console.ReadLine();
@@ -109,44 +112,43 @@ namespace hwinfo_steelseiresOLED
             // -------------------------
             if (answer == "1")
             {
-                #region HandCrafted GPU info
-                //ThreeRowBind(address, "GPU_TEMP", pages);
-                #endregion
-                int length = event_labels.Count;
-                for (int i = 0; i < length; i++)
-                {
-                    List<string> sensors = new List<string>();
-                    foreach (string sens in Readings[keys[i]].Keys)
-                    {
-                        sensors.Add(sens);
-                    }
-                    ThreeRowBind(address, event_labels[i], pages, sensors);
-                    break;
-                }
 
-                Thread.Sleep(2000);
-
-                #region DoWhile Repeating
-                //Console.WriteLine("Press ESC to stop");
-                //do
+                //int length = event_labels.Count;
+                //for (int i = 0; i < length; i++)
                 //{
-                //    while (!Console.KeyAvailable)
+                //    List<string> sensors = new List<string>();
+                //    foreach (string sens in Readings[keys[i]].Keys)
                 //    {
-                //        Readings = GetHwinfoData();
-
-
-
-                //        #region HandCrafted GPU info
-                //        //Dictionary<string, List<string>> GPU = Readings[keys[13]];
-                //        //string mem_cur = GPU["GPU Memory Junction Temperature"][1];
-                //        //string mem_avg = GPU["GPU Memory Junction Temperature"][4];
-                //        //string hot_cur = GPU["GPU Hot Spot Temperature"][1];
-                //        //string hot_avg = GPU["GPU Hot Spot Temperature"][4];
-                //        //SendGpuTempEvent(address, "GPU_TEMP", pages, mem_cur, mem_avg, hot_cur, hot_avg);
-                //        #endregion
-                //        Thread.Sleep(1000);
+                //        sensors.Add(sens);
                 //    }
-                //} while (Console.ReadKey(true).Key != ConsoleKey.Escape);
+                //    ThreeRowBind(address, event_labels[i], pages, sensors);
+                //    break;
+                //}
+                //Thread.Sleep(2000);
+
+                #region HandCrafted GPU info
+                ThreeRowBind(address, "GPU_TEMP", pages, new List<string> { keys[13] });
+                #endregion
+                string mem_cur, mem_avg, hot_cur, hot_avg;
+                #region DoWhile Repeating
+                Console.WriteLine("Press ESC to stop");
+                do
+                {
+                    while (!Console.KeyAvailable)
+                    {
+                        Readings = GetHwinfoData();
+                        #region HandCrafted GPU info
+                        Dictionary<string, List<string>> GPU = Readings[keys[13]];
+                        mem_cur = GPU["GPU Memory Junction Temperature"][1];
+                        mem_avg = GPU["GPU Memory Junction Temperature"][4];
+                        hot_cur = GPU["GPU Hot Spot Temperature"][1];
+                        hot_avg = GPU["GPU Hot Spot Temperature"][4];
+                        SendGpuTempEvent(address, "GPU_TEMP", pages, mem_cur, mem_avg, hot_cur, hot_avg);
+
+                        #endregion
+                        Thread.Sleep(1000);
+                    }
+                } while (Console.ReadKey(true).Key != ConsoleKey.Escape);
                 #endregion
             }
             else if (answer == "2")
@@ -194,8 +196,8 @@ namespace hwinfo_steelseiresOLED
         static Dictionary<string, Dictionary<string, List<string>>> GetHwinfoData()
         {
             HWiNFOWrapper wrapper = new HWiNFOWrapper();
-            wrapper.Open();
-            Dictionary<string, Dictionary<string, List<string>>> Readings = wrapper.Readings;
+            Dictionary<string, Dictionary<string, List<string>>> Readings = wrapper.Open();
+            //Dictionary<string, Dictionary<string, List<string>>> Readings = wrapper.Readings;
             wrapper.Close();
             return Readings;
         }
@@ -243,7 +245,49 @@ namespace hwinfo_steelseiresOLED
             }
 
         }
+        private static void ImageBind(string address, string @event, Pages pages, int width = 128, int height = 48)
+        {
+            int size = width * height / 8;
+            int[] array = new int[size];
 
+            for (int i = 0; i < size; i++)
+            {
+                array[i] = 255;
+            }
+
+
+            var screen = new
+            {
+                device_type = "screened-128x48",
+                datas = new List<object> {
+                    new
+                    {
+                        has_text = false,
+                        image_data = array
+                    }
+                }
+            };
+
+            var screen_obj = new
+            {
+                game = GAME,
+                @event = @event,
+                min_value = 0,
+                max_value = 110,
+                icon_id = 42,
+                value_optional = true,
+                handlers = new List<object> { screen }
+            };
+
+            string screen_json_obj = JsonConvert.SerializeObject(screen_obj)
+                .Replace("device_type", "device-type") // Dealing with hyphen
+                .Replace("has_text", "has-text")
+                .Replace("image_data", "image-data");
+
+            Console.WriteLine(screen_json_obj);
+
+            SendData(address, screen_json_obj, pages.bind_event);
+        }
         private static void ThreeRowBind(string address, string @event, Pages pages, List<string> sensors)
         {
             var screen_obj = new
@@ -313,7 +357,7 @@ namespace hwinfo_steelseiresOLED
                                 new
                                 {
                                     has_text = true,
-                                    context_frame_key = sensor,
+                                    context_frame_key = "Labels",
                                     bold = true,
                                     wrap = 0
                                 },
@@ -449,17 +493,17 @@ namespace hwinfo_steelseiresOLED
                 value_optional = true,
                 data = new
                 {
-                    value = 24,
+                    //value = 24,
                     frame = new
                     {
                         sensor = sensor,
                         Row1 = "Unit\tCurrent\tMin\tMax\tAvg",
-                        Row2 = String.Format("{0}\t{1:F1}\t{2:F1}\t{3:F1}\t{4:F1}",data[0], data[1], data[2], data[3], data[4])
+                        Row2 = String.Format("{0}\t{1:F1}\t{2:F1}\t{3:F1}\t{4:F1}", data[0], data[1], data[2], data[3], data[4])
                     }
                 }
             };
             string event_json_obj = JsonConvert.SerializeObject(event_obj);
-
+            event_json_obj.Replace("image_data_128x48", "image-data-128x48");
             SendData(address, event_json_obj, pages.game_event);
         }
         private static void SendGpuTempEvent(string address, string @event, Pages pages, string mem_cur, string mem_avg, string hot_cur, string hot_avg)
@@ -501,6 +545,33 @@ namespace hwinfo_steelseiresOLED
                         Labels = "GPU\tCurr.\tAvg.",
                         Row1 = String.Format("Memory {0:F1}° {1:F1}°", dmem_cur, dmem_avg),
                         Row2 = String.Format("Hotspot {0:F1}° {1:F1}°", dhot_cur, dhot_avg)
+                    }
+                }
+            };
+            string event_json_obj = JsonConvert.SerializeObject(event_obj);
+
+            SendData(address, event_json_obj, pages.game_event);
+        }
+        private static void SendGpuMHzEvent(string address, string @event, Pages pages, string mem_cur, string mem_avg, string hot_cur, string hot_avg)
+        {
+            double dmem_cur = Convert.ToDouble(mem_cur);
+            double dmem_avg = Convert.ToDouble(mem_avg);
+            double dhot_cur = Convert.ToDouble(hot_cur);
+            double dhot_avg = Convert.ToDouble(hot_avg);
+
+            var event_obj = new
+            {
+                game = GAME,
+                @event = @event.ToUpper(),
+                value_optional = true,
+                data = new
+                {
+                    value = 24,
+                    frame = new
+                    {
+                        Labels = "GPU\tCurr.\tAvg.",
+                        Row1 = String.Format("Core {0:0}° {1:0}°", dmem_cur, dmem_avg),
+                        Row2 = String.Format("Memory {0:0}° {1:0}°", dhot_cur, dhot_avg)
                     }
                 }
             };

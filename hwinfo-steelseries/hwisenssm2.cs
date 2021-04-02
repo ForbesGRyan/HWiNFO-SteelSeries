@@ -77,7 +77,7 @@ namespace SensorMonHTTP
         public uint numReadingElements { get; private set; }
         public List<string> masterSensorNames { get; private set; }
         public List<string> masterLabelUser { get; private set; }
-        public Dictionary<string, Dictionary<string, List<string>>> Readings { get; private set; }
+        public static Dictionary<string, Dictionary<string, List<string>>> Readings { get; private set; }
 
         private uint offsetSensorSection;
         private uint sizeSensorElement;
@@ -88,7 +88,7 @@ namespace SensorMonHTTP
         //                                                  Code Example
         // ***************************************************************************************************************
 
-        public void Open()
+        public Dictionary<string, Dictionary<string, List<string>>> Open()
         {
             masterSensorNames = new List<string>();
             masterLabelUser = new List<string>();
@@ -173,6 +173,7 @@ namespace SensorMonHTTP
                 }
 
             }
+            return Readings;
  	    }
 	    public void Close()
         {
