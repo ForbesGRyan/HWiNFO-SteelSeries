@@ -104,11 +104,11 @@ namespace hwinfo_steelseiresOLED
 
             //ImageBind(address, "IMAGE", pages);
             //SendEvent(address, "IMAGE", pages, "", new List<string> { "0","1","2","3","4" });
-            
-            Console.WriteLine("Path:\n1 = Register, Bind, Send Event\n2 = Remove Event\n3 = Send only event data");
-            Console.Write("[ 1 / 2 / 3 ]: ");
-            string answer = Console.ReadLine();
 
+            //Console.WriteLine("Path:\n1 = Register, Bind, Send Event\n2 = Remove Event\n3 = Send only event data");
+            //Console.Write("[ 1 / 2 / 3 ]: ");
+            //string answer = Console.ReadLine();
+            string answer = "1";
             // -------------------------
             if (answer == "1")
             {
@@ -127,9 +127,12 @@ namespace hwinfo_steelseiresOLED
                 //Thread.Sleep(2000);
 
                 #region HandCrafted GPU info
-                ThreeRowBind(address, "GPU_TEMP", pages, new List<string> { keys[13] });
+                CraftedThreeRowBind(address, "GPU_TEMP", pages);
+                CraftedThreeRowBind(address, "GPU_MHZ", pages);
                 #endregion
-                string mem_cur, mem_avg, hot_cur, hot_avg;
+                string mem_cur, mem_avg, hot_cur, hot_avg, clock_cur, clock_avg, memclock_cur, memclock_avg;
+                bool speed = false;
+                int counter = 0;
                 #region DoWhile Repeating
                 Console.WriteLine("Press ESC to stop");
                 do
@@ -137,14 +140,34 @@ namespace hwinfo_steelseiresOLED
                     while (!Console.KeyAvailable)
                     {
                         Readings = GetHwinfoData();
-                        #region HandCrafted GPU info
+                        #region HandCrafted GPU Temp
                         Dictionary<string, List<string>> GPU = Readings[keys[13]];
                         mem_cur = GPU["GPU Memory Junction Temperature"][1];
                         mem_avg = GPU["GPU Memory Junction Temperature"][4];
                         hot_cur = GPU["GPU Hot Spot Temperature"][1];
                         hot_avg = GPU["GPU Hot Spot Temperature"][4];
-                        SendGpuTempEvent(address, "GPU_TEMP", pages, mem_cur, mem_avg, hot_cur, hot_avg);
 
+                        clock_cur = GPU["GPU Clock"][1];
+                        clock_avg = GPU["GPU Clock"][4];
+                        memclock_cur = GPU["GPU Memory Clock"][1];
+                        memclock_avg = GPU["GPU Memory Clock"][4];
+
+                        if (speed)
+                        {
+                            SendGpuEvent(address, "GPU_TEMP", pages, mem_cur, mem_avg, hot_cur, hot_avg);
+                            counter++;
+                        }
+                        else
+                        {
+                            SendGpuEvent(address, "GPU_MHZ", pages, clock_cur, clock_avg, memclock_cur, memclock_avg, true);
+                            counter++;
+                        }
+
+                        if (counter > 5) // seconds to hold on one screen of data/
+                        {
+                            speed = !speed;
+                            counter = 0;
+                        }
                         #endregion
                         Thread.Sleep(1000);
                     }
@@ -449,6 +472,8 @@ namespace hwinfo_steelseiresOLED
                         {
                             new
                             {
+
+                                length_millis = 5000,
                                 lines = new List<object>
                                 {
                                     new
@@ -479,7 +504,8 @@ namespace hwinfo_steelseiresOLED
             string screen_json_obj = JsonConvert.SerializeObject(screen_obj);
             screen_json_obj = screen_json_obj.Replace("device_type", "device-type") // Dealing with hyphen
                 .Replace("context_frame_key", "context-frame-key")
-                .Replace("has_text", "has-text");// Dealing with hyphen
+                .Replace("has_text", "has-text")
+                .Replace("length_millis","length-millis");// Dealing with hyphen
 
             SendData(address, screen_json_obj, pages.bind_event);
         }
@@ -506,7 +532,7 @@ namespace hwinfo_steelseiresOLED
             event_json_obj.Replace("image_data_128x48", "image-data-128x48");
             SendData(address, event_json_obj, pages.game_event);
         }
-        private static void SendGpuTempEvent(string address, string @event, Pages pages, string mem_cur, string mem_avg, string hot_cur, string hot_avg)
+        private static void SendGpuEvent(string address, string @event, Pages pages, string row1_cur, string row1_avg, string row2_cur, string row2_avg, bool hurtz = false)
         {
             #region String format
 
@@ -527,10 +553,29 @@ namespace hwinfo_steelseiresOLED
 
             #endregion
 
-            double dmem_cur = Convert.ToDouble(mem_cur);
-            double dmem_avg = Convert.ToDouble(mem_avg);
-            double dhot_cur = Convert.ToDouble(hot_cur);
-            double dhot_avg = Convert.ToDouble(hot_avg);
+            double drow1_cur = Convert.ToDouble(row1_cur);
+            double drow1_avg = Convert.ToDouble(row1_avg);
+            double drow2_cur = Convert.ToDouble(row2_cur);
+            double drow2_avg = Convert.ToDouble(row2_avg);
+
+            string row1_label, row2_label, unit, label;
+            
+
+            if (hurtz)
+            {
+                row1_label = "Clock";
+                row2_label = "Mem  ";
+                unit = "";
+                label = "MHz";
+            }
+            else
+            {
+                row1_label = "Mem ";
+                row2_label = "Hot   ";
+                unit = "°C";
+                label = "Temp";
+            }
+            int length = label.Length;
 
             var event_obj = new
             {
@@ -542,9 +587,9 @@ namespace hwinfo_steelseiresOLED
                     value = 24,
                     frame = new
                     {
-                        Labels = "GPU\tCurr.\tAvg.",
-                        Row1 = String.Format("Memory {0:F1}° {1:F1}°", dmem_cur, dmem_avg),
-                        Row2 = String.Format("Hotspot {0:F1}° {1:F1}°", dhot_cur, dhot_avg)
+                        Labels = String.Format("GPU  {0}  Avg.", label),
+                        Row1 = String.Format("{2}{3} {0:F0}\t{1:F0}", drow1_cur, drow1_avg, row1_label, unit),
+                        Row2 = String.Format("{2}{3} {0:F0}\t{1:F0}", drow2_cur, drow2_avg, row2_label, unit)
                     }
                 }
             };
