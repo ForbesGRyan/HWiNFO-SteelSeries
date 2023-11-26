@@ -130,7 +130,7 @@ fn init_hwinfo() -> Result<Hwinfo, Box<dyn std::error::Error>>{
     let size_reading_section = hwinfo_memory.dw_size_of_reading_element;
 
     let mut master_sensor_names: Vec<String> = Vec::new();
-    // #[allow(unused_mut)]
+    #[allow(unused_mut)]
     let mut master_label_user: Vec<String> = Vec::new();
     let mut master_readings: HashMap<String,  HashMap<String, Vec<String>>> = HashMap::new();
     // let mut master_readings_array: Vec<(String, Vec<(String, Vec<String>)>)>;
