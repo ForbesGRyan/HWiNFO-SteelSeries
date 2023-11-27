@@ -305,6 +305,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "hwinfo-steelseries-oled"
+version = "0.1.0"
+dependencies = [
+ "gamesense",
+ "serde",
+ "serde_json",
+ "strum",
+ "winapi",
+]
+
+[[package]]
 name = "hyper"
 version = "0.14.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -612,17 +623,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "winreg",
-]
-
-[[package]]
-name = "rust"
-version = "0.1.0"
-dependencies = [
- "gamesense",
- "serde",
- "serde_json",
- "strum",
- "winapi",
 ]
 
 [[package]]
