@@ -31,4 +31,4 @@ https://steelseries.com/gg
 - Make sure HWiNFO is running
   - Enable "Shared Memory Support" in HWiNFO settings
   ![hwinfo-shared-memory.png](/assets/hwinfo-shared-memory.png)
-- Run the .exe file
+- Run the hwinfo-steelseries-oled.exe file
