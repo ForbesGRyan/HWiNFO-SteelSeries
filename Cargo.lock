@@ -309,7 +309,6 @@ name = "hwinfo-steelseries-oled"
 version = "0.1.0"
 dependencies = [
  "gamesense",
- "serde",
  "serde_json",
  "strum",
  "winapi",
