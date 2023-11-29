@@ -5,6 +5,12 @@ Pulls info from HWiNFO Shared memory support and pushes it to Steel Series suppo
 
 Currently pulling info from the following sensors:
 
+```
+CPU   | GPU   | MEM
+Temp  | Temp  | Used
+Usage | Usage | Free
+```
+
 CPU Usage = "Total CPU Usage"
 
 CPU Temp  = "CPU (Tctl/Tdie)"
@@ -31,4 +37,4 @@ https://steelseries.com/gg
 - Make sure HWiNFO is running
   - Enable "Shared Memory Support" in HWiNFO settings
   ![hwinfo-shared-memory.png](/assets/hwinfo-shared-memory.png)
-- Run the hwinfo-steelseries-oled.exe file
+- Run the `hwinfo-steelseries-oled.exe` file
