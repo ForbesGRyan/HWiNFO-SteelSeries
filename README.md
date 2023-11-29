@@ -3,6 +3,15 @@ Pulls info from HWiNFO Shared memory support and pushes it to Steel Series suppo
 
 ![hwinfo-steelseries-oled.png](/assets/hwinfo-steelseries-oled.png)
 
+Currently pulling info from the following sensors:
+
+CPU Usage = "Total CPU Usage"
+CPU Temp  = "CPU (Tctl/Tdie)"
+GPU Usage = "GPU Core Load"
+GPU Temp  = "GPU Temperature"
+MEM Used  = "Physical Memory Used"
+MEM Free  = "Physical Memory Available"
+
 ## Requirements
 **HWiNFO**
 https://www.hwinfo.com/
