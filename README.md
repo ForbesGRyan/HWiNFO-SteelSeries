@@ -1,7 +1,7 @@
 # HWiNFO-SteelSeriesOLED
 Pulls info from HWiNFO Shared memory support and pushes it to Steel Series supported OLED screens
 
-![hwinfo-steelseries-oled.png](/hwinfo-steelsereis-oled.png)
+![hwinfo-steelseries-oled.png](/hwinfo-steelseries-oled.png)
 
 ## Requirements
 **HWiNFO**
