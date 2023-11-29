@@ -27,8 +27,8 @@ struct Screen {
     height: usize,
 }
 
-const NOVA_PRO: Screen = Screen{width: 128, height: 52};
-const ARCTIS_PRO: Screen = Screen{width: 128, height: 48};
+// const NOVA_PRO: Screen = Screen{width: 128, height: 52};
+// const ARCTIS_PRO: Screen = Screen{width: 128, height: 48};
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,9 +42,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mem_used_outer_key, mem_used_inner_key) = get_inner_outer_keys(&hwinfo, "Physical Memory Used")?;
     let (mem_free_outer_key, mem_free_inner_key) = get_inner_outer_keys(&hwinfo, "Physical Memory Available")?;
     
-    let screen = NOVA_PRO;
-    let width = screen.width;
-    let height = screen.height;
+    // let screen = NOVA_PRO;
+    // let width = screen.width;
+    // let height = screen.height;
     // let mut image: Vec<u8> = vec![0; width * height / 8];
     // for i in 0..(width * height / 8) {
     //     if i / width % 2 == 0 {
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // }
 
     let mut client: GameSenseClient = GameSenseClient::new("HWINFO", "HWiNFO_Stats", "Ryan", None)?;
-    let handler = screen::ScreenHandler::new(&format!("screened-{}x{}", width, height), "one",
+    let handler = screen::ScreenHandler::new("screened", "one",
         screen::ScreenDataDefinition::StaticScreenDataDefinition(screen::StaticScreenDataDefinition(
             vec![
                 // screen::ScreenFrameData::ImageFrameData(screen::ImageFrameData {
@@ -177,7 +177,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cpu_usage_cur_value, cpu_usage_unit, gpu_usage_cur_value, gpu_usage_unit, mem_free_curr, mem_free_unit),
             });
         }
-    
+        // println!();
+        // println!("{}", value["line1"].as_str().unwrap());
+        // println!("{}", value["line2"].as_str().unwrap());
+        // println!("{}", value["line3"].as_str().unwrap());
+        // println!();
+
         client.trigger_event_frame("EVENT", i.0, value)?;
         i += 1;
     }
