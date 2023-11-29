@@ -1,3 +1,5 @@
+use std::num::Wrapping;
+
 use hwinfo_steelseries_oled::Hwinfo;
 use serde_json::json;
 use gamesense::{
@@ -20,6 +22,14 @@ fn get_inner_outer_keys(hwinfo: &Hwinfo, value: &str) -> Result<(String, String)
     Ok((outer_key, inner_key))
 }
 
+struct Screen {
+    width: usize,
+    height: usize,
+}
+
+const NOVA_PRO: Screen = Screen{width: 128, height: 52};
+const ARCTIS_PRO: Screen = Screen{width: 128, height: 48};
+
 #[allow(unreachable_code)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut hwinfo = Hwinfo::new()?;
@@ -31,17 +41,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let (mem_used_outer_key, mem_used_inner_key) = get_inner_outer_keys(&hwinfo, "Physical Memory Used")?;
     let (mem_free_outer_key, mem_free_inner_key) = get_inner_outer_keys(&hwinfo, "Physical Memory Available")?;
-
+    
+    let screen = NOVA_PRO;
+    let width = screen.width;
+    let height = screen.height;
+    // let mut image: Vec<u8> = vec![0; width * height / 8];
+    // for i in 0..(width * height / 8) {
+    //     if i / width % 2 == 0 {
+    //         if i % 2 == 0 {
+    //             image[i] = 255;
+    //         }
+    //     }
+    //     else {
+    //         if i % 2 != 0 {
+    //             image[i] = 255;
+    //         }
+    //     }
+    // }
 
     let mut client: GameSenseClient = GameSenseClient::new("HWINFO", "HWiNFO_Stats", "Ryan", None)?;
-    let handler = screen::ScreenHandler::new("screened", "one",
+    let handler = screen::ScreenHandler::new(&format!("screened-{}x{}", width, height), "one",
         screen::ScreenDataDefinition::StaticScreenDataDefinition(screen::StaticScreenDataDefinition(
-            vec!(
+            vec![
+                // screen::ScreenFrameData::ImageFrameData(screen::ImageFrameData {
+                //     has_text: false,
+                //     frame_modifiers_data: Some(screen::FrameModifiersData {
+                //         length_millis: Some(1000),
+                //         icon_id: None,
+                //         repeats: Some(screen::Repeat::Bool(false))
+                //     }),
+                //     image_data: image
+                // }),
                 screen::ScreenFrameData::MultiLineFrameData(screen::MultiLineFrameData {
                     frame_modifiers_data: Some(screen::FrameModifiersData {
-                        length_millis: Some(3000),
+                        length_millis: Some(1000),
                         icon_id: Some(screen::Icon::None),
-                        repeats: None
+                        repeats: Some(screen::Repeat::Bool(true))
                     }),
                     lines: vec![
                         screen::LineData {
@@ -84,16 +119,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             })
                         },
                     ]
-                })
-            )
+                }),
+            ]
         ))
     );
 
     client.bind_event("EVENT", None, None, None, None, vec![handler])?;
     client.start_heartbeat();
-    let mut i = 0;
+    let mut i = Wrapping(0isize);
     loop {
-        hwinfo.pull()?; 
+        let mut value = match hwinfo.pull() {
+            Ok(_) => json!(""),
+            Err(_e) => json!({"line1":"Lost Connection to HWiNFO"})
+        };
         let (_, cpu_temp) = hwinfo.master_readings
             .get(&cpu_temp_outer_key).unwrap()
             .get_key_value(&cpu_temp_inner_key).unwrap();
@@ -129,15 +167,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get_key_value(&mem_free_inner_key).unwrap();
         let mem_free_unit = "GB"; //&mem_free.0;
         let mem_free_curr = &mem_free.1[0] / 1024.0;
+
+        if value == json!("") {
+            value = json!({
+                "line1": "CPU  GPU  MEM",
+                "line2": format!("{:.1}{} {:.1}{} {:.1}{}",
+                    cpu_temp_cur_value, cpu_temp_unit, gpu_temp_cur_value, gpu_temp_unit, mem_used_curr, mem_used_unit),
+                "line3": format!("{:.1}{} {:.1}{} {:.1}{}",
+                    cpu_usage_cur_value, cpu_usage_unit, gpu_usage_cur_value, gpu_usage_unit, mem_free_curr, mem_free_unit),
+            });
+        }
     
-        client.trigger_event_frame("EVENT", i, json!({
-            "line1": "CPU  GPU  MEM",
-            // "line1":"12345678901234567",
-            "line2": format!("{:.1}{} {:.1}{} {:.1}{}",
-                cpu_temp_cur_value, cpu_temp_unit, gpu_temp_cur_value, gpu_temp_unit, mem_used_curr, mem_used_unit),
-            "line3": format!("{:.1}{} {:.1}{} {:.1}{}",
-                cpu_usage_cur_value, cpu_usage_unit, gpu_usage_cur_value, gpu_usage_unit, mem_free_curr, mem_free_unit),
-        }))?;
+        client.trigger_event_frame("EVENT", i.0, value)?;
         i += 1;
     }
     client.stop_heartbeat()?;

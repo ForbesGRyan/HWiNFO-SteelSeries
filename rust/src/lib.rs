@@ -10,8 +10,8 @@ const HWINFO_SENSORS_STRING_LEN2: usize = 128;
 const HWINFO_UNIT_STRING_LEN: usize = 16;
 
 #[allow(dead_code)]
-#[derive(FromRepr)]
-enum SensorReadingType
+#[derive(FromRepr, Clone, Copy)]
+pub enum SensorReadingType
 {
     SensorTypeNone = 0,
     SensorTypeTemp,
@@ -25,33 +25,41 @@ enum SensorReadingType
 }
 #[allow(dead_code)]
 #[repr(C, packed(1))]
-struct HwinfoSensorsReadingElement
+#[derive(Clone)]
+pub struct HwinfoSensorsReadingElement
 {
-    t_reading: SensorReadingType,
+    pub t_reading: SensorReadingType,
     _blank: [u8;3], // For some reason the packing wasn't lining up. This alleviates it
-    dw_sensor_index: u32,
-    dw_reading_id: u32,
-    sz_label_orig: [u8; HWINFO_SENSORS_STRING_LEN2],
-    sz_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
-    sz_unit: [u8; HWINFO_UNIT_STRING_LEN],
+    pub dw_sensor_index: u32,
+    pub dw_reading_id: u32,
+    pub sz_label_orig: [u8; HWINFO_SENSORS_STRING_LEN2],
+    pub sz_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
+    pub sz_unit: [u8; HWINFO_UNIT_STRING_LEN],
     // starts at 281
-    value: f64,
-    value_min: f64,
-    value_max: f64,
-    value_avg: f64,
-    utf_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
-    utf_unit: [u8; HWINFO_UNIT_STRING_LEN]
+    pub value: f64,
+    pub value_min: f64,
+    pub value_max: f64,
+    pub value_avg: f64,
+    pub utf_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
+    pub utf_unit: [u8; HWINFO_UNIT_STRING_LEN]
 }
 #[allow(dead_code)]
 #[repr(C, align(1))]
-struct HwinfoSensorsSensorElement
+#[derive(Hash, Clone, Copy)]
+pub struct HwinfoSensorsSensorElement
 {
-    dw_sensor_id: u32,
-    dw_sensor_inst: u32,
-    sz_sensor_name_orig: [u8; HWINFO_SENSORS_STRING_LEN2],
-    sz_sensor_name_user: [u8; HWINFO_SENSORS_STRING_LEN2],
-    utf_sensor_name_user: [u8; HWINFO_SENSORS_STRING_LEN2]
+    pub dw_sensor_id: u32,
+    pub dw_sensor_inst: u32,
+    pub sz_sensor_name_orig: [u8; HWINFO_SENSORS_STRING_LEN2],
+    pub sz_sensor_name_user: [u8; HWINFO_SENSORS_STRING_LEN2],
+    pub utf_sensor_name_user: [u8; HWINFO_SENSORS_STRING_LEN2]
 }
+impl PartialEq for HwinfoSensorsSensorElement {
+    fn eq(&self, other: &Self) -> bool {
+        self.utf_sensor_name_user == other.utf_sensor_name_user
+    }
+}
+impl Eq for HwinfoSensorsSensorElement {}
 
 #[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
@@ -77,7 +85,8 @@ pub struct Hwinfo {
     shared_memory_name: Vec<u16>,
     pub master_sensor_names: Box<Vec<String>>,
     pub master_label_user: Box<Vec<String>>,
-    pub master_readings: Box<HashMap<String, HashMap<String, (String, [f64;4])>>>
+    pub master_readings: Box<HashMap<String, HashMap<String, (String, [f64;4])>>>,
+    // pub new_master_reading: Box<HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>>>
 }
 
 impl Hwinfo {
@@ -129,6 +138,7 @@ impl Hwinfo {
         // #[allow(unused_mut)]
         let master_label_user: Vec<String> = Vec::new();
         let mut master_readings: HashMap<String,  HashMap<String, (String, [f64;4])>> = HashMap::new();
+        // let mut new_master_readings: HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>> = HashMap::new();
 
         // Getting Sensor Labels
         for dw_sensor in 0..num_sensors {
@@ -140,6 +150,9 @@ impl Hwinfo {
             master_sensor_names.push(utf_sensor_name_user.clone());
             let blank_reading: HashMap<String, (String, [f64;4])> = HashMap::new();
             master_readings.insert(utf_sensor_name_user.clone(), blank_reading);
+
+            // let new_blank: HashMap<String, HwinfoSensorsReadingElement> = HashMap::new();
+            // new_master_readings.insert(*sensor, new_blank);
         }
         
         unsafe{ // Unmap the shared memory view when done
@@ -152,7 +165,8 @@ impl Hwinfo {
             shared_memory_name,
             master_sensor_names: Box::new(master_sensor_names),
             master_label_user: Box::new(master_label_user),
-            master_readings: Box::new(master_readings)
+            master_readings: Box::new(master_readings),
+            // new_master_reading: Box::new(new_master_readings)
         })
     }
 
@@ -207,8 +221,21 @@ impl Hwinfo {
             values_list[2] = value_max;
             values_list[3] = value_avg;
 
-            let dw_sensor_index = reading.dw_sensor_index;
-            let current_sensor_name = &self.master_sensor_names[dw_sensor_index as usize];
+            let current_sensor_name = &self.master_sensor_names[reading.dw_sensor_index as usize];
+            // let sensor = HwinfoSensorsSensorElement{
+            //     dw_sensor_id: 0,
+            //     dw_sensor_inst: 0,
+            //     sz_sensor_name_orig: [0; HWINFO_SENSORS_STRING_LEN2],
+            //     sz_sensor_name_user: [0; HWINFO_SENSORS_STRING_LEN2],
+            //     utf_sensor_name_user: current_sensor_name.as_bytes().try_into()?
+            // };
+
+            // if let Some(value) = self.new_master_reading.get_mut(&sensor){
+            //     value.insert(
+            //         label.clone(),
+            //         reading.clone()
+            //     );
+            // }
 
             if let Some(x) = self.master_readings.get_mut(current_sensor_name){
                 x.insert(
