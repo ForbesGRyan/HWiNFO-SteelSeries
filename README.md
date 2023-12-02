@@ -34,7 +34,7 @@ https://steelseries.com/gg
 
 ## Steps for running:
 - Make sure SteelSeries GG is running
-- Make sure HWiNFO is running
+- Make sure HWiNFO is running, Open the Sensors window
   - Enable "Shared Memory Support" in HWiNFO settings
   ![hwinfo-shared-memory.png](/assets/hwinfo-shared-memory.png)
 - Run the `hwinfo-steelseries-oled.exe` file
