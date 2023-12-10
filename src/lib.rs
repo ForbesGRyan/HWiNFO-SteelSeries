@@ -1,4 +1,5 @@
-use std::io::{Error, ErrorKind};
+use anyhow;
+use std::io::{self, Error, ErrorKind};
 use std::os::windows::ffi::OsStrExt;
 use std::{collections::HashMap, ffi::OsStr, iter::once};
 use strum::FromRepr;
@@ -22,6 +23,7 @@ pub enum SensorReadingType {
     SensorTypeUsage,
     SensorTypeOther,
 }
+
 #[allow(dead_code)]
 #[repr(C, packed(1))]
 #[derive(Clone)]
@@ -33,7 +35,6 @@ pub struct HwinfoSensorsReadingElement {
     pub sz_label_orig: [u8; HWINFO_SENSORS_STRING_LEN2],
     pub sz_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
     pub sz_unit: [u8; HWINFO_UNIT_STRING_LEN],
-    // starts at 281
     pub value: f64,
     pub value_min: f64,
     pub value_max: f64,
@@ -41,6 +42,17 @@ pub struct HwinfoSensorsReadingElement {
     pub utf_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
     pub utf_unit: [u8; HWINFO_UNIT_STRING_LEN],
 }
+impl PartialEq for HwinfoSensorsReadingElement {
+    fn eq(&self, other: &Self) -> bool {
+        self.dw_reading_id == other.dw_reading_id
+            && self.value == other.value
+            && self.value_min == other.value_min
+            && self.value_max == other.value_max
+            && self.value_avg == other.value_avg
+    }
+}
+impl Eq for HwinfoSensorsReadingElement {}
+
 #[allow(dead_code)]
 #[repr(C, align(1))]
 #[derive(Hash, Clone, Copy)]
@@ -74,11 +86,30 @@ struct HwinfoSensorsSharedMem2 {
     dw_num_reading_elements: u32,    // Number of Reading elements
 }
 
-struct Readings {
-    sensor: HwinfoSensorsSensorElement,
-    reading: Vec<HwinfoSensorsReadingElement>
+#[derive(Clone)]
+pub struct Sensor {
+    pub sensor: Box<HwinfoSensorsSensorElement>,
+    pub reading: Box<HashMap<String, Box<HwinfoSensorsReadingElement>>>,
 }
+impl PartialEq for Sensor {
+    fn eq(&self, other: &Self) -> bool {
+        self.reading == other.reading
+    }
+}
+impl Eq for Sensor {}
 
+#[derive(Clone)]
+pub struct MasterReadings {
+    pub sensors: Box<HashMap<String, Sensor>>,
+}
+impl PartialEq for MasterReadings {
+    fn eq(&self, other: &Self) -> bool {
+        self.sensors == other.sensors
+    }
+}
+impl Eq for MasterReadings {}
+
+#[derive(Clone)]
 pub struct Hwinfo {
     num_reading_elements: u32,
     offset_reading_section: u32,
@@ -88,11 +119,17 @@ pub struct Hwinfo {
     pub master_label_user: Box<Vec<String>>,
     pub master_readings: Box<HashMap<String, HashMap<String, (String, [f64; 4])>>>,
     // pub new_master_reading: Box<HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>>>
-    _master_readings: Option<Box<Vec<Readings>>>
+    pub _master_readings: Box<MasterReadings>,
 }
+impl PartialEq for Hwinfo {
+    fn eq(&self, other: &Self) -> bool {
+        self._master_readings == other._master_readings
+    }
+}
+impl Eq for Hwinfo {}
 
 impl Hwinfo {
-    pub fn new() -> Result<Hwinfo, Box<dyn std::error::Error>> {
+    pub fn new() -> Result<Hwinfo, anyhow::Error> {
         let hwinfo_memory_size = std::mem::size_of::<HwinfoSensorsSharedMem2>();
         // Convert the name to a wide string (UTF-16)
         let shared_memory_name = OsStr::new(HWINFO_SENSORS_MAP_FILE_NAME2)
@@ -109,7 +146,7 @@ impl Hwinfo {
         };
         if shared_memory_handle.is_null() {
             // println!("Failed to open shared memory object");
-            return Err(Box::new(Error::new(
+            return Err(anyhow::Error::new(Error::new(
                 ErrorKind::NotFound,
                 "Failed to open shared memory object",
             )));
@@ -120,7 +157,7 @@ impl Hwinfo {
         };
         if shared_memory_view.is_null() {
             // println!("Failed to map view of shared memory");
-            return Err(Box::new(Error::new(
+            return Err(anyhow::Error::new(Error::new(
                 ErrorKind::NotFound,
                 "Failed to map view of shared memory",
             )));
@@ -148,7 +185,9 @@ impl Hwinfo {
         let mut master_readings: HashMap<String, HashMap<String, (String, [f64; 4])>> =
             HashMap::new();
         // let mut new_master_readings: HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>> = HashMap::new();
-        let mut _master_readings: Vec<Readings> = Vec::new();
+        let mut _master_readings = MasterReadings {
+            sensors: Box::new(HashMap::new()),
+        };
 
         // Getting Sensor Labels
         for dw_sensor in 0..num_sensors {
@@ -163,8 +202,15 @@ impl Hwinfo {
             master_sensor_names.push(utf_sensor_name_user.clone());
             let blank_reading: HashMap<String, (String, [f64; 4])> = HashMap::new();
             master_readings.insert(utf_sensor_name_user.clone(), blank_reading);
-            
-            _master_readings.push(Readings { sensor: *sensor, reading: Vec::new() })
+
+            // _master_readings.push(Sensor { sensor: *sensor, reading: HashMap::new() })
+            _master_readings.sensors.insert(
+                utf_sensor_name_user.clone(),
+                Sensor {
+                    sensor: Box::new(*sensor),
+                    reading: Box::new(HashMap::new()),
+                },
+            );
 
             // let new_blank: HashMap<String, HwinfoSensorsReadingElement> = HashMap::new();
             // new_master_readings.insert(*sensor, new_blank);
@@ -182,12 +228,11 @@ impl Hwinfo {
             master_sensor_names: Box::new(master_sensor_names),
             master_label_user: Box::new(master_label_user),
             master_readings: Box::new(master_readings),
-            _master_readings: Some(Box::new(_master_readings))
-            // new_master_reading: Box::new(new_master_readings)
+            _master_readings: Box::new(_master_readings), // new_master_reading: Box::new(new_master_readings)
         })
     }
 
-    pub fn pull(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn pull(&mut self) -> Result<(), anyhow::Error> {
         // let mut hwinfo = self.new()?;
 
         let shared_memory_handle = unsafe {
@@ -204,7 +249,7 @@ impl Hwinfo {
         };
         if shared_memory_view.is_null() {
             println!("Failed to map view of shared memory");
-            return Err(Box::new(Error::new(
+            return Err(anyhow::Error::new(Error::new(
                 ErrorKind::NotFound,
                 "Failed to map view of shared memory",
             )));
@@ -221,7 +266,9 @@ impl Hwinfo {
             //     panic!();
             // }
             let reading = unsafe { &sensor_reading.align_to::<HwinfoSensorsReadingElement>().1[0] };
-            let label = String::from_utf8(reading.utf_label_user.to_vec())?;
+            let label = String::from_utf8(reading.utf_label_user.to_vec())?
+                .trim_matches(char::from(0))
+                .to_string();
             // self.master_label_user.insert(0, label);
 
             // Because the packed struct is unaligned
@@ -241,23 +288,12 @@ impl Hwinfo {
             values_list[3] = value_avg;
 
             let current_sensor_name = &self.master_sensor_names[reading.dw_sensor_index as usize];
-            // let sensor = HwinfoSensorsSensorElement{
-            //     dw_sensor_id: 0,
-            //     dw_sensor_inst: 0,
-            //     sz_sensor_name_orig: [0; HWINFO_SENSORS_STRING_LEN2],
-            //     sz_sensor_name_user: [0; HWINFO_SENSORS_STRING_LEN2],
-            //     utf_sensor_name_user: current_sensor_name.as_bytes().try_into()?
-            // };
-
-            // if let Some(value) = self.new_master_reading.get_mut(&sensor){
-            //     value.insert(
-            //         label.clone(),
-            //         reading.clone()
-            //     );
-            // }
-
             if let Some(x) = self.master_readings.get_mut(current_sensor_name) {
-                x.insert(label, (unit, values_list));
+                x.insert(label.clone(), (unit, values_list));
+            }
+
+            if let Some(sensor) = self._master_readings.sensors.get_mut(current_sensor_name) {
+                sensor.reading.insert(label, Box::new(reading.to_owned()));
             }
         }
 
@@ -275,6 +311,27 @@ impl Hwinfo {
         //     master_label_user:      self.master_label_user.clone(),
         //     master_readings:        self.master_readings.clone()
         // })
+    }
+
+    pub fn get(&self, sensor_key: &str, reading_key: &str) -> Option<&HwinfoSensorsReadingElement> {
+        match self._master_readings.sensors.get(sensor_key) {
+            Some(sensor) => match sensor.reading.get(reading_key) {
+                Some(reading) => Some(reading),
+                None => None,
+            },
+            None => None,
+        }
+    }
+
+    pub fn find(&self, key: &str) -> Option<&HwinfoSensorsReadingElement> {
+        for (_i, sensor) in self._master_readings.sensors.iter() {
+            for (j, _reading) in sensor.reading.iter() {
+                if j == &key.to_string() {
+                    return Some(_reading);
+                }
+            }
+        }
+        None
     }
 }
 
