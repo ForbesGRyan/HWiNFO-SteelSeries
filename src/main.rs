@@ -107,7 +107,7 @@ fn main() -> Result<(), anyhow::Error> {
         let gpu_temp_cur_value = sensor_gpu_temp.value;
         let gpu_usage_cur_value = sensor_gpu_usage.value;
 
-        let mem_unit = "g";
+        let mem_unit = "G";
         let mem_used = sensor_mem_used.value / 1024.0;
         let mem_free = sensor_mem_free.value / 1024.0;
         let mem_load = sensor_mem_load.value;
