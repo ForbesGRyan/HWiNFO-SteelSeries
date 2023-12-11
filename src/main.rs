@@ -28,12 +28,24 @@ fn create_config(term: &Term) -> Result<Ini, anyhow::Error> {
        55°  45°  8.65G\n
        10%  0.0% 32.0G\n
     ")?;
-    let input: String = Input::new()
-        .with_prompt("1 / 2:")
+    term.write_line("
+    2) CPU  45°  10.0%\n
+       GPU  35°  0.0%\n
+       MEM  10G  33.3%\n
+    ")?;
+    let input: u8 = Input::new()
+        .with_prompt("Choose style\n1 or 2")
         .interact_text()?;
+    let vertical = match input {
+        1 => true,
+        _ => false,
+    };
     conf.with_section(Some("Main"))
-        .set("vertical", "false");
+        .set("vertical", vertical.to_string());
 
+    conf.write_to_file("conf.ini")?;
+
+    term.write_line("config created.")?;
     Ok(conf)
 }
 
@@ -46,13 +58,23 @@ fn main() -> Result<(), anyhow::Error> {
     let mut hwinfo= connect_hwinfo(&term)?;
     hwinfo.pull()?;
 
-    let mut config = match Ini::load_from_file("conf.ini") {
+    let config = match Ini::load_from_file("conf.ini") {
         Ok(conf) => conf,
         Err(_err) => {
             create_config(&term)?
         }
     };
 
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    hide_console_window();
+
+    let vertical = match config
+        .section(Some("Main")).unwrap()
+        .get("vertical").unwrap() {
+            "true" => true,
+            "false" => false,
+            _ => panic!("invalid input")
+        };
 
     let screen = NOVA_PRO;
     let _width = screen.width;
@@ -93,7 +115,6 @@ fn main() -> Result<(), anyhow::Error> {
         let line1_spaces = "  ";
         let line2_spaces = "  ";
 
-        let vertical: bool = false;
         if vertical {
             value = json!({
                 "line1": "CPU    GPU    MEM",
