@@ -117,7 +117,7 @@ pub struct Hwinfo {
     shared_memory_name: Vec<u16>,
     pub master_sensor_names: Box<Vec<String>>,
     pub master_label_user: Box<Vec<String>>,
-    pub master_readings: Box<HashMap<String, HashMap<String, (String, [f64; 4])>>>,
+    // pub master_readings: Box<HashMap<String, HashMap<String, (String, [f64; 4])>>>,
     // pub new_master_reading: Box<HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>>>
     pub _master_readings: Box<MasterReadings>,
 }
@@ -182,8 +182,8 @@ impl Hwinfo {
         let mut master_sensor_names: Vec<String> = Vec::new();
         // #[allow(unused_mut)]
         let master_label_user: Vec<String> = Vec::new();
-        let mut master_readings: HashMap<String, HashMap<String, (String, [f64; 4])>> =
-            HashMap::new();
+        // let mut master_readings: HashMap<String, HashMap<String, (String, [f64; 4])>> =
+        //     HashMap::new();
         // let mut new_master_readings: HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>> = HashMap::new();
         let mut _master_readings = MasterReadings {
             sensors: Box::new(HashMap::new()),
@@ -200,8 +200,8 @@ impl Hwinfo {
                 .trim_matches(char::from(0))
                 .to_string();
             master_sensor_names.push(utf_sensor_name_user.clone());
-            let blank_reading: HashMap<String, (String, [f64; 4])> = HashMap::new();
-            master_readings.insert(utf_sensor_name_user.clone(), blank_reading);
+            // let blank_reading: HashMap<String, (String, [f64; 4])> = HashMap::new();
+            // master_readings.insert(utf_sensor_name_user.clone(), blank_reading);
 
             // _master_readings.push(Sensor { sensor: *sensor, reading: HashMap::new() })
             _master_readings.sensors.insert(
@@ -227,7 +227,7 @@ impl Hwinfo {
             shared_memory_name,
             master_sensor_names: Box::new(master_sensor_names),
             master_label_user: Box::new(master_label_user),
-            master_readings: Box::new(master_readings),
+            // master_readings: Box::new(master_readings),
             _master_readings: Box::new(_master_readings), // new_master_reading: Box::new(new_master_readings)
         })
     }
@@ -272,25 +272,25 @@ impl Hwinfo {
             // self.master_label_user.insert(0, label);
 
             // Because the packed struct is unaligned
-            let value: f64 = reading.value;
-            let value_min: f64 = reading.value_min;
-            let value_max: f64 = reading.value_max;
-            let value_avg: f64 = reading.value_avg;
+            // let value: f64 = reading.value;
+            // let value_min: f64 = reading.value_min;
+            // let value_max: f64 = reading.value_max;
+            // let value_avg: f64 = reading.value_avg;
 
-            let mut values_list: [f64; 4] = [0.0_f64; 4];
-            let unit = String::from_utf8(reading.utf_unit.to_vec())?
-                .trim_matches(char::from(0))
-                .to_string();
-            // values_list.push(unit);
-            values_list[0] = value;
-            values_list[1] = value_min;
-            values_list[2] = value_max;
-            values_list[3] = value_avg;
+            // let mut values_list: [f64; 4] = [0.0_f64; 4];
+            // let unit = String::from_utf8(reading.utf_unit.to_vec())?
+            //     .trim_matches(char::from(0))
+            //     .to_string();
+            // // values_list.push(unit);
+            // values_list[0] = value;
+            // values_list[1] = value_min;
+            // values_list[2] = value_max;
+            // values_list[3] = value_avg;
 
             let current_sensor_name = &self.master_sensor_names[reading.dw_sensor_index as usize];
-            if let Some(x) = self.master_readings.get_mut(current_sensor_name) {
-                x.insert(label.clone(), (unit, values_list));
-            }
+            // if let Some(x) = self.master_readings.get_mut(current_sensor_name) {
+            //     x.insert(label.clone(), (unit, values_list));
+            // }
 
             if let Some(sensor) = self._master_readings.sensors.get_mut(current_sensor_name) {
                 sensor.reading.insert(label, Box::new(reading.to_owned()));
