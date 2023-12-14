@@ -82,15 +82,33 @@ fn main() -> Result<(), anyhow::Error> {
 
     let page1_handler = page_handler(3, "line1", "line2", "line3", false);
     let page2_handler = page_handler(3, "line1", "line2", "line3", false);
+    let error_handler = page_handler(30, "line1", "line2", "line3", true);
 
     client.bind_event("MAIN", None, None, None, None, vec![page1_handler])?;
+    client.bind_event("ERROR", None, None, None, None, vec![error_handler])?;
     client.bind_event("EVENT2", None, None, None, None, vec![page2_handler])?;
     client.start_heartbeat();
     let mut i = Wrapping(0isize);
+    let mut count: usize = 0;
     loop {
+        let old = hwinfo.clone();
         hwinfo.pull()?;
+        if old == hwinfo {
+            count += 1;
+        } else {
+            count = 0;
+        }
+        drop(old);
         let mut value = json!("");
-
+        if count >= 3 {
+            value = json!({"line1":"Disconnected",
+                           "line2":"FROM",
+                           "line3":"HWiNFO"});
+            client.trigger_event_frame("ERROR", i.0, value)?;
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+    
         let sensor_cpu_usage = hwinfo.find("Total CPU Usage").unwrap();
         let sensor_cpu_temp = hwinfo.find("CPU (Tctl/Tdie)").unwrap();
         let sensor_gpu_usage = hwinfo.find("GPU Core Load").unwrap();
@@ -98,6 +116,7 @@ fn main() -> Result<(), anyhow::Error> {
         let sensor_mem_used = hwinfo.find("Physical Memory Used").unwrap();
         let sensor_mem_free = hwinfo.find("Physical Memory Available").unwrap();
         let sensor_mem_load = hwinfo.find("Physical Memory Load").unwrap();
+        // hwinfo.get("System: ASUS ", "Physical Memory Used").unwrap();
 
         let cpu_temp_cur_value = sensor_cpu_temp.value;
         let cpu_usage_cur_value = sensor_cpu_usage.value;

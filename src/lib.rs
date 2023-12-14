@@ -98,6 +98,7 @@ impl PartialEq for Sensor {
 }
 impl Eq for Sensor {}
 
+type _MasterReadings = Box<HashMap<String, Sensor>>;
 #[derive(Clone)]
 pub struct MasterReadings {
     pub sensors: Box<HashMap<String, Sensor>>,
@@ -119,11 +120,11 @@ pub struct Hwinfo {
     pub master_label_user: Box<Vec<String>>,
     // pub master_readings: Box<HashMap<String, HashMap<String, (String, [f64; 4])>>>,
     // pub new_master_reading: Box<HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>>>
-    pub _master_readings: Box<MasterReadings>,
+    pub master_readings: Box<MasterReadings>,
 }
 impl PartialEq for Hwinfo {
     fn eq(&self, other: &Self) -> bool {
-        self._master_readings == other._master_readings
+        self.master_readings == other.master_readings
     }
 }
 impl Eq for Hwinfo {}
@@ -185,7 +186,7 @@ impl Hwinfo {
         // let mut master_readings: HashMap<String, HashMap<String, (String, [f64; 4])>> =
         //     HashMap::new();
         // let mut new_master_readings: HashMap<HwinfoSensorsSensorElement, HashMap<String, HwinfoSensorsReadingElement>> = HashMap::new();
-        let mut _master_readings = MasterReadings {
+        let mut master_readings = MasterReadings {
             sensors: Box::new(HashMap::new()),
         };
 
@@ -204,7 +205,7 @@ impl Hwinfo {
             // master_readings.insert(utf_sensor_name_user.clone(), blank_reading);
 
             // _master_readings.push(Sensor { sensor: *sensor, reading: HashMap::new() })
-            _master_readings.sensors.insert(
+            master_readings.sensors.insert(
                 utf_sensor_name_user.clone(),
                 Sensor {
                     sensor: Box::new(*sensor),
@@ -228,7 +229,7 @@ impl Hwinfo {
             master_sensor_names: Box::new(master_sensor_names),
             master_label_user: Box::new(master_label_user),
             // master_readings: Box::new(master_readings),
-            _master_readings: Box::new(_master_readings), // new_master_reading: Box::new(new_master_readings)
+            master_readings: Box::new(master_readings), // new_master_reading: Box::new(new_master_readings)
         })
     }
 
@@ -292,7 +293,7 @@ impl Hwinfo {
             //     x.insert(label.clone(), (unit, values_list));
             // }
 
-            if let Some(sensor) = self._master_readings.sensors.get_mut(current_sensor_name) {
+            if let Some(sensor) = self.master_readings.sensors.get_mut(current_sensor_name) {
                 sensor.reading.insert(label, Box::new(reading.to_owned()));
             }
         }
@@ -314,7 +315,7 @@ impl Hwinfo {
     }
 
     pub fn get(&self, sensor_key: &str, reading_key: &str) -> Option<&HwinfoSensorsReadingElement> {
-        match self._master_readings.sensors.get(sensor_key) {
+        match self.master_readings.sensors.get(sensor_key) {
             Some(sensor) => match sensor.reading.get(reading_key) {
                 Some(reading) => Some(reading),
                 None => None,
@@ -324,7 +325,7 @@ impl Hwinfo {
     }
 
     pub fn find(&self, key: &str) -> Option<&HwinfoSensorsReadingElement> {
-        for (_i, sensor) in self._master_readings.sensors.iter() {
+        for (_i, sensor) in self.master_readings.sensors.iter() {
             for (j, _reading) in sensor.reading.iter() {
                 if j == &key.to_string() {
                     return Some(_reading);
