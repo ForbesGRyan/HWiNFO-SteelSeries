@@ -91,20 +91,24 @@ fn main() -> Result<(), anyhow::Error> {
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
     loop {
+        let limit = 5;
         let old = hwinfo.clone();
         hwinfo.pull()?;
         if old == hwinfo {
-            count += 1;
+            if count < limit {
+                count += 1;
+            }
         } else {
             count = 0;
         }
         drop(old);
         let mut value = json!("");
-        if count >= 3 {
+        if count >= limit {
             value = json!({"line1":"Disconnected",
                            "line2":"FROM",
                            "line3":"HWiNFO"});
             client.trigger_event_frame("ERROR", i.0, value)?;
+            i += 1;
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
@@ -112,7 +116,8 @@ fn main() -> Result<(), anyhow::Error> {
         let sensor_cpu_usage = hwinfo.find("Total CPU Usage").unwrap();
         let sensor_cpu_temp = hwinfo.find("CPU (Tctl/Tdie)").unwrap();
         let sensor_gpu_usage = hwinfo.find("GPU Core Load").unwrap();
-        let sensor_gpu_temp = hwinfo.find("GPU Temperature").unwrap();
+        // let sensor_gpu_temp = hwinfo.find("GPU Temperature").unwrap();
+        let sensor_gpu_temp = hwinfo.get("GPU [#0]: NVIDIA GeForce RTX 3090", "GPU Temperature").unwrap();
         let sensor_mem_used = hwinfo.find("Physical Memory Used").unwrap();
         let sensor_mem_free = hwinfo.find("Physical Memory Available").unwrap();
         let sensor_mem_load = hwinfo.find("Physical Memory Load").unwrap();
@@ -152,13 +157,13 @@ fn main() -> Result<(), anyhow::Error> {
             });
         } else {
             value = json!({
-                "line1": format!("CPU  {:.1}{}  {:.1}{}",
+                "line1": format!("CPU   {:.1}{} {:.1}{}",
                     cpu_temp_cur_value, temp_unit,
                     cpu_usage_cur_value, usage_unit),
-                "line2": format!("GPU  {:.1}{}  {:.1}{}",
+                "line2": format!("GPU   {:.1}{} {:.1}{}",
                     gpu_temp_cur_value, temp_unit,
                     gpu_usage_cur_value, usage_unit),
-                "line3": format!("MEM {:.1}{} {:.1}{}",
+                "line3": format!("MEM  {:.1}{} {:.1}{}",
                     mem_used, mem_unit,
                     mem_load, usage_unit,
                     // mem_free, mem_unit.to_lowercase()
