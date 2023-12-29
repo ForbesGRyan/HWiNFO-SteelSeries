@@ -324,15 +324,39 @@ impl Hwinfo {
         }
     }
 
-    pub fn find(&self, key: &str) -> Option<&HwinfoSensorsReadingElement> {
+    pub fn find_first(&self, key: &str) -> Result<&HwinfoSensorsReadingElement, anyhow::Error> {
         for (_i, sensor) in self.master_readings.sensors.iter() {
             for (j, _reading) in sensor.reading.iter() {
                 if j == &key.to_string() {
-                    return Some(_reading);
+                    return Ok(_reading);
                 }
             }
         }
-        None
+        Err(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Not found",
+        )))
+    }
+
+    pub fn find(&self, key: &str) -> Result<Vec<&HwinfoSensorsReadingElement>, anyhow::Error> {
+        let mut results: Vec<&HwinfoSensorsReadingElement> = Vec::new();
+        for (_i, sensor) in self.master_readings.sensors.iter() {
+            for (j, _reading) in sensor.reading.iter() {
+                if j == &key.to_string() {
+                    results.push(_reading);
+                    // return Ok(_reading);
+                }
+            }
+        }
+
+        if results.len() == 0 {
+            Err(anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Not found",
+            )))
+        } else {
+            Ok(results)
+        }
     }
 }
 

@@ -1,13 +1,13 @@
+use console::Term;
+use dialoguer::Input;
 use gamesense::{
     client::GameSenseClient,
     handler::screen::{self, ScreenHandler},
 };
 use hwinfo_steelseries_oled::{Hwinfo, HwinfoSensorsReadingElement};
-use serde_json::json;
-use std::{num::Wrapping, io::Write};
-use console::Term;
 use ini::Ini;
-use dialoguer::Input;
+use serde_json::json;
+use std::{io::Write, num::Wrapping};
 
 struct Screen {
     width: usize,
@@ -20,19 +20,23 @@ const NOVA_PRO: Screen = Screen {
 };
 // const ARCTIS_PRO: Screen = Screen{width: 128, height: 48};
 
-fn create_config(term: &Term) -> Result<Ini, anyhow::Error> {
+fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
     term.write_line("Config not found.")?;
     let mut conf = Ini::new();
-    term.write_line("
+    term.write_line(
+        "
     1) CPU  GPU  MEM\n
        55°  45°  8.65G\n
        10%  0.0% 32.0G\n
-    ")?;
-    term.write_line("
+    ",
+    )?;
+    term.write_line(
+        "
     2) CPU  45°  10.0%\n
        GPU  35°  0.0%\n
        MEM  10G  33.3%\n
-    ")?;
+    ",
+    )?;
     let input: u8 = Input::new()
         .with_prompt("Choose style\n1 or 2")
         .interact_text()?;
@@ -43,6 +47,23 @@ fn create_config(term: &Term) -> Result<Ini, anyhow::Error> {
     conf.with_section(Some("Main"))
         .set("vertical", vertical.to_string());
 
+    let gpus = hwinfo.find("GPU Temperature")?;
+    let len_gpus = gpus.len();
+    if len_gpus > 1 {
+        term.write_line("Which GPU:\n")?;
+        for (i, gpu) in gpus.iter().enumerate() {
+            let sensor = &hwinfo.master_sensor_names[gpu.dw_sensor_index as usize];
+            let setup = format!("{}: {}", i, sensor);
+            term.write_line(&setup)?;
+        }
+        let gpu_selection: usize = Input::new()
+            .with_prompt(format!("0..{}", len_gpus - 1))
+            .interact_text()?;
+
+        let gpu_selected =
+            &hwinfo.master_sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
+        conf.with_section(Some("Main")).set("gpu", gpu_selected);
+    }
     conf.write_to_file("conf.ini")?;
 
     term.write_line("config created.")?;
@@ -55,26 +76,29 @@ fn main() -> Result<(), anyhow::Error> {
 
     let mut client = connect_steelseries(&term)?;
 
-    let mut hwinfo= connect_hwinfo(&term)?;
+    let mut hwinfo = connect_hwinfo(&term)?;
     hwinfo.pull()?;
 
     let config = match Ini::load_from_file("conf.ini") {
         Ok(conf) => conf,
-        Err(_err) => {
-            create_config(&term)?
-        }
+        Err(_err) => create_config(&term, &hwinfo)?,
     };
 
     std::thread::sleep(std::time::Duration::from_secs(1));
     hide_console_window();
 
     let vertical = match config
-        .section(Some("Main")).unwrap()
-        .get("vertical").unwrap() {
-            "true" => true,
-            "false" => false,
-            _ => panic!("invalid input")
-        };
+        .section(Some("Main"))
+        .unwrap()
+        .get("vertical")
+        .unwrap()
+    {
+        "true" => true,
+        "false" => false,
+        _ => panic!("invalid input"),
+    };
+
+    let gpu = config.section(Some("Main")).unwrap().get("gpu").unwrap();
 
     let screen = NOVA_PRO;
     let _width = screen.width;
@@ -112,15 +136,24 @@ fn main() -> Result<(), anyhow::Error> {
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
-    
-        let sensor_cpu_usage = hwinfo.find("Total CPU Usage").unwrap();
-        let sensor_cpu_temp = hwinfo.find("CPU (Tctl/Tdie)").unwrap();
-        let sensor_gpu_usage = hwinfo.find("GPU Core Load").unwrap();
-        // let sensor_gpu_temp = hwinfo.find("GPU Temperature").unwrap();
-        let sensor_gpu_temp = hwinfo.get("GPU [#0]: NVIDIA GeForce RTX 3090", "GPU Temperature").unwrap();
-        let sensor_mem_used = hwinfo.find("Physical Memory Used").unwrap();
-        let sensor_mem_free = hwinfo.find("Physical Memory Available").unwrap();
-        let sensor_mem_load = hwinfo.find("Physical Memory Load").unwrap();
+
+        let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
+        let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
+        let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
+        // let sensor_gpu_temp = hwinfo.find("GPU Temperature")?[1];
+
+        // if sensor_gpu_temp.len() > 1 {
+        //    for gpu in &sensor_gpu_temp {
+        //         let sensor_id = gpu.dw_sensor_index;
+        //         println!("{}", sensor_id);
+        //    }
+        // }
+        let sensor_gpu_temp = hwinfo
+            .get(gpu, "GPU Temperature")
+            .unwrap();
+        let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
+        let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
+        let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
         // hwinfo.get("System: ASUS ", "Physical Memory Used").unwrap();
 
         let cpu_temp_cur_value = sensor_cpu_temp.value;
@@ -178,7 +211,7 @@ fn main() -> Result<(), anyhow::Error> {
         //     }))?;
         // }
         // else {
-            client.trigger_event_frame("MAIN", i.0, value)?;
+        client.trigger_event_frame("MAIN", i.0, value)?;
         // }
 
         i += 1;
@@ -189,19 +222,20 @@ fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-
-fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error>{
+fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
     match Hwinfo::new() {
         Ok(hwinfo) => {
             term.write_line("Connected to HWiNFO")?;
             Ok(hwinfo)
-        },
+        }
         Err(_err) => {
             // println!("Can't connect to HWiNFO. Trying again in 1 second.");
             for i in (1..=3).rev() {
-                term.write_line(format!("Can't connect to HWiNFO. Trying again in {} second.", i).as_str())?;
-                std::thread::sleep(std::time::Duration::from_secs(1));
                 term.clear_line()?;
+                term.write_line(
+                    format!("Can't connect to HWiNFO. Trying again in {} second.", i).as_str(),
+                )?;
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
             connect_hwinfo(term)
         }
@@ -213,18 +247,23 @@ fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
         Ok(c) => {
             term.write_line("Connected to SteelSeries GG")?;
             Ok(c)
-        },
+        }
         Err(_e) => {
             for i in (1..=3).rev() {
-                term.write_line(format!("Can't connect to SteelSeries GG. Trying again in {} second.", i).as_str())?;
-                std::thread::sleep(std::time::Duration::from_secs(1));
                 term.clear_line()?;
+                term.write_line(
+                    format!(
+                        "Can't connect to SteelSeries GG. Trying again in {} second.",
+                        i
+                    )
+                    .as_str(),
+                )?;
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
             connect_steelseries(term)
         }
     }
 }
-
 
 fn hide_console_window() {
     use std::ptr;
