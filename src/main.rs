@@ -8,6 +8,7 @@ use hwinfo_steelseries_oled::{Hwinfo, HwinfoSensorsReadingElement};
 use ini::Ini;
 use serde_json::json;
 use std::{io::Write, num::Wrapping};
+use tray_icon::{TrayIconBuilder, menu::{Menu, MenuItem}, Icon};
 
 struct Screen {
     width: usize,
@@ -72,6 +73,16 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), anyhow::Error> {
+    let icon = Icon::from_path("assets/hwinfo-steelseries-icon.ico", Some((64,64)))?;
+    let tray_menu = Menu::new();
+    let quit = MenuItem::new("Quit", true, None);
+    tray_menu.append(&quit)?;
+    let _tray_icon = TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu))
+        .with_tooltip("HWiNFO-SteelSeries")
+        .with_icon(icon)
+        .build()
+        .unwrap();
     let term = Term::stdout();
 
     let mut client = connect_steelseries(&term)?;
@@ -85,7 +96,7 @@ fn main() -> Result<(), anyhow::Error> {
     };
 
     std::thread::sleep(std::time::Duration::from_secs(1));
-    hide_console_window();
+    console_window(Console::HIDE);
 
     let vertical = match config
         .section(Some("Main"))
@@ -124,10 +135,14 @@ fn main() -> Result<(), anyhow::Error> {
             }
         } else {
             count = 0;
+            console_window(Console::HIDE);
         }
         drop(old);
         let mut value = json!("");
         if count >= limit {
+            console_window(Console::SHOW);
+            term.clear_line()?;
+            term.write_line("Disconnected from HWiNFO")?;
             value = json!({"line1":"Disconnected",
                            "line2":"FROM",
                            "line3":"HWiNFO"});
@@ -190,13 +205,13 @@ fn main() -> Result<(), anyhow::Error> {
             });
         } else {
             value = json!({
-                "line1": format!("CPU   {:.1}{} {:.1}{}",
+                "line1": format!("CPU {:.1}{} {:.1}{}",
                     cpu_temp_cur_value, temp_unit,
                     cpu_usage_cur_value, usage_unit),
-                "line2": format!("GPU   {:.1}{} {:.1}{}",
+                "line2": format!("GPU {:.1}{} {:.1}{}",
                     gpu_temp_cur_value, temp_unit,
                     gpu_usage_cur_value, usage_unit),
-                "line3": format!("MEM  {:.1}{} {:.1}{}",
+                "line3": format!("MEM {:.1}{} {:.1}{}",
                     mem_used, mem_unit,
                     mem_load, usage_unit,
                     // mem_free, mem_unit.to_lowercase()
@@ -265,15 +280,24 @@ fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
     }
 }
 
-fn hide_console_window() {
+enum Console {
+    SHOW,
+    HIDE
+}
+
+fn console_window(action: Console) {
     use std::ptr;
     use winapi::um::wincon::GetConsoleWindow;
-    use winapi::um::winuser::{ShowWindow, SW_HIDE};
+    use winapi::um::winuser::{ShowWindow, SW_HIDE, SW_SHOW};
     let window = unsafe { GetConsoleWindow() };
+    let sw = match action {
+        Console::HIDE => SW_HIDE,
+        Console::SHOW => SW_SHOW,
+    };
     // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow
     if window != ptr::null_mut() {
         unsafe {
-            ShowWindow(window, SW_HIDE);
+            ShowWindow(window, sw);
         }
     }
 }
