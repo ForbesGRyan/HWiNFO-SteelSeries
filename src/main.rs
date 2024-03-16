@@ -4,11 +4,11 @@ use gamesense::{
     client::GameSenseClient,
     handler::screen::{self, ScreenHandler},
 };
-use hwinfo_steelseries_oled::{Hwinfo, HwinfoSensorsReadingElement};
+use hwinfo_steelseries_oled::Hwinfo;
 use ini::Ini;
 use serde_json::json;
-use std::{io::Write, num::Wrapping};
-use tray_icon::{TrayIconBuilder, menu::{Menu, MenuItem}, Icon};
+use std::num::Wrapping;
+use tray_icon::{menu::{Menu, MenuItem, MenuEvent}, Icon, TrayIconBuilder, TrayIconEvent};
 
 struct Screen {
     width: usize,
@@ -20,33 +20,49 @@ const NOVA_PRO: Screen = Screen {
     height: 52,
 };
 // const ARCTIS_PRO: Screen = Screen{width: 128, height: 48};
+enum STYLE {
+    VERTICAL,
+    HORIZONTAL,  
+    CUSTOM,
+}
+
+impl std::fmt::Display for STYLE {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match *self {
+            STYLE::VERTICAL => write!(f, "Vertical"),
+            STYLE::HORIZONTAL => write!(f, "Horizontal"),
+            STYLE::CUSTOM => write!(f, "Custom"),
+        }
+    }
+}
 
 fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
     term.write_line("Config not found.")?;
     let mut conf = Ini::new();
     term.write_line(
-        "
+        "Summary Vertical:
     1) CPU  GPU  MEM\n
        55°  45°  8.65G\n
-       10%  0.0% 32.0G\n
-    ",
+       10%  0.0% 32.0G",
     )?;
     term.write_line(
-        "
+        "Summary Horizontal:
     2) CPU  45°  10.0%\n
        GPU  35°  0.0%\n
-       MEM  10G  33.3%\n
-    ",
+       MEM  10G  33.3%",
     )?;
+    term.write_line(
+        "3) Pick your own sensors")?;
     let input: u8 = Input::new()
-        .with_prompt("Choose style\n1 or 2")
+        .with_prompt("Choose style\n[1,2,3]")
         .interact_text()?;
-    let vertical = match input {
-        1 => true,
-        _ => false,
+    let style = match input {
+        1 => STYLE::VERTICAL,
+        3 => STYLE::CUSTOM,
+        2|_ => STYLE::HORIZONTAL,
     };
     conf.with_section(Some("Main"))
-        .set("vertical", vertical.to_string());
+        .set("style", style.to_string());
 
     let gpus = hwinfo.find("GPU Temperature")?;
     let len_gpus = gpus.len();
@@ -74,15 +90,16 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
 #[allow(unreachable_code)]
 fn main() -> Result<(), anyhow::Error> {
     let icon = Icon::from_path("assets/hwinfo-steelseries-icon.ico", Some((64,64)))?;
-    let tray_menu = Menu::new();
-    let quit = MenuItem::new("Quit", true, None);
-    tray_menu.append(&quit)?;
+    // let tray_menu = Menu::new();
+    // let quit = MenuItem::new("Quit", true, None);
+    // tray_menu.append(&quit)?;
     let _tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
+        // .with_menu(Box::new(tray_menu))
         .with_tooltip("HWiNFO-SteelSeries")
         .with_icon(icon)
         .build()
         .unwrap();
+    
     let term = Term::stdout();
 
     let mut client = connect_steelseries(&term)?;
@@ -96,17 +113,17 @@ fn main() -> Result<(), anyhow::Error> {
     };
 
     std::thread::sleep(std::time::Duration::from_secs(1));
-    console_window(Console::HIDE);
+    // console_window(Console::HIDE);
 
     let vertical = match config
         .section(Some("Main"))
         .unwrap()
-        .get("vertical")
+        .get("style")
         .unwrap()
     {
-        "true" => true,
-        "false" => false,
-        _ => panic!("invalid input"),
+        "Vertical" => true,
+        "Horizontal" | _ => false,
+        // _ => panic!("invalid input"),
     };
 
     let gpu = config.section(Some("Main")).unwrap().get("gpu").unwrap();
@@ -126,6 +143,14 @@ fn main() -> Result<(), anyhow::Error> {
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
     loop {
+
+        if let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            println!("tray event: {:?}", event);
+        }
+        // if let Ok(event) = MenuEvent::receiver().try_recv() {
+        //     println!("menu event: {:?}", event);
+        // }
+
         let limit = 5;
         let old = hwinfo.clone();
         hwinfo.pull()?;
@@ -135,9 +160,10 @@ fn main() -> Result<(), anyhow::Error> {
             }
         } else {
             count = 0;
-            console_window(Console::HIDE);
+            // console_window(Console::HIDE);
         }
         drop(old);
+        #[allow(unused_assignments)]
         let mut value = json!("");
         if count >= limit {
             console_window(Console::SHOW);
@@ -282,6 +308,7 @@ fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
 
 enum Console {
     SHOW,
+    #[allow(dead_code)]
     HIDE
 }
 

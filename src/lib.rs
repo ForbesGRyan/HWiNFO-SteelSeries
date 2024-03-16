@@ -1,5 +1,5 @@
 use anyhow;
-use std::io::{self, Error, ErrorKind};
+use std::io::{Error, ErrorKind};
 use std::os::windows::ffi::OsStrExt;
 use std::{collections::HashMap, ffi::OsStr, iter::once};
 use strum::FromRepr;

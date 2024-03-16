@@ -217,5 +217,5 @@ project.lock.json
 workspace.code-workspace
 Cargo.lock
 target/
-target/
 conf.ini
+hwinfo-steelseries-oled.exe
