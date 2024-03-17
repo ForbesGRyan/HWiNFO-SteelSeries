@@ -8,21 +8,22 @@ use hwinfo_steelseries_oled::Hwinfo;
 use ini::Ini;
 use serde_json::json;
 use std::num::Wrapping;
-use tray_icon::{menu::{Menu, MenuItem, MenuEvent}, Icon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{Icon, TrayIconBuilder};
 
-struct Screen {
+struct _Screen {
     width: usize,
     height: usize,
 }
 
-const NOVA_PRO: Screen = Screen {
+const _NOVA_PRO: _Screen = _Screen {
     width: 128,
     height: 52,
 };
 // const ARCTIS_PRO: Screen = Screen{width: 128, height: 48};
+#[derive(PartialEq)]
 enum STYLE {
     VERTICAL,
-    HORIZONTAL,  
+    HORIZONTAL,
     CUSTOM,
 }
 
@@ -51,35 +52,59 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
        GPU  35°  0.0%\n
        MEM  10G  33.3%",
     )?;
-    term.write_line(
-        "3) Pick your own sensors")?;
+    term.write_line("3) Pick your own sensors")?;
     let input: u8 = Input::new()
         .with_prompt("Choose style\n[1,2,3]")
         .interact_text()?;
     let style = match input {
         1 => STYLE::VERTICAL,
         3 => STYLE::CUSTOM,
-        2|_ => STYLE::HORIZONTAL,
+        2 | _ => STYLE::HORIZONTAL,
     };
     conf.with_section(Some("Main"))
         .set("style", style.to_string());
 
-    let gpus = hwinfo.find("GPU Temperature")?;
-    let len_gpus = gpus.len();
-    if len_gpus > 1 {
-        term.write_line("Which GPU:\n")?;
-        for (i, gpu) in gpus.iter().enumerate() {
-            let sensor = &hwinfo.master_sensor_names[gpu.dw_sensor_index as usize];
-            let setup = format!("{}: {}", i, sensor);
-            term.write_line(&setup)?;
-        }
-        let gpu_selection: usize = Input::new()
-            .with_prompt(format!("0..{}", len_gpus - 1))
-            .interact_text()?;
+    if style != STYLE::CUSTOM {
+        let gpus = hwinfo.find("GPU Temperature")?;
+        let len_gpus = gpus.len();
+        if len_gpus > 1 {
+            term.write_line("Which GPU:\n")?;
+            for (i, gpu) in gpus.iter().enumerate() {
+                let sensor = &hwinfo.master_sensor_names[gpu.dw_sensor_index as usize];
+                let setup = format!("{}: {}", i, sensor);
+                term.write_line(&setup)?;
+            }
+            let gpu_selection: usize = Input::new()
+                .with_prompt(format!("0..{}", len_gpus - 1))
+                .interact_text()?;
 
-        let gpu_selected =
-            &hwinfo.master_sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
-        conf.with_section(Some("Main")).set("gpu", gpu_selected);
+            let gpu_selected =
+                &hwinfo.master_sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
+            conf.with_section(Some("Main")).set("gpu", gpu_selected);
+        }
+    } else {
+        println!("\n3 Sensors will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
+        for k in 0..3 {
+            println!("\n{} / 3\n", k + 1);
+            for (i, sensor) in hwinfo.master_sensor_names.iter().enumerate() {
+                println!("{}) {}", i, sensor);
+            }
+
+            let category: usize = Input::new().with_prompt("Category").interact_text()?;
+            let sensor_name = &hwinfo.master_sensor_names[category];
+            let sensor = hwinfo.master_readings.sensors.get(sensor_name).unwrap();
+            println!("\n{}:", sensor_name);
+            let mut temp_readings = Vec::new();
+            for (i, reading) in sensor.reading.iter().enumerate() {
+                println!("\t{}) {}", i, reading.0);
+                let sensor_key = format!("{};{}", sensor_name, reading.0);
+                temp_readings.push(sensor_key.to_owned());
+            }
+            let sensor_selection: usize = Input::new().with_prompt("Sensor").interact_text()?;
+            let sensor_selected = format!("\"{}\"", &temp_readings[sensor_selection]);
+            let key = format!("sensor_{}", k);
+            conf.with_section(Some("Sensors")).set(key, sensor_selected);
+        }
     }
     conf.write_to_file("conf.ini")?;
 
@@ -89,17 +114,13 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), anyhow::Error> {
-    let icon = Icon::from_path("assets/hwinfo-steelseries-icon.ico", Some((64,64)))?;
-    // let tray_menu = Menu::new();
-    // let quit = MenuItem::new("Quit", true, None);
-    // tray_menu.append(&quit)?;
+    let icon = Icon::from_path("assets/hwinfo-steelseries-icon.ico", Some((64, 64)))?;
     let _tray_icon = TrayIconBuilder::new()
-        // .with_menu(Box::new(tray_menu))
         .with_tooltip("HWiNFO-SteelSeries")
         .with_icon(icon)
         .build()
         .unwrap();
-    
+
     let term = Term::stdout();
 
     let mut client = connect_steelseries(&term)?;
@@ -112,45 +133,40 @@ fn main() -> Result<(), anyhow::Error> {
         Err(_err) => create_config(&term, &hwinfo)?,
     };
 
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    // std::thread::sleep(std::time::Duration::from_secs(1));
     // console_window(Console::HIDE);
 
-    let vertical = match config
-        .section(Some("Main"))
-        .unwrap()
-        .get("style")
-        .unwrap()
-    {
+    let vertical = match config.section(Some("Main")).unwrap().get("style").unwrap() {
         "Vertical" => true,
         "Horizontal" | _ => false,
         // _ => panic!("invalid input"),
     };
+    let summary = match config.section(Some("Main")).unwrap().get("style").unwrap() {
+        "Vertical" | "Horizontal" => true,
+        _ => false,
+    };
 
-    let gpu = config.section(Some("Main")).unwrap().get("gpu").unwrap();
+    // TODO: only pull GPU for summary?
+    let mut gpu: &str = "";
+    if summary {
+        gpu = config.section(Some("Main")).unwrap().get("gpu").unwrap();
+    }
 
-    let screen = NOVA_PRO;
-    let _width = screen.width;
-    let _height = screen.height;
+    // let screen = NOVA_PRO;
+    // let _width = screen.width;
+    // let _height = screen.height;
 
-    let page1_handler = page_handler(3, "line1", "line2", "line3", false);
-    let page2_handler = page_handler(3, "line1", "line2", "line3", false);
-    let error_handler = page_handler(30, "line1", "line2", "line3", true);
+    let page1_handler = page_handler(3, "line1", "line2", "line3", false, None);
+    // let page2_handler = page_handler(3, "line1", "line2", "line3", false);
+    // let error_handler = page_handler(30, "line1", "line2", "line3", true);
 
     client.bind_event("MAIN", None, None, None, None, vec![page1_handler])?;
-    client.bind_event("ERROR", None, None, None, None, vec![error_handler])?;
-    client.bind_event("EVENT2", None, None, None, None, vec![page2_handler])?;
+    // client.bind_event("ERROR", None, None, None, None, vec![error_handler])?;
+    // client.bind_event("EVENT2", None, None, None, None, vec![page2_handler])?;
     client.start_heartbeat();
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
     loop {
-
-        if let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            println!("tray event: {:?}", event);
-        }
-        // if let Ok(event) = MenuEvent::receiver().try_recv() {
-        //     println!("menu event: {:?}", event);
-        // }
-
         let limit = 5;
         let old = hwinfo.clone();
         hwinfo.pull()?;
@@ -178,83 +194,108 @@ fn main() -> Result<(), anyhow::Error> {
             continue;
         }
 
-        let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
-        let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
-        let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
-        // let sensor_gpu_temp = hwinfo.find("GPU Temperature")?[1];
+        if summary {
+            let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
+            let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
+            let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
+            let sensor_gpu_temp = hwinfo.get(gpu, "GPU Temperature").unwrap();
+            let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
+            let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
+            let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
+            let cpu_temp_cur_value = sensor_cpu_temp.value;
+            let cpu_usage_cur_value = sensor_cpu_usage.value;
+            let temp_unit = "°"; //String::from_utf8(sensor_cpu_temp.utf_unit.to_vec())?;
+            let usage_unit = "%"; //String::from_utf8(sensor_cpu_usage.utf_unit.to_vec())?;
+            let gpu_temp_cur_value = sensor_gpu_temp.value;
+            let gpu_usage_cur_value = sensor_gpu_usage.value;
+            let mem_unit = "G";
+            let mem_used = sensor_mem_used.value / 1024.0;
+            let mem_free = sensor_mem_free.value / 1024.0;
+            let mem_load = sensor_mem_load.value;
+            let line1_spaces = "  ";
+            let line2_spaces = "  ";
 
-        // if sensor_gpu_temp.len() > 1 {
-        //    for gpu in &sensor_gpu_temp {
-        //         let sensor_id = gpu.dw_sensor_index;
-        //         println!("{}", sensor_id);
-        //    }
-        // }
-        let sensor_gpu_temp = hwinfo
-            .get(gpu, "GPU Temperature")
-            .unwrap();
-        let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
-        let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
-        let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
-        // hwinfo.get("System: ASUS ", "Physical Memory Used").unwrap();
-
-        let cpu_temp_cur_value = sensor_cpu_temp.value;
-        let cpu_usage_cur_value = sensor_cpu_usage.value;
-        let temp_unit = "°"; //String::from_utf8(sensor_cpu_temp.utf_unit.to_vec())?;
-        let usage_unit = "%"; //String::from_utf8(sensor_cpu_usage.utf_unit.to_vec())?;
-
-        let gpu_temp_cur_value = sensor_gpu_temp.value;
-        let gpu_usage_cur_value = sensor_gpu_usage.value;
-
-        let mem_unit = "G";
-        let mem_used = sensor_mem_used.value / 1024.0;
-        let mem_free = sensor_mem_free.value / 1024.0;
-        let mem_load = sensor_mem_load.value;
-
-        let line1_spaces = "  ";
-        let line2_spaces = "  ";
-
-        if vertical {
-            value = json!({
-                "line1": "CPU    GPU    MEM",
-                "line2": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
-                    cpu_temp_cur_value, temp_unit,
-                    line1_spaces,
-                    gpu_temp_cur_value, temp_unit,
-                    line1_spaces,
-                    mem_used, mem_unit),
-                "line3": format!("{:.1}{}{}{:02.1}{}{}{:.1}{}",
-                    cpu_usage_cur_value, usage_unit,
-                    line2_spaces,
-                    gpu_usage_cur_value, usage_unit,
-                    line2_spaces,
-                    mem_free, mem_unit),
-            });
+            if vertical {
+                value = json!({
+                    "line1": "CPU    GPU    MEM",
+                    "line2": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
+                        cpu_temp_cur_value, temp_unit,
+                        line1_spaces,
+                        gpu_temp_cur_value, temp_unit,
+                        line1_spaces,
+                        mem_used, mem_unit),
+                    "line3": format!("{:.1}{}{}{:02.1}{}{}{:.1}{}",
+                        cpu_usage_cur_value, usage_unit,
+                        line2_spaces,
+                        gpu_usage_cur_value, usage_unit,
+                        line2_spaces,
+                        mem_free, mem_unit),
+                });
+            } else {
+                value = json!({
+                    "line1": format!("CPU {:.1}{} {:.1}{}",
+                        cpu_temp_cur_value, temp_unit,
+                        cpu_usage_cur_value, usage_unit),
+                    "line2": format!("GPU {:.1}{} {:.1}{}",
+                        gpu_temp_cur_value, temp_unit,
+                        gpu_usage_cur_value, usage_unit),
+                    "line3": format!("MEM {:.1}{} {:.1}{}",
+                        mem_used, mem_unit,
+                        mem_load, usage_unit,
+                        // mem_free, mem_unit.to_lowercase()
+                    ),
+                });
+            }
         } else {
+            let mut sensor_0 = config
+                .section(Some("Sensors"))
+                .unwrap()
+                .get("sensor_0")
+                .unwrap()
+                .split(";")
+                .collect::<Vec<&str>>();
+            let mut sensor_1 = config
+                .section(Some("Sensors"))
+                .unwrap()
+                .get("sensor_1")
+                .unwrap()
+                .split(";")
+                .collect::<Vec<&str>>();
+            let mut sensor_2 = config
+                .section(Some("Sensors"))
+                .unwrap()
+                .get("sensor_2")
+                .unwrap()
+                .split(";")
+                .collect::<Vec<&str>>();
+            let reading_0 = hwinfo.get(sensor_0[0], sensor_0[1]).unwrap();
+            let reading_1 = hwinfo.get(sensor_1[0], sensor_1[1]).unwrap();
+            let reading_2 = hwinfo.get(sensor_2[0], sensor_2[1]).unwrap();
+            let value_0 = reading_0.value;
+            let value_1 = reading_1.value;
+            let value_2 = reading_2.value;
+            if sensor_0[1] == "Framerate" {
+                sensor_0[1] = "FPS";
+            } else if sensor_0[1] == "Frame Time" {
+                sensor_0[1] = "MS";
+            }
+            if sensor_1[1] == "Framerate" {
+                sensor_1[1] = "FPS";
+            } else if sensor_1[1] == "Frame Time" {
+                sensor_1[1] = "MS";
+            }
+            if sensor_2[1] == "Framerate" {
+                sensor_2[1] = "FPS";
+            } else if sensor_2[1] == "Frame Time" {
+                sensor_2[1] = "MS";
+            }
             value = json!({
-                "line1": format!("CPU {:.1}{} {:.1}{}",
-                    cpu_temp_cur_value, temp_unit,
-                    cpu_usage_cur_value, usage_unit),
-                "line2": format!("GPU {:.1}{} {:.1}{}",
-                    gpu_temp_cur_value, temp_unit,
-                    gpu_usage_cur_value, usage_unit),
-                "line3": format!("MEM {:.1}{} {:.1}{}",
-                    mem_used, mem_unit,
-                    mem_load, usage_unit,
-                    // mem_free, mem_unit.to_lowercase()
-                ),
+                "line1": format!("{} {:.1}",sensor_0[1], value_0),
+                "line2": format!("{} {:.1}",sensor_1[1], value_1),
+                "line3": format!("{} {:.1}",sensor_2[1], value_2),
             });
         }
-        // if i.0 % 3 == 0 {
-        //     client.trigger_event_frame("EVENT2", i.0, json!({
-        //         "line1":"Hello!",
-        //         "line2":"Hello!",
-        //         "line3":"Hello!",
-        //     }))?;
-        // }
-        // else {
         client.trigger_event_frame("MAIN", i.0, value)?;
-        // }
-
         i += 1;
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
@@ -309,7 +350,7 @@ fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
 enum Console {
     SHOW,
     #[allow(dead_code)]
-    HIDE
+    HIDE,
 }
 
 fn console_window(action: Console) {
@@ -335,10 +376,14 @@ fn page_handler(
     line2_label: &str,
     line3_label: &str,
     bold: bool,
+    zone: Option<&str>,
 ) -> ScreenHandler {
     screen::ScreenHandler::new(
         "screened",
-        "one",
+        match zone {
+            Some(zone) => zone,
+            None => "one",
+        },
         screen::ScreenDataDefinition::StaticScreenDataDefinition(
             screen::StaticScreenDataDefinition(vec![screen::ScreenFrameData::MultiLineFrameData(
                 screen::MultiLineFrameData {
