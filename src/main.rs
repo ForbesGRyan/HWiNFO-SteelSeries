@@ -146,7 +146,6 @@ fn main() -> Result<(), anyhow::Error> {
         _ => false,
     };
 
-    // TODO: only pull GPU for summary?
     let mut gpu: &str = "";
     if summary {
         gpu = config.section(Some("Main")).unwrap().get("gpu").unwrap();
@@ -247,52 +246,49 @@ fn main() -> Result<(), anyhow::Error> {
                 });
             }
         } else {
-            let mut sensor_0 = config
+            let sensor_0 = config
                 .section(Some("Sensors"))
                 .unwrap()
                 .get("sensor_0")
                 .unwrap()
                 .split(";")
                 .collect::<Vec<&str>>();
-            let mut sensor_1 = config
+            let label_0 = match config.section(Some("Sensors")).unwrap().get("label_0"){
+                Some(label) => label,
+                None => sensor_0[1],
+            };
+            let sensor_1 = config
                 .section(Some("Sensors"))
                 .unwrap()
                 .get("sensor_1")
                 .unwrap()
                 .split(";")
                 .collect::<Vec<&str>>();
-            let mut sensor_2 = config
+            let label_1 = match config.section(Some("Sensors")).unwrap().get("label_1"){
+                Some(label) => label,
+                None => sensor_1[1],
+            };
+            let sensor_2 = config
                 .section(Some("Sensors"))
                 .unwrap()
                 .get("sensor_2")
                 .unwrap()
                 .split(";")
                 .collect::<Vec<&str>>();
+            let label_2 = match config.section(Some("Sensors")).unwrap().get("label_2"){
+                Some(label) => label,
+                None => sensor_2[1],
+            };
             let reading_0 = hwinfo.get(sensor_0[0], sensor_0[1]).unwrap();
             let reading_1 = hwinfo.get(sensor_1[0], sensor_1[1]).unwrap();
             let reading_2 = hwinfo.get(sensor_2[0], sensor_2[1]).unwrap();
             let value_0 = reading_0.value;
             let value_1 = reading_1.value;
             let value_2 = reading_2.value;
-            if sensor_0[1] == "Framerate" {
-                sensor_0[1] = "FPS";
-            } else if sensor_0[1] == "Frame Time" {
-                sensor_0[1] = "MS";
-            }
-            if sensor_1[1] == "Framerate" {
-                sensor_1[1] = "FPS";
-            } else if sensor_1[1] == "Frame Time" {
-                sensor_1[1] = "MS";
-            }
-            if sensor_2[1] == "Framerate" {
-                sensor_2[1] = "FPS";
-            } else if sensor_2[1] == "Frame Time" {
-                sensor_2[1] = "MS";
-            }
             value = json!({
-                "line1": format!("{} {:.1}",sensor_0[1], value_0),
-                "line2": format!("{} {:.1}",sensor_1[1], value_1),
-                "line3": format!("{} {:.1}",sensor_2[1], value_2),
+                "line1": format!("{} {:.1}",label_0, value_0),
+                "line2": format!("{} {:.1}",label_1, value_1),
+                "line3": format!("{} {:.1}",label_2, value_2),
             });
         }
         client.trigger_event_frame("MAIN", i.0, value)?;
