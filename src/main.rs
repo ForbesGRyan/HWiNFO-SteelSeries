@@ -4,7 +4,7 @@ use gamesense::{
     client::GameSenseClient,
     handler::screen::{self, ScreenHandler},
 };
-use hwinfo_steelseries_oled::Hwinfo;
+use hwinfo_steelseries_oled::{Hwinfo, HwinfoSensorsReadingElement};
 use ini::Ini;
 use serde_json::json;
 use std::num::Wrapping;
@@ -148,7 +148,10 @@ fn main() -> Result<(), anyhow::Error> {
 
     let mut gpu: &str = "";
     if summary {
-        gpu = config.section(Some("Main")).unwrap().get("gpu").unwrap();
+        gpu = match config.section(Some("Main")).unwrap().get("gpu") {
+            Some(gpu) => gpu,
+            None => "",
+        };
     }
 
     // let screen = NOVA_PRO;
@@ -196,8 +199,15 @@ fn main() -> Result<(), anyhow::Error> {
         if summary {
             let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
             let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
+
             let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
-            let sensor_gpu_temp = hwinfo.get(gpu, "GPU Temperature").unwrap();
+            let sensor_gpu_temp: &HwinfoSensorsReadingElement;
+            if gpu == "" {
+                sensor_gpu_temp = hwinfo.find_first("GPU Temperature")?;
+            } else {
+                sensor_gpu_temp = hwinfo.get(gpu, "GPU Temperature").unwrap();
+            }
+
             let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
             let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
             let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
@@ -211,12 +221,12 @@ fn main() -> Result<(), anyhow::Error> {
             let mem_used = sensor_mem_used.value / 1024.0;
             let mem_free = sensor_mem_free.value / 1024.0;
             let mem_load = sensor_mem_load.value;
-            let line1_spaces = "  ";
-            let line2_spaces = "  ";
+            let line1_spaces = " ";
+            let line2_spaces = " ";
 
             if vertical {
                 value = json!({
-                    "line1": "CPU    GPU    MEM",
+                    "line1": "CPU   GPU   MEM",
                     "line2": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
                         cpu_temp_cur_value, temp_unit,
                         line1_spaces,
@@ -257,6 +267,10 @@ fn main() -> Result<(), anyhow::Error> {
                 Some(label) => label,
                 None => sensor_0[1],
             };
+            let unit_0 = match config.section(Some("Sensors")).unwrap().get("unit_0"){
+                Some(unit) => unit,
+                None => "",
+            };
             let sensor_1 = config
                 .section(Some("Sensors"))
                 .unwrap()
@@ -267,6 +281,10 @@ fn main() -> Result<(), anyhow::Error> {
             let label_1 = match config.section(Some("Sensors")).unwrap().get("label_1"){
                 Some(label) => label,
                 None => sensor_1[1],
+            };
+            let unit_1 = match config.section(Some("Sensors")).unwrap().get("unit_1"){
+                Some(unit) => unit,
+                None => "",
             };
             let sensor_2 = config
                 .section(Some("Sensors"))
@@ -279,17 +297,33 @@ fn main() -> Result<(), anyhow::Error> {
                 Some(label) => label,
                 None => sensor_2[1],
             };
+            let unit_2 = match config.section(Some("Sensors")).unwrap().get("unit_2"){
+                Some(unit) => unit,
+                None => "",
+            };
             let reading_0 = hwinfo.get(sensor_0[0], sensor_0[1]).unwrap();
             let reading_1 = hwinfo.get(sensor_1[0], sensor_1[1]).unwrap();
             let reading_2 = hwinfo.get(sensor_2[0], sensor_2[1]).unwrap();
             let value_0 = reading_0.value;
             let value_1 = reading_1.value;
             let value_2 = reading_2.value;
-            value = json!({
-                "line1": format!("{} {:.1}",label_0, value_0),
-                "line2": format!("{} {:.1}",label_1, value_1),
-                "line3": format!("{} {:.1}",label_2, value_2),
-            });
+            let decimal = match config.section(Some("Main")).unwrap().get("decimal"){
+                Some(decimal) => decimal,
+                None => "false",
+            };
+            if decimal == "true" {
+                value = json!({
+                    "line1": format!("{} {:.1}{}",label_0, value_0, unit_0),
+                    "line2": format!("{} {:.1}{}",label_1, value_1, unit_1),
+                    "line3": format!("{} {:.1}{}",label_2, value_2, unit_2),
+                });
+            } else {
+                value = json!({
+                    "line1": format!("{} {:.0}{}",label_0, value_0, unit_0),
+                    "line2": format!("{} {:.0}{}",label_1, value_1, unit_1),
+                    "line3": format!("{} {:.0}{}",label_2, value_2, unit_2),
+                });
+            }
         }
         client.trigger_event_frame("MAIN", i.0, value)?;
         i += 1;
