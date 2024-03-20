@@ -154,6 +154,10 @@ fn main() -> Result<(), anyhow::Error> {
         };
     }
 
+    let decimal = match config.section(Some("Main")).unwrap().get("decimal"){
+        Some(decimal) => decimal,
+        None => "false",
+    };
     // let screen = NOVA_PRO;
     // let _width = screen.width;
     // let _height = screen.height;
@@ -225,35 +229,70 @@ fn main() -> Result<(), anyhow::Error> {
             let line2_spaces = " ";
 
             if vertical {
-                value = json!({
-                    "line1": "CPU   GPU   MEM",
-                    "line2": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
-                        cpu_temp_cur_value, temp_unit,
-                        line1_spaces,
-                        gpu_temp_cur_value, temp_unit,
-                        line1_spaces,
-                        mem_used, mem_unit),
-                    "line3": format!("{:.1}{}{}{:02.1}{}{}{:.1}{}",
-                        cpu_usage_cur_value, usage_unit,
-                        line2_spaces,
-                        gpu_usage_cur_value, usage_unit,
-                        line2_spaces,
-                        mem_free, mem_unit),
-                });
+                if decimal == "true" {
+                    value = json!({
+                        "line1": "CPU   GPU   MEM",
+                        "line2": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
+                            cpu_temp_cur_value, temp_unit,
+                            line1_spaces,
+                            gpu_temp_cur_value, temp_unit,
+                            line1_spaces,
+                            mem_used, mem_unit),
+                        "line3": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
+                            cpu_usage_cur_value, usage_unit,
+                            line2_spaces,
+                            gpu_usage_cur_value, usage_unit,
+                            line2_spaces,
+                            mem_free, mem_unit),
+                    });
+                } else {
+                    value = json!({
+                        "line1": "CPU   GPU   MEM",
+                        "line2": format!("{:.0}{}{}{:.0}{}{}{:.0}{}",
+                            cpu_temp_cur_value, temp_unit,
+                            "   ",
+                            gpu_temp_cur_value, temp_unit,
+                            "   ",
+                            mem_used, mem_unit),
+                        "line3": format!("{:.0}{}{}{:.0}{}{}{:.0}{}",
+                            cpu_usage_cur_value, usage_unit,
+                            "    ",
+                            gpu_usage_cur_value, usage_unit,
+                            "    ",
+                            mem_free, mem_unit),
+                    });
+                }
             } else {
-                value = json!({
-                    "line1": format!("CPU {:.1}{} {:.1}{}",
-                        cpu_temp_cur_value, temp_unit,
-                        cpu_usage_cur_value, usage_unit),
-                    "line2": format!("GPU {:.1}{} {:.1}{}",
-                        gpu_temp_cur_value, temp_unit,
-                        gpu_usage_cur_value, usage_unit),
-                    "line3": format!("MEM {:.1}{} {:.1}{}",
-                        mem_used, mem_unit,
-                        mem_load, usage_unit,
-                        // mem_free, mem_unit.to_lowercase()
-                    ),
-                });
+                if decimal == "true" {
+                    value = json!({
+                        "line1": format!("CPU {:.1}{} {:.1}{}",
+                            cpu_temp_cur_value, temp_unit,
+                            cpu_usage_cur_value, usage_unit),
+                        "line2": format!("GPU {:.1}{} {:.1}{}",
+                            gpu_temp_cur_value, temp_unit,
+                            gpu_usage_cur_value, usage_unit),
+                        "line3": format!("MEM {:.1}{} {:.1}{}",
+                            mem_used, mem_unit,
+                            mem_load, usage_unit,
+                            // mem_free, mem_unit.to_lowercase()
+                        ),
+                    });
+                } else {
+                    value = json!({
+                        "line1": format!("CPU {:.0}{} {:.0}{}",
+                            cpu_temp_cur_value, temp_unit,
+                            cpu_usage_cur_value, usage_unit),
+                        "line2": format!("GPU {:.0}{} {:.0}{}",
+                            gpu_temp_cur_value, temp_unit,
+                            gpu_usage_cur_value, usage_unit),
+                        "line3": format!("MEM {:.0}{} {:.0}{}",
+                            mem_used, mem_unit,
+                            mem_load, usage_unit,
+                            // mem_free, mem_unit.to_lowercase()
+                        ),
+                    });
+
+                }
             }
         } else {
             let sensor_0 = config
@@ -307,10 +346,6 @@ fn main() -> Result<(), anyhow::Error> {
             let value_0 = reading_0.value;
             let value_1 = reading_1.value;
             let value_2 = reading_2.value;
-            let decimal = match config.section(Some("Main")).unwrap().get("decimal"){
-                Some(decimal) => decimal,
-                None => "false",
-            };
             if decimal == "true" {
                 value = json!({
                     "line1": format!("{} {:.1}{}",label_0, value_0, unit_0),
