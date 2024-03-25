@@ -6,20 +6,10 @@ use gamesense::{
 };
 use hwinfo_steelseries_oled::{Hwinfo, HwinfoSensorsReadingElement};
 use ini::Ini;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::num::Wrapping;
 use tray_icon::{Icon, TrayIconBuilder};
 
-struct _Screen {
-    width: usize,
-    height: usize,
-}
-
-const _NOVA_PRO: _Screen = _Screen {
-    width: 128,
-    height: 52,
-};
-// const ARCTIS_PRO: Screen = Screen{width: 128, height: 48};
 #[derive(PartialEq)]
 enum STYLE {
     VERTICAL,
@@ -295,70 +285,32 @@ fn main() -> Result<(), anyhow::Error> {
                 }
             }
         } else {
-            let sensor_0 = config
-                .section(Some("Sensors"))
-                .unwrap()
-                .get("sensor_0")
-                .unwrap()
-                .split(";")
-                .collect::<Vec<&str>>();
-            let label_0 = match config.section(Some("Sensors")).unwrap().get("label_0"){
-                Some(label) => label,
-                None => sensor_0[1],
-            };
-            let unit_0 = match config.section(Some("Sensors")).unwrap().get("unit_0"){
-                Some(unit) => unit,
-                None => "",
-            };
-            let sensor_1 = config
-                .section(Some("Sensors"))
-                .unwrap()
-                .get("sensor_1")
-                .unwrap()
-                .split(";")
-                .collect::<Vec<&str>>();
-            let label_1 = match config.section(Some("Sensors")).unwrap().get("label_1"){
-                Some(label) => label,
-                None => sensor_1[1],
-            };
-            let unit_1 = match config.section(Some("Sensors")).unwrap().get("unit_1"){
-                Some(unit) => unit,
-                None => "",
-            };
-            let sensor_2 = config
-                .section(Some("Sensors"))
-                .unwrap()
-                .get("sensor_2")
-                .unwrap()
-                .split(";")
-                .collect::<Vec<&str>>();
-            let label_2 = match config.section(Some("Sensors")).unwrap().get("label_2"){
-                Some(label) => label,
-                None => sensor_2[1],
-            };
-            let unit_2 = match config.section(Some("Sensors")).unwrap().get("unit_2"){
-                Some(unit) => unit,
-                None => "",
-            };
-            let reading_0 = hwinfo.get(sensor_0[0], sensor_0[1]).unwrap();
-            let reading_1 = hwinfo.get(sensor_1[0], sensor_1[1]).unwrap();
-            let reading_2 = hwinfo.get(sensor_2[0], sensor_2[1]).unwrap();
-            let value_0 = reading_0.value;
-            let value_1 = reading_1.value;
-            let value_2 = reading_2.value;
-            if decimal == "true" {
-                value = json!({
-                    "line1": format!("{} {:.1}{}",label_0, value_0, unit_0),
-                    "line2": format!("{} {:.1}{}",label_1, value_1, unit_1),
-                    "line3": format!("{} {:.1}{}",label_2, value_2, unit_2),
-                });
-            } else {
-                value = json!({
-                    "line1": format!("{} {:.0}{}",label_0, value_0, unit_0),
-                    "line2": format!("{} {:.0}{}",label_1, value_1, unit_1),
-                    "line3": format!("{} {:.0}{}",label_2, value_2, unit_2),
-                });
+            let mut labels: [&str; 3] = ["", "", ""];
+            let mut units: [&str; 3] = ["", "", ""];
+            let mut values: [f64; 3] = [0.0, 0.0, 0.0];
+            for i in 0..3 {
+                let sensor = config
+                    .section(Some("Sensors"))
+                    .unwrap()
+                    .get(format!("sensor_{}", i))
+                    .unwrap()
+                    .split(";")
+                    .collect::<Vec<&str>>();
+                let label = match config.section(Some("Sensors")).unwrap().get(format!("label_{}", i)){
+                    Some(label) => label,
+                    None => sensor[1],
+                };
+                let unit = match config.section(Some("Sensors")).unwrap().get(format!("unit_{}", i)){
+                    Some(unit) => unit,
+                    None => "",
+                };
+                let value = hwinfo.get(sensor[0], sensor[1]).unwrap().value;
+                labels[i] = label;
+                units[i] = unit;
+                values[i] = value;
             }
+            value = format_custom_value(decimal, labels, values, units);
+
         }
         client.trigger_event_frame("MAIN", i.0, value)?;
         i += 1;
@@ -367,6 +319,20 @@ fn main() -> Result<(), anyhow::Error> {
     client.stop_heartbeat()?;
 
     Ok(())
+}
+
+fn format_custom_value(decimal: &str, labels: [&str;3], values: [f64;3], units: [&str;3]) -> Value {
+    let mut value = json!({});
+    if decimal == "true" {
+        for i in 0..3 {
+            value[format!("line{}", i + 1)] = json!(format!("{} {:.1}{}",labels[i], values[i], units[i]));
+        }
+    } else {
+        for i in 0..3 {
+            value[format!("line{}", i + 1)] = json!(format!("{} {:.0}{}",labels[i], values[i], units[i]));
+        }
+    }
+    value
 }
 
 fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
