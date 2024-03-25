@@ -27,80 +27,8 @@ impl std::fmt::Display for STYLE {
     }
 }
 
-fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
-    term.write_line("Config not found.")?;
-    let mut conf = Ini::new();
-    term.write_line(
-        "Summary Vertical:
-    1) CPU  GPU  MEM\n
-       55°  45°  8.65G\n
-       10%  0.0% 32.0G",
-    )?;
-    term.write_line(
-        "Summary Horizontal:
-    2) CPU  45°  10.0%\n
-       GPU  35°  0.0%\n
-       MEM  10G  33.3%",
-    )?;
-    term.write_line("3) Pick your own sensors")?;
-    let input: u8 = Input::new()
-        .with_prompt("Choose style\n[1,2,3]")
-        .interact_text()?;
-    let style = match input {
-        1 => STYLE::VERTICAL,
-        3 => STYLE::CUSTOM,
-        2 | _ => STYLE::HORIZONTAL,
-    };
-    conf.with_section(Some("Main"))
-        .set("style", style.to_string());
-
-    if style != STYLE::CUSTOM {
-        let gpus = hwinfo.find("GPU Temperature")?;
-        let len_gpus = gpus.len();
-        if len_gpus > 1 {
-            term.write_line("Which GPU:\n")?;
-            for (i, gpu) in gpus.iter().enumerate() {
-                let sensor = &hwinfo.master_sensor_names[gpu.dw_sensor_index as usize];
-                let setup = format!("{}: {}", i, sensor);
-                term.write_line(&setup)?;
-            }
-            let gpu_selection: usize = Input::new()
-                .with_prompt(format!("0..{}", len_gpus - 1))
-                .interact_text()?;
-
-            let gpu_selected =
-                &hwinfo.master_sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
-            conf.with_section(Some("Main")).set("gpu", gpu_selected);
-        }
-    } else {
-        println!("\n3 Sensors will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
-        for k in 0..3 {
-            println!("\n{} / 3\n", k + 1);
-            for (i, sensor) in hwinfo.master_sensor_names.iter().enumerate() {
-                println!("{}) {}", i, sensor);
-            }
-
-            let category: usize = Input::new().with_prompt("Category").interact_text()?;
-            let sensor_name = &hwinfo.master_sensor_names[category];
-            let sensor = hwinfo.master_readings.sensors.get(sensor_name).unwrap();
-            println!("\n{}:", sensor_name);
-            let mut temp_readings = Vec::new();
-            for (i, reading) in sensor.reading.iter().enumerate() {
-                println!("\t{}) {}", i, reading.0);
-                let sensor_key = format!("{};{}", sensor_name, reading.0);
-                temp_readings.push(sensor_key.to_owned());
-            }
-            let sensor_selection: usize = Input::new().with_prompt("Sensor").interact_text()?;
-            let sensor_selected = format!("\"{}\"", &temp_readings[sensor_selection]);
-            let key = format!("sensor_{}", k);
-            conf.with_section(Some("Sensors")).set(key, sensor_selected);
-        }
-    }
-    conf.write_to_file("conf.ini")?;
-
-    term.write_line("config created.")?;
-    Ok(conf)
-}
+const CUSTOM_SENSORS: usize = 6;
+const DISPLAY_LINES: usize = 3;
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), anyhow::Error> {
@@ -123,42 +51,59 @@ fn main() -> Result<(), anyhow::Error> {
         Err(_err) => create_config(&term, &hwinfo)?,
     };
 
+    let config_main = match config.section(Some("Main")) {
+        Some(main) => main,
+        None => return Err(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Config Not found",
+        ))),
+    };
+    // TODO: will error when using summary without a section for sensors
+    let config_sensors = match config.section(Some("Sensors")) {
+        Some(sensors) => sensors,
+        None => return Err(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Config Not found",
+        ))),
+    };
+
     // std::thread::sleep(std::time::Duration::from_secs(1));
     // console_window(Console::HIDE);
 
-    let vertical = match config.section(Some("Main")).unwrap().get("style").unwrap() {
-        "Vertical" => true,
-        "Horizontal" | _ => false,
-        // _ => panic!("invalid input"),
+    let style = match config_main.get("style"){
+        Some(style) => style,
+        None => return Err(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Style not found",
+        ))),
     };
-    let summary = match config.section(Some("Main")).unwrap().get("style").unwrap() {
+    let vertical = match style {
+        "Vertical" => Some(true),
+        "Horizontal" => Some(false),
+        _ => None
+    };
+    let summary = match style {
         "Vertical" | "Horizontal" => true,
         _ => false,
     };
 
+
     let mut gpu: &str = "";
     if summary {
-        gpu = match config.section(Some("Main")).unwrap().get("gpu") {
+        gpu = match config_main.get("gpu") {
             Some(gpu) => gpu,
             None => "",
         };
     }
 
-    let decimal = match config.section(Some("Main")).unwrap().get("decimal"){
-        Some(decimal) => decimal,
-        None => "false",
+    let decimal = match config_main.get("decimal"){
+        Some(decimal) => decimal.parse::<bool>()?,
+        None => false,
     };
-    // let screen = NOVA_PRO;
-    // let _width = screen.width;
-    // let _height = screen.height;
 
     let page1_handler = page_handler(3, "line1", "line2", "line3", false, None);
-    // let page2_handler = page_handler(3, "line1", "line2", "line3", false);
-    // let error_handler = page_handler(30, "line1", "line2", "line3", true);
 
     client.bind_event("MAIN", None, None, None, None, vec![page1_handler])?;
-    // client.bind_event("ERROR", None, None, None, None, vec![error_handler])?;
-    // client.bind_event("EVENT2", None, None, None, None, vec![page2_handler])?;
     client.start_heartbeat();
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
@@ -218,8 +163,8 @@ fn main() -> Result<(), anyhow::Error> {
             let line1_spaces = " ";
             let line2_spaces = " ";
 
-            if vertical {
-                if decimal == "true" {
+            if vertical.unwrap_or(false) {
+                if decimal {
                     value = json!({
                         "line1": "CPU   GPU   MEM",
                         "line2": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
@@ -252,8 +197,8 @@ fn main() -> Result<(), anyhow::Error> {
                             mem_free, mem_unit),
                     });
                 }
-            } else {
-                if decimal == "true" {
+            } else { // Horizontal
+                if decimal {
                     value = json!({
                         "line1": format!("CPU {:.1}{} {:.1}{}",
                             cpu_temp_cur_value, temp_unit,
@@ -284,32 +229,49 @@ fn main() -> Result<(), anyhow::Error> {
 
                 }
             }
-        } else {
-            let mut labels: [&str; 3] = ["", "", ""];
-            let mut units: [&str; 3] = ["", "", ""];
-            let mut values: [f64; 3] = [0.0, 0.0, 0.0];
-            for i in 0..3 {
-                let sensor = config
+        } else { // Custom
+            // let mut labels: Vec<&str> = Vec::with_capacity(CUSTOM_SENSORS);
+            // let mut units: Vec<&str> = Vec::with_capacity(CUSTOM_SENSORS);
+            // let mut values: Vec<f64> = Vec::with_capacity(CUSTOM_SENSORS);
+            let mut labels = vec![""; CUSTOM_SENSORS];
+            let mut units = vec![""; CUSTOM_SENSORS];
+            let mut values = vec![String::new(); CUSTOM_SENSORS];
+
+            let two_sensors_per_line = match config_main.get("two_sensors_per_line"){
+                Some(tspl) => tspl.parse::<bool>()?,
+                None => false,
+            };
+            for i in 0..CUSTOM_SENSORS {
+                let sensor = match config
                     .section(Some("Sensors"))
                     .unwrap()
                     .get(format!("sensor_{}", i))
-                    .unwrap()
+                    {
+                        Some(sensor) => sensor,
+                        None => continue,
+                    }
                     .split(";")
                     .collect::<Vec<&str>>();
-                let label = match config.section(Some("Sensors")).unwrap().get(format!("label_{}", i)){
+                let label = match config_sensors.get(format!("label_{}", i)){
                     Some(label) => label,
                     None => sensor[1],
                 };
-                let unit = match config.section(Some("Sensors")).unwrap().get(format!("unit_{}", i)){
+                let unit = match config_sensors.get(format!("unit_{}", i)){
                     Some(unit) => unit,
                     None => "",
                 };
                 let value = hwinfo.get(sensor[0], sensor[1]).unwrap().value;
+                let value_string: String;
+                if decimal {
+                    value_string = format!("{:.1}", &value);
+                } else {
+                    value_string = format!("{:.0}", &value);
+                }
                 labels[i] = label;
                 units[i] = unit;
-                values[i] = value;
+                values[i] = value_string;
             }
-            value = format_custom_value(decimal, labels, values, units);
+            value = format_custom_value(decimal, two_sensors_per_line, labels, values, units);
 
         }
         client.trigger_event_frame("MAIN", i.0, value)?;
@@ -321,16 +283,20 @@ fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn format_custom_value(decimal: &str, labels: [&str;3], values: [f64;3], units: [&str;3]) -> Value {
+fn format_custom_value(decimal: bool, two_sensors_per_line: bool, labels: Vec<&str>, values: Vec<String>, units: Vec<&str>) -> Value {
     let mut value = json!({});
-    if decimal == "true" {
-        for i in 0..3 {
-            value[format!("line{}", i + 1)] = json!(format!("{} {:.1}{}",labels[i], values[i], units[i]));
+    if !two_sensors_per_line {
+        for i in 0..DISPLAY_LINES {
+            if decimal {
+                value[format!("line{}", i + 1)] = json!(format!("{} {:.1}{}",labels[i], values[i], units[i]));
+            } else {
+                value[format!("line{}", i + 1)] = json!(format!("{} {:.0}{}",labels[i], values[i], units[i]));
+            }
         }
     } else {
-        for i in 0..3 {
-            value[format!("line{}", i + 1)] = json!(format!("{} {:.0}{}",labels[i], values[i], units[i]));
-        }
+        value["line1"] = json!(format!("{} {}{} {} {}{}",labels[0], values[0], units[0], labels[1], values[1], units[1]));
+        value["line2"] = json!(format!("{} {}{} {} {}{}",labels[2], values[2], units[2], labels[3], values[3], units[3]));
+        value["line3"] = json!(format!("{} {}{} {} {}{}",labels[4], values[4], units[4], labels[5], values[5], units[5]));
     }
     value
 }
@@ -474,4 +440,79 @@ fn page_handler(
             )]),
         ),
     )
+}
+
+fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
+    term.write_line("Config not found.")?;
+    let mut conf = Ini::new();
+    term.write_line(
+        "Summary Vertical:
+    1) CPU  GPU  MEM\n
+       55°  45°  8.65G\n
+       10%  0.0% 32.0G",
+    )?;
+    term.write_line(
+        "Summary Horizontal:
+    2) CPU  45°  10.0%\n
+       GPU  35°  0.0%\n
+       MEM  10G  33.3%",
+    )?;
+    term.write_line("3) Pick your own sensors")?;
+    let input: u8 = Input::new()
+        .with_prompt("Choose style\n[1,2,3]")
+        .interact_text()?;
+    let style = match input {
+        1 => STYLE::VERTICAL,
+        3 => STYLE::CUSTOM,
+        2 | _ => STYLE::HORIZONTAL,
+    };
+    conf.with_section(Some("Main"))
+        .set("style", style.to_string());
+
+    if style != STYLE::CUSTOM {
+        let gpus = hwinfo.find("GPU Temperature")?;
+        let len_gpus = gpus.len();
+        if len_gpus > 1 {
+            term.write_line("Which GPU:\n")?;
+            for (i, gpu) in gpus.iter().enumerate() {
+                let sensor = &hwinfo.master_sensor_names[gpu.dw_sensor_index as usize];
+                let setup = format!("{}: {}", i, sensor);
+                term.write_line(&setup)?;
+            }
+            let gpu_selection: usize = Input::new()
+                .with_prompt(format!("0..{}", len_gpus - 1))
+                .interact_text()?;
+
+            let gpu_selected =
+                &hwinfo.master_sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
+            conf.with_section(Some("Main")).set("gpu", gpu_selected);
+        }
+    } else {
+        println!("\n3 Sensors will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
+        for k in 0..3 {
+            println!("\n{} / 3\n", k + 1);
+            for (i, sensor) in hwinfo.master_sensor_names.iter().enumerate() {
+                println!("{}) {}", i, sensor);
+            }
+
+            let category: usize = Input::new().with_prompt("Category").interact_text()?;
+            let sensor_name = &hwinfo.master_sensor_names[category];
+            let sensor = hwinfo.master_readings.sensors.get(sensor_name).unwrap();
+            println!("\n{}:", sensor_name);
+            let mut temp_readings = Vec::new();
+            for (i, reading) in sensor.reading.iter().enumerate() {
+                println!("\t{}) {}", i, reading.0);
+                let sensor_key = format!("{};{}", sensor_name, reading.0);
+                temp_readings.push(sensor_key.to_owned());
+            }
+            let sensor_selection: usize = Input::new().with_prompt("Sensor").interact_text()?;
+            let sensor_selected = format!("\"{}\"", &temp_readings[sensor_selection]);
+            let key = format!("sensor_{}", k);
+            conf.with_section(Some("Sensors")).set(key, sensor_selected);
+        }
+    }
+    conf.write_to_file("conf.ini")?;
+
+    term.write_line("config created.")?;
+    Ok(conf)
 }
