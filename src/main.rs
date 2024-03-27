@@ -53,40 +53,45 @@ fn main() -> Result<(), anyhow::Error> {
 
     let config_main = match config.section(Some("Main")) {
         Some(main) => main,
-        None => return Err(anyhow::Error::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Config Not found",
-        ))),
+        None => {
+            return Err(anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Config Not found",
+            )))
+        }
     };
     // TODO: will error when using summary without a section for sensors
     let config_sensors = match config.section(Some("Sensors")) {
         Some(sensors) => sensors,
-        None => return Err(anyhow::Error::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Sensors Config Not found",
-        ))),
+        None => {
+            return Err(anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Sensors Config Not found",
+            )))
+        }
     };
 
     // std::thread::sleep(std::time::Duration::from_secs(1));
     // console_window(Console::HIDE);
 
-    let style = match config_main.get("style"){
+    let style = match config_main.get("style") {
         Some(style) => style,
-        None => return Err(anyhow::Error::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Style not found",
-        ))),
+        None => {
+            return Err(anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Style not found",
+            )))
+        }
     };
     let vertical = match style {
         "Vertical" => Some(true),
         "Horizontal" => Some(false),
-        _ => None
+        _ => None,
     };
     let summary = match style {
         "Vertical" | "Horizontal" => true,
         _ => false,
     };
-
 
     let mut gpu: &str = "";
     if summary {
@@ -96,7 +101,7 @@ fn main() -> Result<(), anyhow::Error> {
         };
     }
 
-    let decimal = match config_main.get("decimal"){
+    let decimal = match config_main.get("decimal") {
         Some(decimal) => decimal.parse::<bool>()?,
         None => false,
     };
@@ -144,12 +149,14 @@ fn main() -> Result<(), anyhow::Error> {
             if gpu == "" {
                 sensor_gpu_temp = hwinfo.find_first("GPU Temperature")?;
             } else {
-                sensor_gpu_temp = match hwinfo.get(gpu, "GPU Temperature"){
+                sensor_gpu_temp = match hwinfo.get(gpu, "GPU Temperature") {
                     Some(sensor) => sensor,
-                    None => return Err(anyhow::Error::new(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "GPU Temperature not found",
-                    ))),
+                    None => {
+                        return Err(anyhow::Error::new(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "GPU Temperature not found",
+                        )))
+                    }
                 };
             }
 
@@ -203,7 +210,8 @@ fn main() -> Result<(), anyhow::Error> {
                             mem_free, mem_unit),
                     });
                 }
-            } else { // Horizontal
+            } else {
+                // Horizontal
                 if decimal {
                     value = json!({
                         "line1": format!("CPU {:.1}{} {:.1}{}",
@@ -232,10 +240,10 @@ fn main() -> Result<(), anyhow::Error> {
                             // mem_free, mem_unit.to_lowercase()
                         ),
                     });
-
                 }
             }
-        } else { // Custom
+        } else {
+            // Custom
             // let mut labels: Vec<&str> = Vec::with_capacity(CUSTOM_SENSORS);
             // let mut units: Vec<&str> = Vec::with_capacity(CUSTOM_SENSORS);
             // let mut values: Vec<f64> = Vec::with_capacity(CUSTOM_SENSORS);
@@ -243,7 +251,7 @@ fn main() -> Result<(), anyhow::Error> {
             let mut units = vec![""; CUSTOM_SENSORS];
             let mut values = vec![String::new(); CUSTOM_SENSORS];
 
-            let two_sensors_per_line = match config_main.get("two_sensors_per_line"){
+            let two_sensors_per_line = match config_main.get("two_sensors_per_line") {
                 Some(tspl) => tspl.parse::<bool>()?,
                 None => false,
             };
@@ -252,27 +260,30 @@ fn main() -> Result<(), anyhow::Error> {
                     .section(Some("Sensors"))
                     .unwrap()
                     .get(format!("sensor_{}", i))
-                    {
-                        Some(sensor) => sensor,
-                        None => continue,
-                    }
-                    .split(";")
-                    .collect::<Vec<&str>>();
-                let label = match config_sensors.get(format!("label_{}", i)){
+                {
+                    Some(sensor) => sensor,
+                    None => continue,
+                }
+                .split(";")
+                .collect::<Vec<&str>>();
+                let label = match config_sensors.get(format!("label_{}", i)) {
                     Some(label) => label,
                     None => sensor[1],
                 };
-                let unit = match config_sensors.get(format!("unit_{}", i)){
+                let unit = match config_sensors.get(format!("unit_{}", i)) {
                     Some(unit) => unit,
                     None => "",
                 };
-                let value = match hwinfo.get(sensor[0], sensor[1]){
+                let value = match hwinfo.get(sensor[0], sensor[1]) {
                     Some(value) => value,
-                    None => return Err(anyhow::Error::new(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("Sensor not found:\n\t{}\n\t{}", sensor[0], sensor[1]),
-                    ))),
-                }.value;
+                    None => {
+                        return Err(anyhow::Error::new(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("Sensor not found:\n\t{}\n\t{}", sensor[0], sensor[1]),
+                        )))
+                    }
+                }
+                .value;
                 let value_string: String;
                 if decimal {
                     value_string = format!("{:.1}", &value);
@@ -284,7 +295,6 @@ fn main() -> Result<(), anyhow::Error> {
                 values[i] = value_string;
             }
             value = format_custom_value(two_sensors_per_line, labels, values, units);
-
         }
         client.trigger_event_frame("MAIN", i.0, value)?;
         i += 1;
@@ -295,16 +305,31 @@ fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn format_custom_value(two_sensors_per_line: bool, labels: Vec<&str>, values: Vec<String>, units: Vec<&str>) -> Value {
+fn format_custom_value(
+    two_sensors_per_line: bool,
+    labels: Vec<&str>,
+    values: Vec<String>,
+    units: Vec<&str>,
+) -> Value {
     let mut value = json!({});
     if !two_sensors_per_line {
         for i in 0..DISPLAY_LINES {
-            value[format!("line{}", i + 1)] = json!(format!("{} {}{}",labels[i], values[i], units[i]));
+            value[format!("line{}", i + 1)] =
+                json!(format!("{} {}{}", labels[i], values[i], units[i]));
         }
     } else {
-        value["line1"] = json!(format!("{} {}{} {} {}{}",labels[0], values[0], units[0], labels[1], values[1], units[1]));
-        value["line2"] = json!(format!("{} {}{} {} {}{}",labels[2], values[2], units[2], labels[3], values[3], units[3]));
-        value["line3"] = json!(format!("{} {}{} {} {}{}",labels[4], values[4], units[4], labels[5], values[5], units[5]));
+        value["line1"] = json!(format!(
+            "{} {}{} {} {}{}",
+            labels[0], values[0], units[0], labels[1], values[1], units[1]
+        ));
+        value["line2"] = json!(format!(
+            "{} {}{} {} {}{}",
+            labels[2], values[2], units[2], labels[3], values[3], units[3]
+        ));
+        value["line3"] = json!(format!(
+            "{} {}{} {} {}{}",
+            labels[4], values[4], units[4], labels[5], values[5], units[5]
+        ));
     }
     value
 }
@@ -497,26 +522,34 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
         }
     } else {
         println!("\n3 lines will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
-        let lines: u8 = match Input::new().with_prompt("How many lines? (2-3): ").interact_text(){
+        let lines: u8 = match Input::new()
+            .with_prompt("How many lines? (2-3): ")
+            .interact_text()
+        {
             Ok(lines) => match lines {
                 2 | 3 => lines,
-                _ => 3
+                _ => 3,
             },
-            Err(_) => 3
+            Err(_) => 3,
         };
-        let sensors_per_line: u8 = match Input::new().with_prompt("How many sensors per line? (1-2): ").interact_text(){
+        let sensors_per_line: u8 = match Input::new()
+            .with_prompt("How many sensors per line? (1-2): ")
+            .interact_text()
+        {
             Ok(sensors) => match sensors {
                 1 => {
-                    conf.with_section(Some("Main")).set("two_sensors_per_line", "false");
+                    conf.with_section(Some("Main"))
+                        .set("two_sensors_per_line", "false");
                     sensors
-                },
+                }
                 2 => {
-                    conf.with_section(Some("Main")).set("two_sensors_per_line", "true");
+                    conf.with_section(Some("Main"))
+                        .set("two_sensors_per_line", "true");
                     sensors
-                },
-                _ => 2
+                }
+                _ => 2,
             },
-            Err(_) => 2
+            Err(_) => 2,
         };
 
         for k in 0..(lines * sensors_per_line) {
@@ -529,11 +562,11 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
                 Ok(category) => {
                     if category >= length {
                         println!("Category out of range, please try again.");
-                        return create_config(term, hwinfo)
+                        return create_config(term, hwinfo);
                     } else {
                         category
                     }
-                },
+                }
                 Err(_) => 0,
             };
             let sensor_name = &hwinfo.master_sensor_names[category];

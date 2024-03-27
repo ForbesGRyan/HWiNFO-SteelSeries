@@ -13,5 +13,5 @@ gamesense = "0.1.2"
 rust-ini = "0.21.0"
 serde_json = "1.0.114"
 strum = { version = "0.26.2", features = ["derive"] }
-tray-icon = "0.12.0"
+tray-icon = "0.13.0"
 winapi = {version="0.3.9", features=["memoryapi", "winnt", "wincon", "winuser"]}
