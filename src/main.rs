@@ -63,7 +63,7 @@ fn main() -> Result<(), anyhow::Error> {
         Some(sensors) => sensors,
         None => return Err(anyhow::Error::new(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "Config Not found",
+            "Sensors Config Not found",
         ))),
     };
 
@@ -144,7 +144,13 @@ fn main() -> Result<(), anyhow::Error> {
             if gpu == "" {
                 sensor_gpu_temp = hwinfo.find_first("GPU Temperature")?;
             } else {
-                sensor_gpu_temp = hwinfo.get(gpu, "GPU Temperature").unwrap();
+                sensor_gpu_temp = match hwinfo.get(gpu, "GPU Temperature"){
+                    Some(sensor) => sensor,
+                    None => return Err(anyhow::Error::new(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "GPU Temperature not found",
+                    ))),
+                };
             }
 
             let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
@@ -260,7 +266,13 @@ fn main() -> Result<(), anyhow::Error> {
                     Some(unit) => unit,
                     None => "",
                 };
-                let value = hwinfo.get(sensor[0], sensor[1]).unwrap().value;
+                let value = match hwinfo.get(sensor[0], sensor[1]){
+                    Some(value) => value,
+                    None => return Err(anyhow::Error::new(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Sensor not found:\n\t{}\n\t{}", sensor[0], sensor[1]),
+                    ))),
+                }.value;
                 let value_string: String;
                 if decimal {
                     value_string = format!("{:.1}", &value);
@@ -271,7 +283,7 @@ fn main() -> Result<(), anyhow::Error> {
                 units[i] = unit;
                 values[i] = value_string;
             }
-            value = format_custom_value(decimal, two_sensors_per_line, labels, values, units);
+            value = format_custom_value(two_sensors_per_line, labels, values, units);
 
         }
         client.trigger_event_frame("MAIN", i.0, value)?;
@@ -283,15 +295,11 @@ fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn format_custom_value(decimal: bool, two_sensors_per_line: bool, labels: Vec<&str>, values: Vec<String>, units: Vec<&str>) -> Value {
+fn format_custom_value(two_sensors_per_line: bool, labels: Vec<&str>, values: Vec<String>, units: Vec<&str>) -> Value {
     let mut value = json!({});
     if !two_sensors_per_line {
         for i in 0..DISPLAY_LINES {
-            if decimal {
-                value[format!("line{}", i + 1)] = json!(format!("{} {:.1}{}",labels[i], values[i], units[i]));
-            } else {
-                value[format!("line{}", i + 1)] = json!(format!("{} {:.0}{}",labels[i], values[i], units[i]));
-            }
+            value[format!("line{}", i + 1)] = json!(format!("{} {}{}",labels[i], values[i], units[i]));
         }
     } else {
         value["line1"] = json!(format!("{} {}{} {} {}{}",labels[0], values[0], units[0], labels[1], values[1], units[1]));
@@ -369,9 +377,9 @@ fn console_window(action: Console) {
 
 fn page_handler(
     ttl: isize,
-    line1_label: &str,
-    line2_label: &str,
-    line3_label: &str,
+    label_1: &str,
+    label_2: &str,
+    label_3: &str,
     bold: bool,
     zone: Option<&str>,
 ) -> ScreenHandler {
@@ -402,7 +410,7 @@ fn page_handler(
                             ),
                             data_accessor_data: Some(screen::DataAccessorData {
                                 arg: None,
-                                context_frame_key: Some(String::from(line1_label)),
+                                context_frame_key: Some(String::from(label_1)),
                             }),
                         },
                         screen::LineData {
@@ -417,7 +425,7 @@ fn page_handler(
                             ),
                             data_accessor_data: Some(screen::DataAccessorData {
                                 arg: None,
-                                context_frame_key: Some(String::from(line2_label)),
+                                context_frame_key: Some(String::from(label_2)),
                             }),
                         },
                         screen::LineData {
@@ -432,7 +440,7 @@ fn page_handler(
                             ),
                             data_accessor_data: Some(screen::DataAccessorData {
                                 arg: None,
-                                context_frame_key: Some(String::from(line3_label)),
+                                context_frame_key: Some(String::from(label_3)),
                             }),
                         },
                     ],
@@ -488,14 +496,46 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
             conf.with_section(Some("Main")).set("gpu", gpu_selected);
         }
     } else {
-        println!("\n3 Sensors will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
-        for k in 0..3 {
-            println!("\n{} / 3\n", k + 1);
+        println!("\n3 lines will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
+        let lines: u8 = match Input::new().with_prompt("How many lines? (2-3): ").interact_text(){
+            Ok(lines) => match lines {
+                2 | 3 => lines,
+                _ => 3
+            },
+            Err(_) => 3
+        };
+        let sensors_per_line: u8 = match Input::new().with_prompt("How many sensors per line? (1-2): ").interact_text(){
+            Ok(sensors) => match sensors {
+                1 => {
+                    conf.with_section(Some("Main")).set("two_sensors_per_line", "false");
+                    sensors
+                },
+                2 => {
+                    conf.with_section(Some("Main")).set("two_sensors_per_line", "true");
+                    sensors
+                },
+                _ => 2
+            },
+            Err(_) => 2
+        };
+
+        for k in 0..(lines * sensors_per_line) {
+            println!("\n{} / {}\n", k + 1, (lines * sensors_per_line));
             for (i, sensor) in hwinfo.master_sensor_names.iter().enumerate() {
                 println!("{}) {}", i, sensor);
             }
-
-            let category: usize = Input::new().with_prompt("Category").interact_text()?;
+            let length = hwinfo.master_sensor_names.len();
+            let category: usize = match Input::new().with_prompt("Category").interact_text() {
+                Ok(category) => {
+                    if category >= length {
+                        println!("Category out of range, please try again.");
+                        return create_config(term, hwinfo)
+                    } else {
+                        category
+                    }
+                },
+                Err(_) => 0,
+            };
             let sensor_name = &hwinfo.master_sensor_names[category];
             let sensor = hwinfo.master_readings.sensors.get(sensor_name).unwrap();
             println!("\n{}:", sensor_name);
