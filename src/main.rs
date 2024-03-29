@@ -1,3 +1,4 @@
+use chrono::{Local, Utc};
 use console::Term;
 use dialoguer::Input;
 use gamesense::{
@@ -9,7 +10,6 @@ use ini::Ini;
 use serde_json::{json, Value};
 use std::num::Wrapping;
 use tray_icon::{Icon, TrayIconBuilder};
-use chrono::{Local, Utc};
 
 #[derive(PartialEq)]
 enum STYLE {
@@ -301,12 +301,12 @@ fn main() -> Result<(), anyhow::Error> {
             }
             value = format_custom_value(sensors_per_line, labels, values, units);
         }
-        let display_in_console = false;
+        let display_in_console = true;
         if display_in_console {
             display_value_in_console(&term, &value)?;
-        } 
+        }
         // else {
-            client.trigger_event_frame("MAIN", i.0, value)?;
+        client.trigger_event_frame("MAIN", i.0, value)?;
         // }
         i += 1;
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -350,15 +350,42 @@ fn format_custom_value(
             labels[4], values[4], units[4], labels[5], values[5], units[5]
         ));
     } else if sensors_per_line == 3 {
-       value["line1"] = json!(format!(
+        value["line1"] = json!(format!(
             "{} {}{} {}{}{} {}{}{}",
-            labels[0], values[0], units[0], labels[1], values[1], units[1], labels[2], values[2], units[2]));
-       value["line2"] = json!(format!(
+            labels[0],
+            values[0],
+            units[0],
+            labels[1],
+            values[1],
+            units[1],
+            labels[2],
+            values[2],
+            units[2]
+        ));
+        value["line2"] = json!(format!(
             "{} {}{} {}{}{} {}{}{}",
-            labels[3], values[3], units[3], labels[4], values[4], units[4], labels[5], values[5], units[5]));
-       value["line3"] = json!(format!(
+            labels[3],
+            values[3],
+            units[3],
+            labels[4],
+            values[4],
+            units[4],
+            labels[5],
+            values[5],
+            units[5]
+        ));
+        value["line3"] = json!(format!(
             "{} {}{} {}{}{} {}{}{}",
-            labels[6], values[6], units[6], labels[7], values[7], units[7], labels[8], values[8], units[8]));
+            labels[6],
+            values[6],
+            units[6],
+            labels[7],
+            values[7],
+            units[7],
+            labels[8],
+            values[8],
+            units[8]
+        ));
     }
     value
 }
@@ -605,7 +632,8 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
             let sensor_key = format!("sensor_{}", k);
             let label_key = format!("label_{}", k);
             let unit_key = format!("unit_{}", k);
-            conf.with_section(Some("Sensors")).set(sensor_key, sensor_selected);
+            conf.with_section(Some("Sensors"))
+                .set(sensor_key, sensor_selected);
             conf.with_section(Some("Sensors")).set(label_key, label);
             conf.with_section(Some("Sensors")).set(unit_key, unit);
         }
