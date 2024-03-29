@@ -9,6 +9,7 @@ use ini::Ini;
 use serde_json::{json, Value};
 use std::num::Wrapping;
 use tray_icon::{Icon, TrayIconBuilder};
+use chrono::{Local, Utc};
 
 #[derive(PartialEq)]
 enum STYLE {
@@ -263,9 +264,11 @@ fn main() -> Result<(), anyhow::Error> {
                 .split(";")
                 .collect::<Vec<&str>>();
                 if sensor[0] == "BLANK" {
-                    labels[i] = "";
-                    units[i] = "";
-                    values[i] = String::from("");
+                    continue;
+                } else if sensor[0] == "CLOCK" {
+                    let now = Local::now();
+                    // let now = Utc::now();
+                    values[i] = now.format("%I:%M%P").to_string();
                     continue;
                 }
                 let label = match config_sensors.get(format!("label_{}", i)) {
@@ -298,7 +301,7 @@ fn main() -> Result<(), anyhow::Error> {
             }
             value = format_custom_value(sensors_per_line, labels, values, units);
         }
-        let display_in_console = true;
+        let display_in_console = false;
         if display_in_console {
             display_value_in_console(&term, &value)?;
         } 
