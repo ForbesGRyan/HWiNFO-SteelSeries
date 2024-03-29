@@ -27,17 +27,16 @@ impl std::fmt::Display for STYLE {
     }
 }
 
-const CUSTOM_SENSORS: usize = 6;
+const CUSTOM_SENSORS: usize = 9;
 const DISPLAY_LINES: usize = 3;
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), anyhow::Error> {
     let icon = Icon::from_path("assets/hwinfo-steelseries-icon.ico", Some((64, 64)))?;
-    let _tray_icon = TrayIconBuilder::new()
+    TrayIconBuilder::new()
         .with_tooltip("HWiNFO-SteelSeries")
         .with_icon(icon)
-        .build()
-        .unwrap();
+        .build()?;
 
     let term = Term::stdout();
 
@@ -106,7 +105,7 @@ fn main() -> Result<(), anyhow::Error> {
         None => false,
     };
 
-    let page1_handler = page_handler(3, "line1", "line2", "line3", false, None);
+    let page1_handler = static_page_handler(3, "line1", "line2", "line3", None, None);
 
     client.bind_event("MAIN", None, None, None, None, vec![page1_handler])?;
     client.start_heartbeat();
@@ -243,17 +242,14 @@ fn main() -> Result<(), anyhow::Error> {
                 }
             }
         } else {
-            // Custom
-            // let mut labels: Vec<&str> = Vec::with_capacity(CUSTOM_SENSORS);
-            // let mut units: Vec<&str> = Vec::with_capacity(CUSTOM_SENSORS);
-            // let mut values: Vec<f64> = Vec::with_capacity(CUSTOM_SENSORS);
+            // Custom Senors
             let mut labels = vec![""; CUSTOM_SENSORS];
             let mut units = vec![""; CUSTOM_SENSORS];
             let mut values = vec![String::new(); CUSTOM_SENSORS];
 
-            let two_sensors_per_line = match config_main.get("two_sensors_per_line") {
-                Some(tspl) => tspl.parse::<bool>()?,
-                None => false,
+            let sensors_per_line = match config_main.get("sensors_per_line") {
+                Some(spl) => spl.parse::<u8>()?,
+                None => 1,
             };
             for i in 0..CUSTOM_SENSORS {
                 let sensor = match config
@@ -266,6 +262,12 @@ fn main() -> Result<(), anyhow::Error> {
                 }
                 .split(";")
                 .collect::<Vec<&str>>();
+                if sensor[0] == "BLANK" {
+                    labels[i] = "";
+                    units[i] = "";
+                    values[i] = String::from("");
+                    continue;
+                }
                 let label = match config_sensors.get(format!("label_{}", i)) {
                     Some(label) => label,
                     None => sensor[1],
@@ -294,9 +296,15 @@ fn main() -> Result<(), anyhow::Error> {
                 units[i] = unit;
                 values[i] = value_string;
             }
-            value = format_custom_value(two_sensors_per_line, labels, values, units);
+            value = format_custom_value(sensors_per_line, labels, values, units);
         }
-        client.trigger_event_frame("MAIN", i.0, value)?;
+        let display_in_console = true;
+        if display_in_console {
+            display_value_in_console(&term, &value)?;
+        } 
+        // else {
+            client.trigger_event_frame("MAIN", i.0, value)?;
+        // }
         i += 1;
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
@@ -305,19 +313,27 @@ fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+fn display_value_in_console(term: &Term, value: &Value) -> anyhow::Result<()> {
+    term.clear_screen()?;
+    for i in 0..DISPLAY_LINES {
+        term.write_line(&value[format!("line{}", i + 1)].to_string())?;
+    }
+    Ok(())
+}
+
 fn format_custom_value(
-    two_sensors_per_line: bool,
+    sensors_per_line: u8,
     labels: Vec<&str>,
     values: Vec<String>,
     units: Vec<&str>,
 ) -> Value {
     let mut value = json!({});
-    if !two_sensors_per_line {
+    if sensors_per_line == 1 {
         for i in 0..DISPLAY_LINES {
             value[format!("line{}", i + 1)] =
                 json!(format!("{} {}{}", labels[i], values[i], units[i]));
         }
-    } else {
+    } else if sensors_per_line == 2 {
         value["line1"] = json!(format!(
             "{} {}{} {} {}{}",
             labels[0], values[0], units[0], labels[1], values[1], units[1]
@@ -330,6 +346,16 @@ fn format_custom_value(
             "{} {}{} {} {}{}",
             labels[4], values[4], units[4], labels[5], values[5], units[5]
         ));
+    } else if sensors_per_line == 3 {
+       value["line1"] = json!(format!(
+            "{} {}{} {}{}{} {}{}{}",
+            labels[0], values[0], units[0], labels[1], values[1], units[1], labels[2], values[2], units[2]));
+       value["line2"] = json!(format!(
+            "{} {}{} {}{}{} {}{}{}",
+            labels[3], values[3], units[3], labels[4], values[4], units[4], labels[5], values[5], units[5]));
+       value["line3"] = json!(format!(
+            "{} {}{} {}{}{} {}{}{}",
+            labels[6], values[6], units[6], labels[7], values[7], units[7], labels[8], values[8], units[8]));
     }
     value
 }
@@ -400,12 +426,12 @@ fn console_window(action: Console) {
     }
 }
 
-fn page_handler(
+fn static_page_handler(
     ttl: isize,
     label_1: &str,
     label_2: &str,
     label_3: &str,
-    bold: bool,
+    bold: Option<bool>,
     zone: Option<&str>,
 ) -> ScreenHandler {
     screen::ScreenHandler::new(
@@ -429,7 +455,7 @@ fn page_handler(
                                     has_text: true,
                                     prefix: None,
                                     suffix: None,
-                                    bold: Some(bold),
+                                    bold: bold,
                                     wrap: None,
                                 },
                             ),
@@ -444,7 +470,7 @@ fn page_handler(
                                     has_text: true,
                                     prefix: None,
                                     suffix: None,
-                                    bold: Some(bold),
+                                    bold: bold,
                                     wrap: None,
                                 },
                             ),
@@ -459,7 +485,7 @@ fn page_handler(
                                     has_text: true,
                                     prefix: None,
                                     suffix: None,
-                                    bold: Some(bold),
+                                    bold: bold,
                                     wrap: None,
                                 },
                             ),
@@ -532,25 +558,16 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
             },
             Err(_) => 3,
         };
-        let sensors_per_line: u8 = match Input::new()
-            .with_prompt("How many sensors per line? (1-2): ")
-            .interact_text()
-        {
-            Ok(sensors) => match sensors {
-                1 => {
-                    conf.with_section(Some("Main"))
-                        .set("two_sensors_per_line", "false");
-                    sensors
-                }
-                2 => {
-                    conf.with_section(Some("Main"))
-                        .set("two_sensors_per_line", "true");
-                    sensors
-                }
-                _ => 2,
-            },
-            Err(_) => 2,
-        };
+        let sensors_per_line: u8 = Input::new()
+            .with_prompt("How many sensors per line? (1-3): ")
+            .interact_text()?;
+        match sensors_per_line {
+            1 | 2 | 3 => {
+                conf.with_section(Some("Main"))
+                    .set("sensors_per_line", sensors_per_line.to_string());
+            }
+            _ => return create_config(term, hwinfo),
+        }
 
         for k in 0..(lines * sensors_per_line) {
             println!("\n{} / {}\n", k + 1, (lines * sensors_per_line));
@@ -580,8 +597,14 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
             }
             let sensor_selection: usize = Input::new().with_prompt("Sensor").interact_text()?;
             let sensor_selected = format!("\"{}\"", &temp_readings[sensor_selection]);
-            let key = format!("sensor_{}", k);
-            conf.with_section(Some("Sensors")).set(key, sensor_selected);
+            let label: String = Input::new().with_prompt("Label").interact_text()?;
+            let unit: String = Input::new().with_prompt("Unit").interact_text()?;
+            let sensor_key = format!("sensor_{}", k);
+            let label_key = format!("label_{}", k);
+            let unit_key = format!("unit_{}", k);
+            conf.with_section(Some("Sensors")).set(sensor_key, sensor_selected);
+            conf.with_section(Some("Sensors")).set(label_key, label);
+            conf.with_section(Some("Sensors")).set(unit_key, unit);
         }
     }
     conf.write_to_file("conf.ini")?;
