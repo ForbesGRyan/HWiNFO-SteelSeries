@@ -1,4 +1,4 @@
-use chrono::{Local, Utc};
+use chrono::Local;
 use console::Term;
 use dialoguer::Input;
 use gamesense::{
@@ -61,7 +61,7 @@ fn main() -> Result<(), anyhow::Error> {
         }
     };
     // TODO: will error when using summary without a section for sensors
-    let config_sensors = match config.section(Some("Sensors")) {
+    let config_sensors = match config.section(Some("PAGE1.Sensors")) {
         Some(sensors) => sensors,
         None => {
             return Err(anyhow::Error::new(std::io::Error::new(
@@ -106,9 +106,16 @@ fn main() -> Result<(), anyhow::Error> {
         None => false,
     };
 
-    let page1_handler = static_page_handler(3, "line1", "line2", "line3", None, None);
+    #[cfg(debug_assertions)]
+    let display_in_console = true;
+    #[cfg(not(debug_assertions))]
+    let display_in_console = false;
 
-    client.bind_event("MAIN", None, None, None, None, vec![page1_handler])?;
+    let handler = page_handler(3, "line1", "line2", "line3", None);
+
+    client.register_event_full("MAIN", None, None, None, Some(true))?;
+
+    client.bind_event("MAIN", None, None, None, None, vec![handler])?;
     client.start_heartbeat();
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
@@ -176,7 +183,7 @@ fn main() -> Result<(), anyhow::Error> {
             let line1_spaces = " ";
             let line2_spaces = " ";
 
-            if vertical.unwrap_or(false) {
+            if vertical.unwrap_or(true) {
                 if decimal {
                     value = json!({
                         "line1": "CPU   GPU   MEM",
@@ -293,7 +300,7 @@ fn main() -> Result<(), anyhow::Error> {
                 if decimal {
                     value_string = format!("{:.1}", &value);
                 } else {
-                    value_string = format!("{:.0}", &value);
+                    value_string = format!("{:02.0}", &value);
                 }
                 labels[i] = label;
                 units[i] = unit;
@@ -301,11 +308,12 @@ fn main() -> Result<(), anyhow::Error> {
             }
             value = format_custom_value(sensors_per_line, labels, values, units);
         }
-        let display_in_console = true;
         if display_in_console {
             display_value_in_console(&term, &value)?;
         }
         // else {
+        value["page2"] = json!(format!("HELLO"));
+        println!("{}", serde_json::to_string_pretty(&value)?);
         client.trigger_event_frame("MAIN", i.0, value)?;
         // }
         i += 1;
@@ -411,7 +419,7 @@ fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
 }
 
 fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
-    match GameSenseClient::new("HWINFO", "HWiNFO_Stats", "Ryan", Some(10000)) {
+    match GameSenseClient::new("HWINFO", "HWiNFO_Stats", "Ryan", None) {
         Ok(c) => {
             term.write_line("Connected to SteelSeries GG")?;
             Ok(c)
@@ -456,22 +464,20 @@ fn console_window(action: Console) {
     }
 }
 
-fn static_page_handler(
+fn page_handler(
     ttl: isize,
     label_1: &str,
     label_2: &str,
     label_3: &str,
     bold: Option<bool>,
-    zone: Option<&str>,
 ) -> ScreenHandler {
     screen::ScreenHandler::new(
         "screened",
-        match zone {
-            Some(zone) => zone,
-            None => "one",
-        },
+        "one",
         screen::ScreenDataDefinition::StaticScreenDataDefinition(
-            screen::StaticScreenDataDefinition(vec![screen::ScreenFrameData::MultiLineFrameData(
+            screen::StaticScreenDataDefinition(
+                vec![
+                    screen::ScreenFrameData::MultiLineFrameData(
                 screen::MultiLineFrameData {
                     frame_modifiers_data: Some(screen::FrameModifiersData {
                         length_millis: Some(ttl * 1000),
@@ -548,7 +554,7 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
     )?;
     term.write_line("3) Pick your own sensors")?;
     let input: u8 = Input::new()
-        .with_prompt("Choose style\n[1,2,3]")
+        .with_prompt("Choose style\n(1,2,3)")
         .interact_text()?;
     let style = match input {
         1 => STYLE::VERTICAL,
@@ -579,7 +585,7 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
     } else {
         println!("\n3 lines will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
         let lines: u8 = match Input::new()
-            .with_prompt("How many lines? (2-3): ")
+            .with_prompt("How many lines? (2-3)")
             .interact_text()
         {
             Ok(lines) => match lines {
@@ -589,7 +595,7 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
             Err(_) => 3,
         };
         let sensors_per_line: u8 = Input::new()
-            .with_prompt("How many sensors per line? (1-3): ")
+            .with_prompt("How many sensors per line? (1-3)")
             .interact_text()?;
         match sensors_per_line {
             1 | 2 | 3 => {
