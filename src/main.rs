@@ -61,15 +61,15 @@ fn main() -> Result<(), anyhow::Error> {
         }
     };
     // TODO: will error when using summary without a section for sensors
-    let config_sensors = match config.section(Some("PAGE1.Sensors")) {
-        Some(sensors) => sensors,
-        None => {
-            return Err(anyhow::Error::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Sensors Config Not found",
-            )))
-        }
-    };
+    // let config_sensors = match config.section(Some("PAGE1.Sensors")) {
+    //     Some(sensors) => sensors,
+    //     None => {
+    //         return Err(anyhow::Error::new(std::io::Error::new(
+    //             std::io::ErrorKind::NotFound,
+    //             "Sensors Config Not found",
+    //         )))
+    //     }
+    // };
 
     // std::thread::sleep(std::time::Duration::from_secs(1));
     // console_window(Console::HIDE);
@@ -111,15 +111,44 @@ fn main() -> Result<(), anyhow::Error> {
     #[cfg(not(debug_assertions))]
     let display_in_console = false;
 
-    let handler = page_handler(3, "line1", "line2", "line3", None);
+    let pages = match config_main.get("pages") {
+        Some(pages) => pages.parse::<usize>()?,
+        None => 1,
+    };
+    let mut pages_vec = Vec::new();
+    for i in 1..=pages {
+        match config.section(Some(format!("PAGE{}.Sensors", i))) {
+            Some(page) => {
+                // client.register_event(format!("PAGE{}", i).as_str())?;
+                let handler = page_handler(3, "line1", "line2", "line3", None);
+                client.bind_event(format!("PAGE{}", i).as_str(), None, None, None, None, vec![handler])?;
+                pages_vec.push(page);
+            }
+            None => continue,
+        };
+    }
 
-    client.register_event_full("MAIN", None, None, None, Some(true))?;
+    // let handler = page_handler(3, "line1", "line2", "line3", None);
 
-    client.bind_event("MAIN", None, None, None, None, vec![handler])?;
+    // client.register_event_full("MAIN", None, None, None, Some(true))?;
+
+    // client.bind_event("MAIN", None, None, None, None, vec![handler])?;
     client.start_heartbeat();
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
+    let mut page_counter: usize = 0;
+    let second_between_pages = 5;
     loop {
+        // Logic to alternate between pages
+        if i.0 % second_between_pages == 0 && i.0 != 0{
+            if page_counter >= pages - 1 {
+                page_counter = 0;
+            } else {
+                page_counter += 1;
+            }
+        }
+        let pages_sensors = pages_vec[page_counter];
+
         let limit = 5;
         let old = hwinfo.clone();
         hwinfo.pull()?;
@@ -259,34 +288,32 @@ fn main() -> Result<(), anyhow::Error> {
                 Some(spl) => spl.parse::<u8>()?,
                 None => 1,
             };
-            for i in 0..CUSTOM_SENSORS {
-                let sensor = match config
-                    .section(Some("Sensors"))
-                    .unwrap()
-                    .get(format!("sensor_{}", i))
-                {
+            for k in 0..CUSTOM_SENSORS {
+                let sensor = match pages_sensors.get(format!("sensor_{}", k)) {
                     Some(sensor) => sensor,
                     None => continue,
                 }
                 .split(";")
                 .collect::<Vec<&str>>();
-                if sensor[0] == "BLANK" {
-                    continue;
-                } else if sensor[0] == "CLOCK" {
-                    let now = Local::now();
-                    // let now = Utc::now();
-                    values[i] = now.format("%I:%M%P").to_string();
-                    continue;
-                }
-                let label = match config_sensors.get(format!("label_{}", i)) {
-                    Some(label) => label,
-                    None => sensor[1],
-                };
-                let unit = match config_sensors.get(format!("unit_{}", i)) {
-                    Some(unit) => unit,
-                    None => "",
-                };
-                let value = match hwinfo.get(sensor[0], sensor[1]) {
+            let label = match pages_sensors.get(format!("label_{}", k)) {
+                Some(label) => label,
+                None => sensor[1],
+            };
+            let unit = match pages_sensors.get(format!("unit_{}", k)) {
+                Some(unit) => unit,
+                None => "",
+            };
+            if sensor[0] == "BLANK" {
+                labels[k] = label;
+                units[k] = unit;
+                continue;
+            } else if sensor[0] == "CLOCK" {
+                let now = Local::now();
+                // let now = Utc::now();
+                values[k] = now.format("%I:%M%P").to_string();
+                continue;
+            }
+                let mut value = match hwinfo.get(sensor[0], sensor[1]) {
                     Some(value) => value,
                     None => {
                         return Err(anyhow::Error::new(std::io::Error::new(
@@ -296,15 +323,26 @@ fn main() -> Result<(), anyhow::Error> {
                     }
                 }
                 .value;
+                match pages_sensors.get(format!("convert_{}", k)){
+                    Some(convert) => {
+                        match convert {
+                            "MB/GB" => {
+                                value = value / 1024.0
+                            }
+                            _ => {}
+                        }
+                    },
+                    None => {},
+                };
                 let value_string: String;
                 if decimal {
                     value_string = format!("{:.1}", &value);
                 } else {
                     value_string = format!("{:02.0}", &value);
                 }
-                labels[i] = label;
-                units[i] = unit;
-                values[i] = value_string;
+                labels[k] = label;
+                units[k] = unit;
+                values[k] = value_string;
             }
             value = format_custom_value(sensors_per_line, labels, values, units);
         }
@@ -312,8 +350,6 @@ fn main() -> Result<(), anyhow::Error> {
             display_value_in_console(&term, &value)?;
         }
         // else {
-        value["page2"] = json!(format!("HELLO"));
-        println!("{}", serde_json::to_string_pretty(&value)?);
         client.trigger_event_frame("MAIN", i.0, value)?;
         // }
         i += 1;
@@ -475,10 +511,8 @@ fn page_handler(
         "screened",
         "one",
         screen::ScreenDataDefinition::StaticScreenDataDefinition(
-            screen::StaticScreenDataDefinition(
-                vec![
-                    screen::ScreenFrameData::MultiLineFrameData(
-                screen::MultiLineFrameData {
+            screen::StaticScreenDataDefinition(vec![
+                screen::ScreenFrameData::MultiLineFrameData(screen::MultiLineFrameData {
                     frame_modifiers_data: Some(screen::FrameModifiersData {
                         length_millis: Some(ttl * 1000),
                         icon_id: Some(screen::Icon::None),
@@ -531,8 +565,8 @@ fn page_handler(
                             }),
                         },
                     ],
-                },
-            )]),
+                }),
+            ]),
         ),
     )
 }
