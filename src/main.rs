@@ -121,7 +121,14 @@ fn main() -> Result<(), anyhow::Error> {
             Some(page) => {
                 // client.register_event(format!("PAGE{}", i).as_str())?;
                 let handler = page_handler(3, "line1", "line2", "line3", None);
-                client.bind_event(format!("PAGE{}", i).as_str(), None, None, None, None, vec![handler])?;
+                client.bind_event(
+                    format!("PAGE{}", i).as_str(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    vec![handler],
+                )?;
                 pages_vec.push(page);
             }
             None => continue,
@@ -137,10 +144,19 @@ fn main() -> Result<(), anyhow::Error> {
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
     let mut page_counter: usize = 0;
-    let second_between_pages = 5;
+    let second_between_pages = match config_main.get("second_between_pages") {
+        Some(second) => {
+            let num = second.parse::<isize>()?;
+            match num {
+                0..=60 => num,
+                _ => 5,
+            }
+        },
+        None => 5,
+    };
     loop {
         // Logic to alternate between pages
-        if i.0 % second_between_pages == 0 && i.0 != 0{
+        if i.0 % second_between_pages == 0 && i.0 != 0 {
             if page_counter >= pages - 1 {
                 page_counter = 0;
             } else {
@@ -295,24 +311,24 @@ fn main() -> Result<(), anyhow::Error> {
                 }
                 .split(";")
                 .collect::<Vec<&str>>();
-            let label = match pages_sensors.get(format!("label_{}", k)) {
-                Some(label) => label,
-                None => sensor[1],
-            };
-            let unit = match pages_sensors.get(format!("unit_{}", k)) {
-                Some(unit) => unit,
-                None => "",
-            };
-            if sensor[0] == "BLANK" {
-                labels[k] = label;
-                units[k] = unit;
-                continue;
-            } else if sensor[0] == "CLOCK" {
-                let now = Local::now();
-                // let now = Utc::now();
-                values[k] = now.format("%I:%M%P").to_string();
-                continue;
-            }
+                let label = match pages_sensors.get(format!("label_{}", k)) {
+                    Some(label) => label,
+                    None => "",
+                };
+                let unit = match pages_sensors.get(format!("unit_{}", k)) {
+                    Some(unit) => unit,
+                    None => "",
+                };
+                if sensor[0] == "BLANK" {
+                    labels[k] = label;
+                    units[k] = unit;
+                    continue;
+                } else if sensor[0] == "CLOCK" {
+                    let now = Local::now();
+                    // let now = Utc::now();
+                    values[k] = now.format("%I:%M%P").to_string();
+                    continue;
+                }
                 let mut value = match hwinfo.get(sensor[0], sensor[1]) {
                     Some(value) => value,
                     None => {
@@ -323,16 +339,12 @@ fn main() -> Result<(), anyhow::Error> {
                     }
                 }
                 .value;
-                match pages_sensors.get(format!("convert_{}", k)){
-                    Some(convert) => {
-                        match convert {
-                            "MB/GB" => {
-                                value = value / 1024.0
-                            }
-                            _ => {}
-                        }
+                match pages_sensors.get(format!("convert_{}", k)) {
+                    Some(convert) => match convert {
+                        "MB/GB" => value = value / 1024.0,
+                        _ => {}
                     },
-                    None => {},
+                    None => {}
                 };
                 let value_string: String;
                 if decimal {
@@ -511,8 +523,8 @@ fn page_handler(
         "screened",
         "one",
         screen::ScreenDataDefinition::StaticScreenDataDefinition(
-            screen::StaticScreenDataDefinition(vec![
-                screen::ScreenFrameData::MultiLineFrameData(screen::MultiLineFrameData {
+            screen::StaticScreenDataDefinition(vec![screen::ScreenFrameData::MultiLineFrameData(
+                screen::MultiLineFrameData {
                     frame_modifiers_data: Some(screen::FrameModifiersData {
                         length_millis: Some(ttl * 1000),
                         icon_id: Some(screen::Icon::None),
@@ -565,8 +577,8 @@ fn page_handler(
                             }),
                         },
                     ],
-                }),
-            ]),
+                },
+            )]),
         ),
     )
 }
