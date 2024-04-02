@@ -144,7 +144,7 @@ fn main() -> Result<(), anyhow::Error> {
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;
     let mut page_counter: usize = 0;
-    let second_between_pages = match config_main.get("second_between_pages") {
+    let page_time = match config_main.get("page_time") {
         Some(second) => {
             let num = second.parse::<isize>()?;
             match num {
@@ -156,7 +156,7 @@ fn main() -> Result<(), anyhow::Error> {
     };
     loop {
         // Logic to alternate between pages
-        if i.0 % second_between_pages == 0 && i.0 != 0 {
+        if i.0 % page_time == 0 && i.0 != 0 {
             if page_counter >= pages - 1 {
                 page_counter = 0;
             } else {
@@ -362,7 +362,7 @@ fn main() -> Result<(), anyhow::Error> {
             display_value_in_console(&term, &value)?;
         }
         // else {
-        client.trigger_event_frame("MAIN", i.0, value)?;
+        client.trigger_event_frame(format!("PAGE{}", page_counter + 1).as_str(), i.0, value)?;
         // }
         i += 1;
         std::thread::sleep(std::time::Duration::from_secs(1));
