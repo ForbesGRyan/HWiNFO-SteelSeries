@@ -75,7 +75,7 @@ fn main() -> Result<(), anyhow::Error> {
     // console_window(Console::HIDE);
 
     let style = match config_main.get("style") {
-        Some(style) => style,
+        Some(style) => style.to_lowercase(),
         None => {
             return Err(anyhow::Error::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -83,13 +83,13 @@ fn main() -> Result<(), anyhow::Error> {
             )))
         }
     };
-    let vertical = match style {
-        "Vertical" => Some(true),
-        "Horizontal" => Some(false),
+    let vertical = match style.as_str() {
+        "vertical" => Some(true),
+        "horizontal" => Some(false),
         _ => None,
     };
-    let summary = match style {
-        "Vertical" | "Horizontal" => true,
+    let summary = match style.as_str() {
+        "vertical" | "horizontal" => true,
         _ => false,
     };
 
@@ -324,8 +324,9 @@ fn main() -> Result<(), anyhow::Error> {
                     units[k] = unit;
                     continue;
                 } else if sensor[0] == "CLOCK" {
+                    labels[k] = label;
+                    units[k] = unit;
                     let now = Local::now();
-                    // let now = Utc::now();
                     values[k] = now.format("%I:%M%P").to_string();
                     continue;
                 }
@@ -684,10 +685,9 @@ fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
             let sensor_key = format!("sensor_{}", k);
             let label_key = format!("label_{}", k);
             let unit_key = format!("unit_{}", k);
-            conf.with_section(Some("Sensors"))
-                .set(sensor_key, sensor_selected);
-            conf.with_section(Some("Sensors")).set(label_key, label);
-            conf.with_section(Some("Sensors")).set(unit_key, unit);
+            conf.with_section(Some("PAGE1.Sensors")).set(sensor_key, sensor_selected);
+            conf.with_section(Some("PAGE1.Sensors")).set(label_key, label);
+            conf.with_section(Some("PAGE1.Sensors")).set(unit_key, unit);
         }
     }
     conf.write_to_file("conf.ini")?;
