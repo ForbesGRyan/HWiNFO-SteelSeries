@@ -1,29 +1,106 @@
 # HWiNFO-SteelSeriesOLED
-Pulls info from HWiNFO Shared memory support and pushes it to Steel Series supported OLED screens
+Pulls info from HWiNFO Shared memory support and pushes it to SteelSeries supported OLED screens.
+Uses very little CPU and RAM (~4MB).
 
 ![hwinfo-steelseries-oled.png](/assets/hwinfo-steelseries-oled.png)
 
-Currently pulling info from the following sensors:
+2 Summary templates are provided or you choose custom sensors with the `conf.ini` file.
 
+`Vertical`
 ```
 CPU   | GPU   | MEM
 Temp  | Temp  | Used
 Usage | Usage | Free
 ```
 
-CPU Usage = "Total CPU Usage"
+`Horizontal`
+```
+CPU  | Temp  | Usage
+GPU  | Temp  | Usage 
+MEM  | Used  | Free
+```
 
-CPU Temp  = "CPU (Tctl/Tdie)"
+Multiple pages of Sensors is supported in Custom. The 
 
-GPU Usage = "GPU Core Load"
+Below is my custom ```conf.ini```
 
-GPU Temp  = "GPU Temperature"
+```ini
+[Main]
+style=Custom
+sensors_per_line=3
+pages=2
+page_time=10
 
-MEM Used  = "Physical Memory Used"
+[PAGE1.Sensors]
+sensor_0="RTSS;Framerate"
+label_0="F"
+unit_0=""
 
-MEM Free  = "Physical Memory Available"
+sensor_1="CLOCK"
+label_1="⏰"
+unit_1=""
 
+sensor_2="BLANK"
 
+sensor_3="GPU [#0]: NVIDIA GeForce RTX 3090;GPU Temperature"
+label_3="⛏"
+unit_3="°"
+
+sensor_4="GPU [#0]: NVIDIA GeForce RTX 3090;GPU Core Load"
+label_4=""
+unit_4="%"
+
+sensor_5="GPU [#0]: NVIDIA GeForce RTX 3090;GPU Power"
+label_5=""
+unit_5="W"
+
+sensor_6="CPU [#0]: AMD Ryzen 9 7950X3D: Enhanced;CPU (Tctl/Tdie)"
+label_6="💻"
+unit_6="°"
+
+sensor_7="CPU [#0]: AMD Ryzen 9 7950X3D;Total CPU Usage"
+label_7=""
+unit_7="%"
+
+sensor_8="CPU [#0]: AMD Ryzen 9 7950X3D: Enhanced;CPU Package Power"
+label_8=""
+unit_8="W"
+
+[PAGE2.Sensors]
+sensor_0="System: ASUS ;Physical Memory Used"
+label_0="RAM"
+unit_0="g"
+convert_0="MB/GB"
+
+sensor_1="System: ASUS ;Physical Memory Available"
+label_1=""
+unit_1="g"
+convert_1="MB/GB"
+
+sensor_2="System: ASUS ;Physical Memory Load"
+label_2=""
+unit_2="%"
+
+sensor_3="Network: Intel Ethernet Controller I225-V;Current UP rate"
+label_3="NET ▲"
+unit_3="k/s"
+
+sensor_6="Network: Intel Ethernet Controller I225-V;Current DL rate"
+label_6="NET ▼"
+unit_6="k/s"
+```
+
+That produces these two pages:
+```
+F  00 ⏰05:56pm
+⛏ 34° 01% 35W
+💻 60° 06% 67W
+```
+```
+RAM 15g 48g 23%
+NET ▲ 01k/s  
+NET ▼ 00k/s  
+```
 ## Requirements
 **HWiNFO**
 https://www.hwinfo.com/
