@@ -34,7 +34,7 @@ const DISPLAY_LINES: usize = 3;
 #[allow(unreachable_code)]
 fn main() -> Result<(), anyhow::Error> {
     let icon = Icon::from_path("assets/hwinfo-steelseries-icon.ico", Some((64, 64)))?;
-    TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::new()
         .with_tooltip("HWiNFO-SteelSeries")
         .with_icon(icon)
         .build()?;
