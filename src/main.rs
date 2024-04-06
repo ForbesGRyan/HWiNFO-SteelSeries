@@ -1,6 +1,6 @@
 mod settings;
 use ini::Ini;
-use settings::create_config;
+use settings::settings_create_config;
 
 mod consts;
 use consts::*;
@@ -40,7 +40,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     let config = match Ini::load_from_file("conf.ini") {
         Ok(conf) => conf,
-        Err(_err) => create_config(&term, &hwinfo)?,
+        Err(_err) => settings_create_config(&term, &hwinfo)?,
     };
 
     let config_main = match config.section(Some("Main")) {

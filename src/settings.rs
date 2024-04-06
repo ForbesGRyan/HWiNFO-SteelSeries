@@ -4,7 +4,7 @@ use dialoguer::Input;
 use hwinfo_steelseries_oled::Hwinfo;
 use ini::Ini;
 
-pub fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
+pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
     term.write_line("Config not found.")?;
     let mut conf = Ini::new();
     term.write_line(
@@ -69,7 +69,7 @@ pub fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error>
                 conf.with_section(Some("Main"))
                     .set("sensors_per_line", sensors_per_line.to_string());
             }
-            _ => return create_config(term, hwinfo),
+            _ => return settings_create_config(term, hwinfo),
         }
 
         for k in 0..(lines * sensors_per_line) {
@@ -82,7 +82,7 @@ pub fn create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error>
                 Ok(category) => {
                     if category >= length {
                         println!("Category out of range, please try again.");
-                        return create_config(term, hwinfo);
+                        return settings_create_config(term, hwinfo);
                     } else {
                         category
                     }
