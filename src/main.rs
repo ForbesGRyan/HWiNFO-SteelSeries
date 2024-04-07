@@ -185,6 +185,11 @@ fn main() -> Result<(), anyhow::Error> {
         }
 
         if summary {
+            let mut labels: Vec<&str> = vec!["CPU", "", "GPU", "", "MEM", ""];
+            let mut units: Vec<&str> = vec!["°", "%", "°", "%", "MB", "MB"];
+            let mut values: Vec<String> = vec![String::new(); CUSTOM_SENSORS];
+            let sensors_per_line: u8 = 2;
+
             let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
             let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
 
@@ -209,8 +214,8 @@ fn main() -> Result<(), anyhow::Error> {
             let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
             let cpu_temp_cur_value = sensor_cpu_temp.value;
             let cpu_usage_cur_value = sensor_cpu_usage.value;
-            let temp_unit = "°"; //String::from_utf8(sensor_cpu_temp.utf_unit.to_vec())?;
-            let usage_unit = "%"; //String::from_utf8(sensor_cpu_usage.utf_unit.to_vec())?;
+            let temp_unit = "°"; 
+            let usage_unit = "%";
             let gpu_temp_cur_value = sensor_gpu_temp.value;
             let gpu_usage_cur_value = sensor_gpu_usage.value;
             let mem_unit = "G";
@@ -309,9 +314,7 @@ fn main() -> Result<(), anyhow::Error> {
         if display_in_console {
             display_value_in_console(&term, &value)?;
         }
-        // else {
         client.trigger_event_frame(format!("PAGE{}", page_counter + 1).as_str(), i.0, value)?;
-        // }
         i += 1;
         std::thread::sleep(std::time::Duration::from_millis(TICK_RATE));
     }
