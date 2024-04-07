@@ -180,7 +180,7 @@ fn main() -> Result<(), anyhow::Error> {
                            "line3":"HWiNFO"});
             client.trigger_event_frame("ERROR", i.0, value)?;
             i += 1;
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_millis(TICK_RATE));
             continue;
         }
 
@@ -313,7 +313,7 @@ fn main() -> Result<(), anyhow::Error> {
         client.trigger_event_frame(format!("PAGE{}", page_counter + 1).as_str(), i.0, value)?;
         // }
         i += 1;
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_millis(TICK_RATE));
     }
     client.stop_heartbeat()?;
 

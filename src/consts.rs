@@ -17,3 +17,4 @@ impl std::fmt::Display for STYLE {
 
 pub const CUSTOM_SENSORS: usize = 9;
 pub const DISPLAY_LINES: usize = 3;
+pub const TICK_RATE: u64 = 1000;
