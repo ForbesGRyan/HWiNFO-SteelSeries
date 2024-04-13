@@ -38,12 +38,12 @@ fn main() -> Result<(), anyhow::Error> {
     let mut hwinfo = connect_hwinfo(&term)?;
     hwinfo.pull()?;
 
-    let config = match Ini::load_from_file("conf.ini") {
+    let config_file = match Ini::load_from_file("conf.ini") {
         Ok(conf) => conf,
         Err(_err) => settings_create_config(&term, &hwinfo)?,
     };
 
-    let config_main = match config.section(Some("Main")) {
+    let config_main = match config_file.section(Some("Main")) {
         Some(main) => main,
         None => {
             return Err(anyhow::Error::new(std::io::Error::new(
@@ -62,7 +62,6 @@ fn main() -> Result<(), anyhow::Error> {
     //         )))
     //     }
     // };
-
     // std::thread::sleep(std::time::Duration::from_secs(1));
     // console_window(Console::HIDE);
 
@@ -109,7 +108,7 @@ fn main() -> Result<(), anyhow::Error> {
     };
     let mut pages_vec = Vec::new();
     for i in 1..=pages {
-        match config.section(Some(format!("PAGE{}.Sensors", i))) {
+        match config_file.section(Some(format!("PAGE{}.Sensors", i))) {
             Some(page) => {
                 // client.register_event(format!("PAGE{}", i).as_str())?;
                 let handler = page_handler(3, "line1", "line2", "line3", None);
@@ -127,11 +126,6 @@ fn main() -> Result<(), anyhow::Error> {
         };
     }
 
-    // let handler = page_handler(3, "line1", "line2", "line3", None);
-
-    // client.register_event_full("MAIN", None, None, None, Some(true))?;
-
-    // client.bind_event("MAIN", None, None, None, None, vec![handler])?;
     client.start_heartbeat();
     let mut i = Wrapping(0isize);
     let mut count: usize = 0;

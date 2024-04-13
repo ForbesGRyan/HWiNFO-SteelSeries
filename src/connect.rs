@@ -11,7 +11,8 @@ pub fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
         Err(_err) => {
             // println!("Can't connect to HWiNFO. Trying again in 1 second.");
             for i in (1..=3).rev() {
-                term.clear_line()?;
+                // term.clear_line()?;
+                term.clear_screen()?;
                 term.write_line(
                     format!("Can't connect to HWiNFO. Trying again in {} second.", i).as_str(),
                 )?;
@@ -30,7 +31,8 @@ pub fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error
         }
         Err(_e) => {
             for i in (1..=3).rev() {
-                term.clear_line()?;
+                // term.clear_line()?;
+                term.clear_screen()?;
                 term.write_line(
                     format!(
                         "Can't connect to SteelSeries GG. Trying again in {} second.",
