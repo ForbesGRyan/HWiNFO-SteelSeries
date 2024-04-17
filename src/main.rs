@@ -179,10 +179,10 @@ fn main() -> Result<(), anyhow::Error> {
         }
 
         if summary {
-            let mut labels: Vec<&str> = vec!["CPU", "", "GPU", "", "MEM", ""];
-            let mut units: Vec<&str> = vec!["°", "%", "°", "%", "MB", "MB"];
-            let mut values: Vec<String> = vec![String::new(); CUSTOM_SENSORS];
-            let sensors_per_line: u8 = 2;
+            let mut _labels: Vec<&str> = vec!["CPU", "", "GPU", "", "MEM", ""];
+            let mut _units: Vec<&str> = vec!["°", "%", "°", "%", "MB", "MB"];
+            let mut _values: Vec<String> = vec![String::new(); CUSTOM_SENSORS];
+            let _sensors_per_line: u8 = 2;
 
             let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
             let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
