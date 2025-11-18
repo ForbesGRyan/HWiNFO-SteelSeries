@@ -2,50 +2,40 @@ use console::Term;
 use gamesense::client::GameSenseClient;
 use hwinfo_steelseries_oled::Hwinfo;
 
-pub fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
-    match Hwinfo::new() {
-        Ok(hwinfo) => {
+fn retry_connect<T, F>(
+    term: &Term,
+    service_name: &str,
+    connect_fn: F,
+) -> Result<T, anyhow::Error>
+where
+    F: Fn() -> Result<T, anyhow::Error>,
+{
+    match connect_fn() {
+        Ok(result) => {
             term.clear_line()?;
-            // term.clear_last_lines(1)?;
-            term.write_line("Connected to HWiNFO")?;
-            Ok(hwinfo)
+            term.write_line(&format!("Connected to {}", service_name))?;
+            Ok(result)
         }
-        Err(_err) => {
-            // println!("Can't connect to HWiNFO. Trying again in 1 second.");
+        Err(_) => {
             for i in (1..=3).rev() {
                 term.clear_line()?;
-                // term.clear_screen()?;
-                term.write_line(
-                    format!("Can't connect to HWiNFO. Trying again in {} second.", i).as_str(),
-                )?;
+                term.write_line(&format!(
+                    "Can't connect to {}. Trying again in {} second.",
+                    service_name, i
+                ))?;
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
-            connect_hwinfo(term)
+            retry_connect(term, service_name, connect_fn)
         }
     }
 }
 
+pub fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
+    retry_connect(term, "HWiNFO", || Hwinfo::new())
+}
+
 pub fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
-    match GameSenseClient::new("HWINFO", "HWiNFO_Stats", "Ryan", None) {
-        Ok(c) => {
-            term.clear_line()?;
-            term.write_line("Connected to SteelSeries GG")?;
-            Ok(c)
-        }
-        Err(_e) => {
-            for i in (1..=3).rev() {
-                term.clear_line()?;
-                // term.clear_screen()?;
-                term.write_line(
-                    format!(
-                        "Can't connect to SteelSeries GG. Trying again in {} second.",
-                        i
-                    )
-                    .as_str(),
-                )?;
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-            connect_steelseries(term)
-        }
-    }
+    retry_connect(term, "SteelSeries GG", || {
+        GameSenseClient::new("HWINFO", "HWiNFO_Stats", "Ryan", None)
+    })
 }

@@ -1,0 +1,155 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for version detection
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install GitHub CLI
+        run: |
+          winget install --id GitHub.cli --silent --accept-source-agreements
+        continue-on-error: true
+
+      - name: Determine next version
+        id: version
+        shell: bash
+        run: |
+          # Get latest release tag
+          LATEST=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "v0.1.0")
+          echo "Latest release: $LATEST"
+
+          # Parse version (v0.1.6 -> 0 1 6)
+          VERSION=${LATEST#v}
+          IFS='.' read -ra PARTS <<< "$VERSION"
+
+          # Increment patch version
+          MAJOR=${PARTS[0]:-0}
+          MINOR=${PARTS[1]:-1}
+          PATCH=${PARTS[2]:-0}
+          NEW_PATCH=$((PATCH + 1))
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+          echo "New version: $NEW_VERSION"
+
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "previous=$LATEST" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Check if version already exists
+        shell: bash
+        run: |
+          if gh release view ${{ steps.version.outputs.version }} &>/dev/null; then
+            echo "Release ${{ steps.version.outputs.version }} already exists!"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build release binary
+        run: cargo build --release --verbose
+
+      - name: Run tests
+        run: cargo test --release --verbose
+
+      - name: Prepare release artifacts
+        shell: bash
+        run: |
+          mkdir -p release
+          cp target/release/hwinfo-steelseries-oled.exe release/
+          cp README.md release/
+          if [ -f LICENSE ]; then cp LICENSE release/; fi
+
+          # Create zip archive
+          cd release
+          7z a ../hwinfo-steelseries-oled-${{ steps.version.outputs.version }}-windows-x64.zip *
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          PREV="${{ steps.version.outputs.previous }}"
+
+          # Generate commit log since last release
+          if [ "$PREV" != "v0.1.0" ]; then
+            NOTES=$(git log --pretty=format:"- %s (%h)" ${PREV}..HEAD)
+          else
+            NOTES=$(git log --pretty=format:"- %s (%h)" HEAD~10..HEAD)
+          fi
+
+          # Create release notes
+          cat << EOF > release_notes.md
+          ## Changes
+
+          $NOTES
+
+          ## Installation
+
+          1. Download \`hwinfo-steelseries-oled-${{ steps.version.outputs.version }}-windows-x64.zip\`
+          2. Extract the archive
+          3. Run \`hwinfo-steelseries-oled.exe\`
+
+          ## Requirements
+
+          - Windows 10/11 (64-bit)
+          - HWiNFO with Shared Memory Support enabled
+          - SteelSeries GG
+          - Compatible SteelSeries device with OLED screen
+
+          ---
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV}...${{ steps.version.outputs.version }}
+          EOF
+
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body: ${{ steps.notes.outputs.notes }}
+          files: |
+            hwinfo-steelseries-oled-${{ steps.version.outputs.version }}-windows-x64.zip
+            release/hwinfo-steelseries-oled.exe
+            release/README.md
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update release summary
+        shell: bash
+        run: |
+          echo "### 🎉 Release ${{ steps.version.outputs.version }} Created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Previous version:** ${{ steps.version.outputs.previous }}" >> $GITHUB_STEP_SUMMARY
+          echo "**New version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY

@@ -76,61 +76,18 @@ pub fn format_custom_value(
     units: Vec<&str>,
 ) -> Value {
     let mut value = json!({});
-    if sensors_per_line == 1 {
-        for i in 0..DISPLAY_LINES {
-            value[format!("line{}", i + 1)] =
-                json!(format!("{} {}{}", labels[i], values[i], units[i]));
-        }
-    } else if sensors_per_line == 2 {
-        value["line1"] = json!(format!(
-            "{} {}{} {} {}{}",
-            labels[0], values[0], units[0], labels[1], values[1], units[1]
-        ));
-        value["line2"] = json!(format!(
-            "{} {}{} {} {}{}",
-            labels[2], values[2], units[2], labels[3], values[3], units[3]
-        ));
-        value["line3"] = json!(format!(
-            "{} {}{} {} {}{}",
-            labels[4], values[4], units[4], labels[5], values[5], units[5]
-        ));
-    } else if sensors_per_line == 3 {
-        value["line1"] = json!(format!(
-            "{} {}{} {}{}{} {}{}{}",
-            labels[0],
-            values[0],
-            units[0],
-            labels[1],
-            values[1],
-            units[1],
-            labels[2],
-            values[2],
-            units[2]
-        ));
-        value["line2"] = json!(format!(
-            "{} {}{} {}{}{} {}{}{}",
-            labels[3],
-            values[3],
-            units[3],
-            labels[4],
-            values[4],
-            units[4],
-            labels[5],
-            values[5],
-            units[5]
-        ));
-        value["line3"] = json!(format!(
-            "{} {}{} {}{}{} {}{}{}",
-            labels[6],
-            values[6],
-            units[6],
-            labels[7],
-            values[7],
-            units[7],
-            labels[8],
-            values[8],
-            units[8]
-        ));
+
+    for line_idx in 0..DISPLAY_LINES {
+        let start_idx = line_idx * sensors_per_line as usize;
+        let line_parts: Vec<String> = (0..sensors_per_line as usize)
+            .map(|i| {
+                let idx = start_idx + i;
+                format!("{} {}{}", labels[idx], values[idx], units[idx])
+            })
+            .collect();
+
+        value[format!("line{}", line_idx + 1)] = json!(line_parts.join(" "));
     }
+
     value
 }

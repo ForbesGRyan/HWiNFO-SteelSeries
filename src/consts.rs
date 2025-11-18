@@ -1,16 +1,16 @@
 #[derive(PartialEq)]
-pub enum STYLE {
-    VERTICAL,
-    HORIZONTAL,
-    CUSTOM,
+pub enum Style {
+    Vertical,
+    Horizontal,
+    Custom,
 }
 
-impl std::fmt::Display for STYLE {
+impl std::fmt::Display for Style {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match *self {
-            STYLE::VERTICAL => write!(f, "Vertical"),
-            STYLE::HORIZONTAL => write!(f, "Horizontal"),
-            STYLE::CUSTOM => write!(f, "Custom"),
+        match self {
+            Style::Vertical => write!(f, "Vertical"),
+            Style::Horizontal => write!(f, "Horizontal"),
+            Style::Custom => write!(f, "Custom"),
         }
     }
 }

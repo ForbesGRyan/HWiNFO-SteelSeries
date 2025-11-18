@@ -1,6 +1,6 @@
 mod settings;
 use ini::Ini;
-use settings::settings_create_config;
+use settings::{settings_create_config, AppConfig};
 
 mod consts;
 use consts::*;
@@ -23,73 +23,6 @@ use serde_json::{json, Value};
 use std::num::Wrapping;
 use tray_icon::{Icon, TrayIconBuilder};
 use anyhow;
-
-// Configuration helper struct
-struct AppConfig<'a> {
-    is_summary: bool,
-    is_vertical: bool,
-    gpu: &'a str,
-    decimal: bool,
-    pages: usize,
-    page_time: isize,
-    sensors_per_line: u8,
-}
-
-impl<'a> AppConfig<'a> {
-    fn from_ini(config: &'a Ini) -> Result<Self, anyhow::Error> {
-        let main = config
-            .section(Some("Main"))
-            .ok_or_else(|| anyhow::anyhow!("Main config section not found"))?;
-
-        let style = main
-            .get("style")
-            .ok_or_else(|| anyhow::anyhow!("Style not found"))?
-            .to_lowercase();
-
-        let is_summary = matches!(style.as_str(), "vertical" | "horizontal");
-        let is_vertical = style == "vertical";
-
-        let gpu = if is_summary {
-            main.get("gpu").unwrap_or("")
-        } else {
-            ""
-        };
-
-        let decimal = main
-            .get("decimal")
-            .and_then(|d| d.parse::<bool>().ok())
-            .unwrap_or(false);
-
-        let pages = main
-            .get("pages")
-            .and_then(|p| p.parse::<usize>().ok())
-            .unwrap_or(1);
-
-        let page_time = main
-            .get("page_time")
-            .and_then(|pt| pt.parse::<isize>().ok())
-            .map(|num| if (0..=60).contains(&num) { num } else { 5 })
-            .unwrap_or(5);
-
-        let sensors_per_line = if !is_summary {
-            main.get("sensors_per_line")
-                .and_then(|spl| spl.parse::<u8>().ok())
-                .unwrap_or(1)
-        } else {
-            1
-        };
-
-        Ok(Self {
-            is_summary,
-            is_vertical,
-            gpu,
-            decimal,
-            pages,
-            page_time,
-            sensors_per_line,
-        })
-    }
-}
 
 // Summary sensors data
 struct SummarySensors {
