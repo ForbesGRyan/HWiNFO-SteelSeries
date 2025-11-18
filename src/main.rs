@@ -230,3 +230,66 @@ fn main() -> Result<(), anyhow::Error> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_sensors() -> SummarySensors {
+        SummarySensors {
+            cpu_temp: 65.5,
+            cpu_usage: 45.2,
+            gpu_temp: 72.8,
+            gpu_usage: 88.9,
+            mem_used: 16.3,
+            mem_free: 15.7,
+            mem_load: 50.9,
+        }
+    }
+
+    #[test]
+    fn test_format_vertical_summary_with_decimal() {
+        let sensors = create_test_sensors();
+        let result = format_vertical_summary(&sensors, true);
+
+        assert_eq!(result["line1"], "CPU   GPU   MEM");
+        assert_eq!(result["line2"], "65.5° 72.8° 16.3G");
+        assert_eq!(result["line3"], "45.2% 88.9% 15.7G");
+    }
+
+    #[test]
+    fn test_format_vertical_summary_without_decimal() {
+        let sensors = create_test_sensors();
+        let result = format_vertical_summary(&sensors, false);
+
+        assert_eq!(result["line1"], "CPU   GPU   MEM");
+        assert_eq!(result["line2"], "66°   73°   16G");
+        assert_eq!(result["line3"], "45%    89%    16G");
+    }
+
+    #[test]
+    fn test_format_horizontal_summary_with_decimal() {
+        let sensors = create_test_sensors();
+        let result = format_horizontal_summary(&sensors, true);
+
+        assert_eq!(result["line1"], "CPU 65.5° 45.2%");
+        assert_eq!(result["line2"], "GPU 72.8° 88.9%");
+        assert_eq!(result["line3"], "MEM 16.3G 50.9%");
+    }
+
+    #[test]
+    fn test_format_horizontal_summary_without_decimal() {
+        let sensors = create_test_sensors();
+        let result = format_horizontal_summary(&sensors, false);
+
+        assert_eq!(result["line1"], "CPU 66° 45%");
+        assert_eq!(result["line2"], "GPU 73° 89%");
+        assert_eq!(result["line3"], "MEM 16G 51%");
+    }
+
+    // Note: check_hwinfo_connection is tested indirectly through the equality
+    // implementation tested in lib.rs. The logic is simple: if hwinfo structs
+    // are equal (unchanged readings), increment disconnect_count, else reset to 0.
+    // Since we can't easily create mock Hwinfo in main.rs tests due to private
+    // fields, we rely on lib.rs tests for Hwinfo equality verification.
+}

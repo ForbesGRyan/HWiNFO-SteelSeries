@@ -91,3 +91,75 @@ pub fn format_custom_value(
 
     value
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_custom_value_one_sensor_per_line() {
+        let labels = vec!["CPU", "GPU", "MEM"];
+        let values = vec!["65".to_string(), "72".to_string(), "16".to_string()];
+        let units = vec!["°", "°", "G"];
+
+        let result = format_custom_value(1, labels, values, units);
+
+        assert_eq!(result["line1"], "CPU 65°");
+        assert_eq!(result["line2"], "GPU 72°");
+        assert_eq!(result["line3"], "MEM 16G");
+    }
+
+    #[test]
+    fn test_format_custom_value_two_sensors_per_line() {
+        let labels = vec!["C", "65", "G", "72", "M", "16"];
+        let values = vec!["".to_string(), "%".to_string(), "".to_string(), "°".to_string(), "".to_string(), "G".to_string()];
+        let units = vec!["", "", "", "", "", ""];
+
+        let result = format_custom_value(2, labels, values, units);
+
+        assert_eq!(result["line1"], "C  65 %");
+        assert_eq!(result["line2"], "G  72 °");
+        assert_eq!(result["line3"], "M  16 G");
+    }
+
+    #[test]
+    fn test_format_custom_value_three_sensors_per_line() {
+        let labels = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+        let values = vec!["1".to_string(), "2".to_string(), "3".to_string(),
+                          "4".to_string(), "5".to_string(), "6".to_string(),
+                          "7".to_string(), "8".to_string(), "9".to_string()];
+        let units = vec!["", "", "", "", "", "", "", "", ""];
+
+        let result = format_custom_value(3, labels, values, units);
+
+        assert_eq!(result["line1"], "A 1 B 2 C 3");
+        assert_eq!(result["line2"], "D 4 E 5 F 6");
+        assert_eq!(result["line3"], "G 7 H 8 I 9");
+    }
+
+    #[test]
+    fn test_format_custom_value_empty_labels() {
+        let labels = vec!["", "", ""];
+        let values = vec!["100".to_string(), "200".to_string(), "300".to_string()];
+        let units = vec!["W", "W", "W"];
+
+        let result = format_custom_value(1, labels, values, units);
+
+        assert_eq!(result["line1"], " 100W");
+        assert_eq!(result["line2"], " 200W");
+        assert_eq!(result["line3"], " 300W");
+    }
+
+    #[test]
+    fn test_format_custom_value_mixed_content() {
+        let labels = vec!["FPS", "⛏", "💻"];
+        let values = vec!["144".to_string(), "45".to_string(), "60".to_string()];
+        let units = vec!["", "°", "°"];
+
+        let result = format_custom_value(1, labels, values, units);
+
+        assert_eq!(result["line1"], "FPS 144");
+        assert_eq!(result["line2"], "⛏ 45°");
+        assert_eq!(result["line3"], "💻 60°");
+    }
+}

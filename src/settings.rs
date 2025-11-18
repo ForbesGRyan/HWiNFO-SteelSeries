@@ -5,6 +5,7 @@ use hwinfo_steelseries_oled::Hwinfo;
 use ini::Ini;
 
 // Configuration struct for parsing existing config files
+#[derive(Debug)]
 pub struct AppConfig<'a> {
     pub is_summary: bool,
     pub is_vertical: bool,
@@ -211,4 +212,113 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
     term.write_line("config created.")?;
 
     Ok(conf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_config(style: &str, gpu: Option<&str>, decimal: bool, pages: usize, page_time: isize, sensors_per_line: u8) -> Ini {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", style);
+
+        if let Some(gpu_val) = gpu {
+            conf.with_section(Some("Main")).set("gpu", gpu_val);
+        }
+
+        conf.with_section(Some("Main"))
+            .set("decimal", decimal.to_string())
+            .set("pages", pages.to_string())
+            .set("page_time", page_time.to_string())
+            .set("sensors_per_line", sensors_per_line.to_string());
+
+        conf
+    }
+
+    #[test]
+    fn test_appconfig_vertical_summary() {
+        let conf = create_test_config("Vertical", None, true, 1, 5, 1);
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        assert!(config.is_summary);
+        assert!(config.is_vertical);
+        assert_eq!(config.gpu, "");
+        assert!(config.decimal);
+        assert_eq!(config.pages, 1);
+        assert_eq!(config.page_time, 5);
+    }
+
+    #[test]
+    fn test_appconfig_horizontal_summary() {
+        let conf = create_test_config("Horizontal", Some("GPU [#0]"), false, 1, 10, 1);
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        assert!(config.is_summary);
+        assert!(!config.is_vertical);
+        assert_eq!(config.gpu, "GPU [#0]");
+        assert!(!config.decimal);
+        assert_eq!(config.page_time, 10);
+    }
+
+    #[test]
+    fn test_appconfig_custom_mode() {
+        let conf = create_test_config("Custom", None, false, 2, 8, 3);
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        assert!(!config.is_summary);
+        assert_eq!(config.pages, 2);
+        assert_eq!(config.sensors_per_line, 3);
+    }
+
+    #[test]
+    fn test_appconfig_defaults() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main")).set("style", "Vertical");
+
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        assert_eq!(config.pages, 1);
+        assert_eq!(config.page_time, 5);
+        assert!(!config.decimal);
+        assert_eq!(config.sensors_per_line, 1);
+    }
+
+    #[test]
+    fn test_appconfig_page_time_out_of_range() {
+        let conf = create_test_config("Vertical", None, false, 1, 100, 1);
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        // Should cap at 5 for values outside 0..=60
+        assert_eq!(config.page_time, 5);
+    }
+
+    #[test]
+    fn test_appconfig_page_time_negative() {
+        let conf = create_test_config("Vertical", None, false, 1, -5, 1);
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        // Should use default 5 for negative values
+        assert_eq!(config.page_time, 5);
+    }
+
+    #[test]
+    fn test_appconfig_missing_main_section() {
+        let conf = Ini::new();
+        let result = AppConfig::from_ini(&conf);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Main config section not found");
+    }
+
+    #[test]
+    fn test_appconfig_missing_style() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main")).set("pages", "1");
+
+        let result = AppConfig::from_ini(&conf);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Style not found");
+    }
 }
