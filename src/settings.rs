@@ -37,7 +37,7 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
         if len_gpus > 1 {
             term.write_line("Which GPU:\n")?;
             for (i, gpu) in gpus.iter().enumerate() {
-                let sensor = &hwinfo.master_sensor_names[gpu.dw_sensor_index as usize];
+                let sensor = &hwinfo.sensor_names[gpu.dw_sensor_index as usize];
                 let setup = format!("{}: {}", i, sensor);
                 term.write_line(&setup)?;
             }
@@ -46,7 +46,7 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
                 .interact_text()?;
 
             let gpu_selected =
-                &hwinfo.master_sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
+                &hwinfo.sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
             conf.with_section(Some("Main")).set("gpu", gpu_selected);
         }
     } else {
@@ -74,10 +74,10 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
 
         for k in 0..(lines * sensors_per_line) {
             println!("\n{} / {}\n", k + 1, (lines * sensors_per_line));
-            for (i, sensor) in hwinfo.master_sensor_names.iter().enumerate() {
+            for (i, sensor) in hwinfo.sensor_names.iter().enumerate() {
                 println!("{}) {}", i, sensor);
             }
-            let length = hwinfo.master_sensor_names.len();
+            let length = hwinfo.sensor_names.len();
             let category: usize = match Input::new().with_prompt("Category").interact_text() {
                 Ok(category) => {
                     if category >= length {
@@ -89,11 +89,11 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
                 }
                 Err(_) => 0,
             };
-            let sensor_name = &hwinfo.master_sensor_names[category];
-            let sensor = hwinfo.master_readings.sensors.get(sensor_name).unwrap();
+            let sensor_name = &hwinfo.sensor_names[category];
+            let sensor = hwinfo.sensors.get(sensor_name).unwrap();
             println!("\n{}:", sensor_name);
             let mut temp_readings = Vec::new();
-            for (i, reading) in sensor.reading.iter().enumerate() {
+            for (i, reading) in sensor.readings.iter().enumerate() {
                 println!("\t{}) {}", i, reading.0);
                 let sensor_key = format!("{};{}", sensor_name, reading.0);
                 temp_readings.push(sensor_key.to_owned());

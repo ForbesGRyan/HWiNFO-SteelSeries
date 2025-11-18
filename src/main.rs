@@ -18,10 +18,172 @@ mod utils;
 use utils::{format_custom_value, run_sensors};
 
 use console::Term;
-use hwinfo_steelseries_oled::{Hwinfo, HwinfoSensorsReadingElement};
-use serde_json::json;
+use hwinfo_steelseries_oled::Hwinfo;
+use serde_json::{json, Value};
 use std::num::Wrapping;
 use tray_icon::{Icon, TrayIconBuilder};
+use anyhow;
+
+// Configuration helper struct
+struct AppConfig<'a> {
+    is_summary: bool,
+    is_vertical: bool,
+    gpu: &'a str,
+    decimal: bool,
+    pages: usize,
+    page_time: isize,
+    sensors_per_line: u8,
+}
+
+impl<'a> AppConfig<'a> {
+    fn from_ini(config: &'a Ini) -> Result<Self, anyhow::Error> {
+        let main = config
+            .section(Some("Main"))
+            .ok_or_else(|| anyhow::anyhow!("Main config section not found"))?;
+
+        let style = main
+            .get("style")
+            .ok_or_else(|| anyhow::anyhow!("Style not found"))?
+            .to_lowercase();
+
+        let is_summary = matches!(style.as_str(), "vertical" | "horizontal");
+        let is_vertical = style == "vertical";
+
+        let gpu = if is_summary {
+            main.get("gpu").unwrap_or("")
+        } else {
+            ""
+        };
+
+        let decimal = main
+            .get("decimal")
+            .and_then(|d| d.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        let pages = main
+            .get("pages")
+            .and_then(|p| p.parse::<usize>().ok())
+            .unwrap_or(1);
+
+        let page_time = main
+            .get("page_time")
+            .and_then(|pt| pt.parse::<isize>().ok())
+            .map(|num| if (0..=60).contains(&num) { num } else { 5 })
+            .unwrap_or(5);
+
+        let sensors_per_line = if !is_summary {
+            main.get("sensors_per_line")
+                .and_then(|spl| spl.parse::<u8>().ok())
+                .unwrap_or(1)
+        } else {
+            1
+        };
+
+        Ok(Self {
+            is_summary,
+            is_vertical,
+            gpu,
+            decimal,
+            pages,
+            page_time,
+            sensors_per_line,
+        })
+    }
+}
+
+// Summary sensors data
+struct SummarySensors {
+    cpu_temp: f64,
+    cpu_usage: f64,
+    gpu_temp: f64,
+    gpu_usage: f64,
+    mem_used: f64,
+    mem_free: f64,
+    mem_load: f64,
+}
+
+fn fetch_summary_sensors(
+    hwinfo: &Hwinfo,
+    gpu_name: &str,
+) -> Result<SummarySensors, anyhow::Error> {
+    let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
+    let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
+    let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
+
+    let sensor_gpu_temp = if gpu_name.is_empty() {
+        hwinfo.find_first("GPU Temperature")?
+    } else {
+        hwinfo
+            .get(gpu_name, "GPU Temperature")
+            .ok_or_else(|| anyhow::anyhow!("GPU Temperature not found"))?
+    };
+
+    let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
+    let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
+    let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
+
+    Ok(SummarySensors {
+        cpu_temp: sensor_cpu_temp.value,
+        cpu_usage: sensor_cpu_usage.value,
+        gpu_temp: sensor_gpu_temp.value,
+        gpu_usage: sensor_gpu_usage.value,
+        mem_used: sensor_mem_used.value / 1024.0,
+        mem_free: sensor_mem_free.value / 1024.0,
+        mem_load: sensor_mem_load.value,
+    })
+}
+
+fn format_vertical_summary(sensors: &SummarySensors, decimal: bool) -> Value {
+    let precision = if decimal { 1 } else { 0 };
+    let spacing = if decimal { " " } else { "   " };
+    let spacing2 = if decimal { " " } else { "    " };
+
+    json!({
+        "line1": "CPU   GPU   MEM",
+        "line2": format!("{:.prec$}°{}{:.prec$}°{}{:.prec$}G",
+            sensors.cpu_temp,
+            spacing,
+            sensors.gpu_temp,
+            spacing,
+            sensors.mem_used,
+            prec = precision),
+        "line3": format!("{:.prec$}%{}{:.prec$}%{}{:.prec$}G",
+            sensors.cpu_usage,
+            spacing2,
+            sensors.gpu_usage,
+            spacing2,
+            sensors.mem_free,
+            prec = precision),
+    })
+}
+
+fn format_horizontal_summary(sensors: &SummarySensors, decimal: bool) -> Value {
+    let precision = if decimal { 1 } else { 0 };
+
+    json!({
+        "line1": format!("CPU {:.prec$}° {:.prec$}%",
+            sensors.cpu_temp,
+            sensors.cpu_usage,
+            prec = precision),
+        "line2": format!("GPU {:.prec$}° {:.prec$}%",
+            sensors.gpu_temp,
+            sensors.gpu_usage,
+            prec = precision),
+        "line3": format!("MEM {:.prec$}G {:.prec$}%",
+            sensors.mem_used,
+            sensors.mem_load,
+            prec = precision),
+    })
+}
+
+fn check_hwinfo_connection(old: &Hwinfo, new: &Hwinfo, disconnect_count: &mut usize, limit: usize) -> bool {
+    if old == new {
+        *disconnect_count = (*disconnect_count + 1).min(limit);
+    } else {
+        *disconnect_count = 0;
+    }
+    *disconnect_count >= limit
+}
 
 #[allow(unreachable_code)]
 fn main() -> Result<(), anyhow::Error> {
@@ -43,74 +205,17 @@ fn main() -> Result<(), anyhow::Error> {
         Err(_err) => settings_create_config(&term, &hwinfo)?,
     };
 
-    let config_main = match config_file.section(Some("Main")) {
-        Some(main) => main,
-        None => {
-            return Err(anyhow::Error::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Config Not found",
-            )))
-        }
-    };
-    // TODO: will error when using summary without a section for sensors
-    // let config_sensors = match config.section(Some("PAGE1.Sensors")) {
-    //     Some(sensors) => sensors,
-    //     None => {
-    //         return Err(anyhow::Error::new(std::io::Error::new(
-    //             std::io::ErrorKind::NotFound,
-    //             "Sensors Config Not found",
-    //         )))
-    //     }
-    // };
-    // std::thread::sleep(std::time::Duration::from_secs(1));
-    // console_window(Console::HIDE);
-
-    let style = match config_main.get("style") {
-        Some(style) => style.to_lowercase(),
-        None => {
-            return Err(anyhow::Error::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Style not found",
-            )))
-        }
-    };
-    let vertical = match style.as_str() {
-        "vertical" => Some(true),
-        "horizontal" => Some(false),
-        _ => None,
-    };
-    let summary = match style.as_str() {
-        "vertical" | "horizontal" => true,
-        _ => false,
-    };
-
-    let mut gpu: &str = "";
-    if summary {
-        gpu = match config_main.get("gpu") {
-            Some(gpu) => gpu,
-            None => "",
-        };
-    }
-
-    let decimal = match config_main.get("decimal") {
-        Some(decimal) => decimal.parse::<bool>()?,
-        None => false,
-    };
+    let config = AppConfig::from_ini(&config_file)?;
 
     #[cfg(debug_assertions)]
     let display_in_console = true;
     #[cfg(not(debug_assertions))]
     let display_in_console = false;
 
-    let pages = match config_main.get("pages") {
-        Some(pages) => pages.parse::<usize>()?,
-        None => 1,
-    };
     let mut pages_vec = Vec::new();
-    for i in 1..=pages {
+    for i in 1..=config.pages {
         match config_file.section(Some(format!("PAGE{}.Sensors", i))) {
             Some(page) => {
-                // client.register_event(format!("PAGE{}", i).as_str())?;
                 let handler = page_handler(3, "line1", "line2", "line3", None);
                 client.bind_event(
                     format!("PAGE{}", i).as_str(),
@@ -128,183 +233,59 @@ fn main() -> Result<(), anyhow::Error> {
 
     client.start_heartbeat();
     let mut i = Wrapping(0isize);
-    let mut count: usize = 0;
+    let mut disconnect_count: usize = 0;
     let mut page_counter: usize = 0;
-    let page_time = match config_main.get("page_time") {
-        Some(second) => {
-            let num = second.parse::<isize>()?;
-            match num {
-                0..=60 => num,
-                _ => 5,
-            }
-        }
-        None => 5,
-    };
     loop {
         // Logic to alternate between pages
-        if i.0 % page_time == 0 && i.0 != 0 {
-            if page_counter >= pages - 1 {
-                page_counter = 0;
-            } else {
-                page_counter += 1;
-            }
+        if i.0 % config.page_time == 0 && i.0 != 0 {
+            page_counter = (page_counter + 1) % config.pages;
         }
         let pages_sensors = pages_vec[page_counter];
 
-        let limit = 5;
         let old = hwinfo.clone();
         hwinfo.pull()?;
-        if old == hwinfo {
-            if count < limit {
-                count += 1;
-            }
-        } else {
-            count = 0;
-            // console_window(Console::HIDE);
-        }
+
+        let disconnected = check_hwinfo_connection(&old, &hwinfo, &mut disconnect_count, 5);
         drop(old);
-        #[allow(unused_assignments)]
-        let mut value = json!("");
-        if count >= limit {
+
+        if disconnected {
             console_window(Console::SHOW);
             term.clear_line()?;
             term.write_line("Disconnected from HWiNFO")?;
-            value = json!({"line1":"Disconnected",
-                           "line2":"FROM",
-                           "line3":"HWiNFO"});
+            let value = json!({
+                "line1": "Disconnected",
+                "line2": "FROM",
+                "line3": "HWiNFO"
+            });
             client.trigger_event_frame("ERROR", i.0, value)?;
             i += 1;
             std::thread::sleep(std::time::Duration::from_millis(TICK_RATE));
             continue;
         }
 
-        if summary {
-            let mut _labels: Vec<&str> = vec!["CPU", "", "GPU", "", "MEM", ""];
-            let mut _units: Vec<&str> = vec!["°", "%", "°", "%", "MB", "MB"];
-            let mut _values: Vec<String> = vec![String::new(); CUSTOM_SENSORS];
-            let _sensors_per_line: u8 = 2;
-
-            let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
-            let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
-
-            let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
-            let sensor_gpu_temp: &HwinfoSensorsReadingElement;
-            if gpu == "" {
-                sensor_gpu_temp = hwinfo.find_first("GPU Temperature")?;
+        let value = if config.is_summary {
+            let sensors = fetch_summary_sensors(&hwinfo, config.gpu)?;
+            if config.is_vertical {
+                format_vertical_summary(&sensors, config.decimal)
             } else {
-                sensor_gpu_temp = match hwinfo.get(gpu, "GPU Temperature") {
-                    Some(sensor) => sensor,
-                    None => {
-                        return Err(anyhow::Error::new(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            "GPU Temperature not found",
-                        )))
-                    }
-                };
-            }
-
-            let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
-            let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
-            let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
-            let cpu_temp_cur_value = sensor_cpu_temp.value;
-            let cpu_usage_cur_value = sensor_cpu_usage.value;
-            let temp_unit = "°"; 
-            let usage_unit = "%";
-            let gpu_temp_cur_value = sensor_gpu_temp.value;
-            let gpu_usage_cur_value = sensor_gpu_usage.value;
-            let mem_unit = "G";
-            let mem_used = sensor_mem_used.value / 1024.0;
-            let mem_free = sensor_mem_free.value / 1024.0;
-            let mem_load = sensor_mem_load.value;
-            let line1_spaces = " ";
-            let line2_spaces = " ";
-
-            if vertical.unwrap_or(true) {
-                if decimal {
-                    value = json!({
-                        "line1": "CPU   GPU   MEM",
-                        "line2": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
-                            cpu_temp_cur_value, temp_unit,
-                            line1_spaces,
-                            gpu_temp_cur_value, temp_unit,
-                            line1_spaces,
-                            mem_used, mem_unit),
-                        "line3": format!("{:.1}{}{}{:.1}{}{}{:.1}{}",
-                            cpu_usage_cur_value, usage_unit,
-                            line2_spaces,
-                            gpu_usage_cur_value, usage_unit,
-                            line2_spaces,
-                            mem_free, mem_unit),
-                    });
-                } else {
-                    value = json!({
-                        "line1": "CPU   GPU   MEM",
-                        "line2": format!("{:.0}{}{}{:.0}{}{}{:.0}{}",
-                            cpu_temp_cur_value, temp_unit,
-                            "   ",
-                            gpu_temp_cur_value, temp_unit,
-                            "   ",
-                            mem_used, mem_unit),
-                        "line3": format!("{:.0}{}{}{:.0}{}{}{:.0}{}",
-                            cpu_usage_cur_value, usage_unit,
-                            "    ",
-                            gpu_usage_cur_value, usage_unit,
-                            "    ",
-                            mem_free, mem_unit),
-                    });
-                }
-            } else {
-                // Horizontal
-                if decimal {
-                    value = json!({
-                        "line1": format!("CPU {:.1}{} {:.1}{}",
-                            cpu_temp_cur_value, temp_unit,
-                            cpu_usage_cur_value, usage_unit),
-                        "line2": format!("GPU {:.1}{} {:.1}{}",
-                            gpu_temp_cur_value, temp_unit,
-                            gpu_usage_cur_value, usage_unit),
-                        "line3": format!("MEM {:.1}{} {:.1}{}",
-                            mem_used, mem_unit,
-                            mem_load, usage_unit,
-                            // mem_free, mem_unit.to_lowercase()
-                        ),
-                    });
-                } else {
-                    value = json!({
-                        "line1": format!("CPU {:.0}{} {:.0}{}",
-                            cpu_temp_cur_value, temp_unit,
-                            cpu_usage_cur_value, usage_unit),
-                        "line2": format!("GPU {:.0}{} {:.0}{}",
-                            gpu_temp_cur_value, temp_unit,
-                            gpu_usage_cur_value, usage_unit),
-                        "line3": format!("MEM {:.0}{} {:.0}{}",
-                            mem_used, mem_unit,
-                            mem_load, usage_unit,
-                            // mem_free, mem_unit.to_lowercase()
-                        ),
-                    });
-                }
+                format_horizontal_summary(&sensors, config.decimal)
             }
         } else {
-            // Custom Senors
+            // Custom Sensors
             let mut labels = vec![""; CUSTOM_SENSORS];
             let mut units = vec![""; CUSTOM_SENSORS];
             let mut values = vec![String::new(); CUSTOM_SENSORS];
 
-            let sensors_per_line = match config_main.get("sensors_per_line") {
-                Some(spl) => spl.parse::<u8>()?,
-                None => 1,
-            };
             run_sensors(
                 pages_sensors,
                 &mut labels,
                 &mut units,
                 &mut values,
                 &hwinfo,
-                decimal,
+                config.decimal,
             )?;
-            value = format_custom_value(sensors_per_line, labels, values, units);
-        }
+            format_custom_value(config.sensors_per_line, labels, values, units)
+        };
         if display_in_console {
             display_value_in_console(&term, &value)?;
         }
