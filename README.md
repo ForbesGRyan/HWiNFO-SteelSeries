@@ -205,6 +205,27 @@ To find sensor names:
 - **BLANK**: Empty sensor (useful for spacing)
 - **RTSS**: Framerate from RivaTuner Statistics Server (if installed)
 
+### Unit Conversion
+
+For sensors that report values in units that need conversion, you can use the `convert_X` option:
+
+```ini
+sensor_0="System: ASUS;Physical Memory Used"
+label_0="RAM"
+unit_0="G"
+convert_0="MB/GB"
+```
+
+**Available conversions:**
+- `MB/GB`: Converts megabytes to gigabytes (divides by 1024)
+
+This is particularly useful for memory sensors that HWiNFO reports in MB but you want to display in GB. The conversion happens before displaying the value on the OLED screen.
+
+**Example:**
+- HWiNFO reports: `16384 MB`
+- With `convert_0="MB/GB"` and `unit_0="G"`
+- Display shows: `16G`
+
 ### Configuration Options Reference
 
 | Option | Description | Default | Values |
@@ -215,6 +236,10 @@ To find sensor names:
 | `sensors_per_line` | Sensors per line (Custom mode) | `1` | `1`, `2`, `3` |
 | `pages` | Number of pages (Custom mode) | `1` | `1`-`10` |
 | `page_time` | Seconds between pages | `5` | `0`-`60` |
+| `sensor_X` | Sensor to display | - | `"Category;Reading Name"` |
+| `label_X` | Display label for sensor | - | Any text (can be empty) |
+| `unit_X` | Unit to display after value | - | Any text (°, %, W, G, etc.) |
+| `convert_X` | Unit conversion | None | `MB/GB` |
 
 ## Troubleshooting
 

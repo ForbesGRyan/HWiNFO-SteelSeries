@@ -12,15 +12,13 @@ pub fn page_handler(
     let lines = labels
         .iter()
         .map(|label| screen::LineData {
-            type_options: screen::LineDataType::TextModifiersData(
-                screen::TextModifiersData {
-                    has_text: true,
-                    prefix: None,
-                    suffix: None,
-                    bold,
-                    wrap: None,
-                },
-            ),
+            type_options: screen::LineDataType::TextModifiersData(screen::TextModifiersData {
+                has_text: true,
+                prefix: None,
+                suffix: None,
+                bold,
+                wrap: None,
+            }),
             data_accessor_data: Some(screen::DataAccessorData {
                 arg: None,
                 context_frame_key: Some(String::from(*label)),

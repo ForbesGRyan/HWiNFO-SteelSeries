@@ -1,8 +1,10 @@
 use crate::consts::Style;
+use anyhow::anyhow;
 use console::Term;
 use dialoguer::Input;
-use hwinfo_steelseries_oled::Hwinfo;
+use hwinfo_steelseries_oled::{Hwinfo, SensorReadingType};
 use ini::Ini;
+use log::{error, info, warn};
 
 // Configuration struct for parsing existing config files
 #[derive(Debug)]
@@ -72,16 +74,38 @@ impl<'a> AppConfig<'a> {
     }
 }
 
+fn get_default_unit(reading_type: SensorReadingType) -> &'static str {
+    match reading_type {
+        SensorReadingType::SensorTypeTemp => "°",
+        SensorReadingType::SensorTypeVolt => "V",
+        SensorReadingType::SensorTypeFan => "RPM",
+        SensorReadingType::SensorTypeCurrent => "A",
+        SensorReadingType::SensorTypePower => "W",
+        SensorReadingType::SensorTypeClock => "MHz",
+        SensorReadingType::SensorTypeUsage => "%",
+        _ => "",
+    }
+}
+
 fn configure_gpu_selection(
     term: &Term,
     hwinfo: &Hwinfo,
     conf: &mut Ini,
 ) -> Result<(), anyhow::Error> {
-    let gpus = hwinfo.find("GPU Temperature")?;
+    let gpus = hwinfo.find("GPU Temperature").map_err(|e| {
+        error!("Failed to find GPU temperature sensors: {}", e);
+        e
+    })?;
+
     if gpus.len() <= 1 {
+        info!("Only one GPU found, no selection needed");
         return Ok(());
     }
 
+    info!(
+        "Multiple GPUs detected ({}), prompting user for selection",
+        gpus.len()
+    );
     term.write_line("Which GPU:\n")?;
     for (i, gpu) in gpus.iter().enumerate() {
         let sensor_name = &hwinfo.sensor_names[gpu.dw_sensor_index as usize];
@@ -93,6 +117,7 @@ fn configure_gpu_selection(
         .interact_text()?;
 
     let gpu_selected = &hwinfo.sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
+    info!("User selected GPU: {}", gpu_selected);
     conf.with_section(Some("Main")).set("gpu", gpu_selected);
 
     Ok(())
@@ -104,10 +129,17 @@ fn configure_custom_sensors(
     lines: u8,
     sensors_per_line: u8,
 ) -> Result<(), anyhow::Error> {
+    info!(
+        "Configuring {} custom sensors ({} lines x {} sensors per line)",
+        lines * sensors_per_line,
+        lines,
+        sensors_per_line
+    );
+
     for k in 0..(lines * sensors_per_line) {
         println!("\n{} / {}\n", k + 1, lines * sensors_per_line);
 
-        // Display available sensors
+        // Display available sensors in HWiNFO's original order
         for (i, sensor) in hwinfo.sensor_names.iter().enumerate() {
             println!("{}) {}", i, sensor);
         }
@@ -118,6 +150,11 @@ fn configure_custom_sensors(
             .unwrap_or(0);
 
         if category >= hwinfo.sensor_names.len() {
+            error!(
+                "Invalid category selection: {} (max: {})",
+                category,
+                hwinfo.sensor_names.len() - 1
+            );
             println!("Category out of range, please try again.");
             return Err(anyhow::anyhow!("Invalid category selection"));
         }
@@ -125,22 +162,41 @@ fn configure_custom_sensors(
         let sensor_name = &hwinfo.sensor_names[category];
         let sensor = hwinfo.sensors.get(sensor_name).unwrap();
 
-        // Display available readings for selected sensor
+        // Display available readings for selected sensor in HWiNFO order
         println!("\n{}:", sensor_name);
         let temp_readings: Vec<String> = sensor
-            .readings
+            .reading_names
             .iter()
             .enumerate()
-            .map(|(i, reading)| {
-                println!("\t{}) {}", i, reading.0);
-                format!("{};{}", sensor_name, reading.0)
+            .map(|(i, reading_name)| {
+                println!("\t{}) {}", i, reading_name);
+                format!("{};{}", sensor_name, reading_name)
             })
             .collect();
 
         let sensor_selection: usize = Input::new().with_prompt("Sensor").interact_text()?;
-        let sensor_selected = format!("\"{}\"", &temp_readings[sensor_selection]);
+        let sensor_selected = &temp_readings[sensor_selection];
         let label: String = Input::new().with_prompt("Label").interact_text()?;
-        let unit: String = Input::new().with_prompt("Unit").interact_text()?;
+
+        // Get the selected reading to determine default unit
+        let selected_reading_name = &sensor.reading_names[sensor_selection];
+        let reading = sensor.readings.get(selected_reading_name).unwrap();
+        let default_unit = get_default_unit(reading.t_reading);
+
+        // Prompt for unit with default suggestion
+        let unit: String = if default_unit.is_empty() {
+            Input::new().with_prompt("Unit").interact_text()?
+        } else {
+            let input: String = Input::new()
+                .with_prompt(format!("Unit (default: {})", default_unit))
+                .allow_empty(true)
+                .interact_text()?;
+            if input.is_empty() {
+                default_unit.to_string()
+            } else {
+                input
+            }
+        };
 
         conf.with_section(Some("PAGE1.Sensors"))
             .set(format!("sensor_{}", k), sensor_selected)
@@ -152,6 +208,7 @@ fn configure_custom_sensors(
 }
 
 pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
+    info!("Creating new configuration file");
     term.write_line("Config not found.")?;
     let mut conf = Ini::new();
 
@@ -169,16 +226,29 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
     )?;
     term.write_line("3) Pick your own sensors")?;
 
-    let input: u8 = Input::new()
+    let input: u8 = match Input::new()
         .with_prompt("Choose style\n(1,2,3)")
-        .interact_text()?;
-
-    let style = match input {
-        1 => Style::Vertical,
-        3 => Style::Custom,
-        2 | _ => Style::Horizontal,
+        .interact_text()
+    {
+        Ok(input) => input,
+        Err(e) => {
+            error!("Failed to read input: {}", e);
+            return Err(anyhow!("Failed to read input"));
+        }
     };
 
+    let style: Style = match input {
+        1 => Style::Vertical,
+        2 => Style::Horizontal,
+        3 => Style::Custom,
+        _ => {
+            warn!("Invalid style input: {}", input);
+            term.write_line("Invalid input")?;
+            return settings_create_config(term, hwinfo);
+        }
+    };
+
+    info!("User selected style: {:?}", style);
     conf.with_section(Some("Main"))
         .set("style", style.to_string());
 
@@ -208,7 +278,12 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
         configure_custom_sensors(hwinfo, &mut conf, lines, sensors_per_line)?;
     }
 
-    conf.write_to_file("conf.ini")?;
+    info!("Writing configuration to conf.ini");
+    conf.write_to_file("conf.ini").map_err(|e| {
+        error!("Failed to write configuration file: {}", e);
+        e
+    })?;
+    info!("Configuration file created successfully");
     term.write_line("config created.")?;
 
     Ok(conf)
@@ -218,10 +293,16 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
 mod tests {
     use super::*;
 
-    fn create_test_config(style: &str, gpu: Option<&str>, decimal: bool, pages: usize, page_time: isize, sensors_per_line: u8) -> Ini {
+    fn create_test_config(
+        style: &str,
+        gpu: Option<&str>,
+        decimal: bool,
+        pages: usize,
+        page_time: isize,
+        sensors_per_line: u8,
+    ) -> Ini {
         let mut conf = Ini::new();
-        conf.with_section(Some("Main"))
-            .set("style", style);
+        conf.with_section(Some("Main")).set("style", style);
 
         if let Some(gpu_val) = gpu {
             conf.with_section(Some("Main")).set("gpu", gpu_val);
@@ -308,7 +389,10 @@ mod tests {
         let result = AppConfig::from_ini(&conf);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Main config section not found");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Main config section not found"
+        );
     }
 
     #[test]

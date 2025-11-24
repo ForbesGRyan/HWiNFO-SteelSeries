@@ -1,4 +1,5 @@
 use chrono::Local;
+use log::{debug, error};
 use serde_json::{json, Value};
 
 use crate::Hwinfo;
@@ -14,12 +15,15 @@ pub fn run_sensors<'a>(
     decimal: bool,
 ) -> Result<(), anyhow::Error> {
     for k in 0..CUSTOM_SENSORS {
-        let sensor = match pages_sensors.get(format!("sensor_{}", k)) {
+        let sensor_str = match pages_sensors.get(format!("sensor_{}", k)) {
             Some(sensor) => sensor,
             None => continue,
-        }
-        .split(";")
-        .collect::<Vec<&str>>();
+        };
+
+        // Remove quotes if they exist (for backwards compatibility with old configs)
+        let sensor_str = sensor_str.trim_matches('"');
+
+        let sensor: Vec<&str> = sensor_str.split(";").collect();
         let label = match pages_sensors.get(format!("label_{}", k)) {
             Some(label) => label,
             None => "",
@@ -40,12 +44,16 @@ pub fn run_sensors<'a>(
             continue;
         }
         let mut value = match hwinfo.get(sensor[0], sensor[1]) {
-            Some(value) => value,
+            Some(value) => {
+                debug!("Successfully read sensor: {} / {}", sensor[0], sensor[1]);
+                value
+            }
             None => {
+                error!("Sensor not found: {} / {}", sensor[0], sensor[1]);
                 return Err(anyhow::Error::new(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("Sensor not found:\n\t{}\n\t{}", sensor[0], sensor[1]),
-                )))
+                )));
             }
         }
         .value;
@@ -82,11 +90,21 @@ pub fn format_custom_value(
         let line_parts: Vec<String> = (0..sensors_per_line as usize)
             .map(|i| {
                 let idx = start_idx + i;
-                format!("{} {}{}", labels[idx], values[idx], units[idx])
+                let label = labels[idx].trim();
+                let unit = units[idx].trim();
+
+                // Format with proper spacing: add space between label and value only if label exists
+                if label.is_empty() {
+                    format!("{}{}", values[idx], unit)
+                } else {
+                    format!("{} {}{}", label, values[idx], unit)
+                }
             })
             .collect();
 
-        value[format!("line{}", line_idx + 1)] = json!(line_parts.join(" "));
+        // Determine spacing based on sensors per line - tighter spacing for multiple sensors
+        let separator = if sensors_per_line >= 3 { " " } else { "  " };
+        value[format!("line{}", line_idx + 1)] = json!(line_parts.join(separator));
     }
 
     value
@@ -112,22 +130,38 @@ mod tests {
     #[test]
     fn test_format_custom_value_two_sensors_per_line() {
         let labels = vec!["C", "65", "G", "72", "M", "16"];
-        let values = vec!["".to_string(), "%".to_string(), "".to_string(), "°".to_string(), "".to_string(), "G".to_string()];
+        let values = vec![
+            "".to_string(),
+            "%".to_string(),
+            "".to_string(),
+            "°".to_string(),
+            "".to_string(),
+            "G".to_string(),
+        ];
         let units = vec!["", "", "", "", "", ""];
 
         let result = format_custom_value(2, labels, values, units);
 
-        assert_eq!(result["line1"], "C  65 %");
-        assert_eq!(result["line2"], "G  72 °");
-        assert_eq!(result["line3"], "M  16 G");
+        // Two sensors per line use double space separator
+        assert_eq!(result["line1"], "C   65 %");
+        assert_eq!(result["line2"], "G   72 °");
+        assert_eq!(result["line3"], "M   16 G");
     }
 
     #[test]
     fn test_format_custom_value_three_sensors_per_line() {
         let labels = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I"];
-        let values = vec!["1".to_string(), "2".to_string(), "3".to_string(),
-                          "4".to_string(), "5".to_string(), "6".to_string(),
-                          "7".to_string(), "8".to_string(), "9".to_string()];
+        let values = vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "4".to_string(),
+            "5".to_string(),
+            "6".to_string(),
+            "7".to_string(),
+            "8".to_string(),
+            "9".to_string(),
+        ];
         let units = vec!["", "", "", "", "", "", "", "", ""];
 
         let result = format_custom_value(3, labels, values, units);
@@ -145,9 +179,9 @@ mod tests {
 
         let result = format_custom_value(1, labels, values, units);
 
-        assert_eq!(result["line1"], " 100W");
-        assert_eq!(result["line2"], " 200W");
-        assert_eq!(result["line3"], " 300W");
+        assert_eq!(result["line1"], "100W");
+        assert_eq!(result["line2"], "200W");
+        assert_eq!(result["line3"], "300W");
     }
 
     #[test]

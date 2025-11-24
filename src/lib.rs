@@ -332,7 +332,12 @@ impl Drop for Hwinfo {
 mod tests {
     use super::*;
 
-    fn create_test_reading(sensor_index: u32, reading_id: u32, label: &str, value: f64) -> HwinfoSensorsReadingElement {
+    fn create_test_reading(
+        sensor_index: u32,
+        reading_id: u32,
+        label: &str,
+        value: f64,
+    ) -> HwinfoSensorsReadingElement {
         let mut label_user = [0u8; 128];
         label.as_bytes().iter().enumerate().for_each(|(i, &b)| {
             if i < 128 {
@@ -359,11 +364,15 @@ mod tests {
 
     fn create_test_sensor(sensor_id: u32, sensor_name: &str) -> HwinfoSensorsSensorElement {
         let mut name_user = [0u8; 128];
-        sensor_name.as_bytes().iter().enumerate().for_each(|(i, &b)| {
-            if i < 128 {
-                name_user[i] = b;
-            }
-        });
+        sensor_name
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .for_each(|(i, &b)| {
+                if i < 128 {
+                    name_user[i] = b;
+                }
+            });
 
         HwinfoSensorsSensorElement {
             dw_sensor_id: sensor_id,
@@ -387,11 +396,14 @@ mod tests {
         cpu_readings.insert("CPU Temperature".to_string(), cpu_temp_reading);
         cpu_readings.insert("Total CPU Usage".to_string(), cpu_usage_reading);
 
-        sensors.insert(cpu_name.to_string(), Sensor {
-            info: create_test_sensor(0, cpu_name),
-            readings: cpu_readings,
-            reading_names: vec!["CPU Temperature".to_string(), "Total CPU Usage".to_string()],
-        });
+        sensors.insert(
+            cpu_name.to_string(),
+            Sensor {
+                info: create_test_sensor(0, cpu_name),
+                readings: cpu_readings,
+                reading_names: vec!["CPU Temperature".to_string(), "Total CPU Usage".to_string()],
+            },
+        );
         sensor_names.push(cpu_name.to_string());
 
         // Create GPU sensor
@@ -403,11 +415,14 @@ mod tests {
         gpu_readings.insert("GPU Temperature".to_string(), gpu_temp_reading);
         gpu_readings.insert("GPU Core Load".to_string(), gpu_usage_reading);
 
-        sensors.insert(gpu_name.to_string(), Sensor {
-            info: create_test_sensor(1, gpu_name),
-            readings: gpu_readings,
-            reading_names: vec!["GPU Temperature".to_string(), "GPU Core Load".to_string()],
-        });
+        sensors.insert(
+            gpu_name.to_string(),
+            Sensor {
+                info: create_test_sensor(1, gpu_name),
+                readings: gpu_readings,
+                reading_names: vec!["GPU Temperature".to_string(), "GPU Core Load".to_string()],
+            },
+        );
         sensor_names.push(gpu_name.to_string());
 
         Hwinfo {
