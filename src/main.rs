@@ -19,13 +19,27 @@ use utils::{format_custom_value, run_sensors};
 
 use anyhow;
 use console::Term;
+use gamesense::client::GameSenseClient;
 use hwinfo_steelseries_oled::Hwinfo;
 use image::ImageReader;
 use log::{debug, error, info, warn};
 use serde_json::{json, Value};
 use std::io::Cursor;
 use std::num::Wrapping;
-use tray_icon::{Icon, TrayIconBuilder};
+use std::thread;
+use std::time::{Duration, Instant};
+use tray_icon::{Icon, TrayIconBuilder, menu::{Menu, MenuItem, MenuEvent, MenuId}, TrayIconEvent};
+use winit::application::ApplicationHandler;
+use winit::event::StartCause;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+
+// User events sent to winit event loop
+#[derive(Debug)]
+enum UserEvent {
+    TrayIconEvent(TrayIconEvent),
+    MenuEvent(MenuEvent),
+    UpdateDisplay,
+}
 
 // Summary sensors data
 struct SummarySensors {
@@ -156,191 +170,272 @@ fn handle_fatal_error(term: &Term, err: anyhow::Error) -> anyhow::Error {
     err
 }
 
-#[allow(unreachable_code)]
-fn main() -> Result<(), anyhow::Error> {
-    // Initialize logger - set RUST_LOG environment variable to control log level
-    // e.g., RUST_LOG=debug, RUST_LOG=info, RUST_LOG=warn, RUST_LOG=error
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+// Application state
+struct App {
+    term: Term,
+    steelseries: Option<GameSenseClient>,
+    hwinfo: Option<Hwinfo>,
+    config_file: Option<Ini>,
+    pages_vec: Vec<ini::Properties>,
 
-    info!("Starting HWiNFO-SteelSeries application");
+    // Config values (stored directly to avoid lifetime issues)
+    is_summary: bool,
+    is_vertical: bool,
+    gpu: String,
+    decimal: bool,
+    pages: usize,
+    page_time: isize,
+    sensors_per_line: u8,
 
-    let term = Term::stdout();
+    // Runtime state
+    i: Wrapping<isize>,
+    disconnect_count: usize,
+    page_counter: usize,
+    was_disconnected: bool,
+    last_update: Instant,
+    display_in_console: bool,
 
-    // Run the application and handle fatal errors
-    if let Err(e) = run_application(&term) {
-        return Err(handle_fatal_error(&term, e));
-    }
-
-    Ok(())
+    // Tray icon
+    _tray_icon: Option<tray_icon::TrayIcon>,
+    exit_menu_id: Option<MenuId>,
+    event_loop_proxy: Option<EventLoopProxy<UserEvent>>,
 }
 
-#[allow(unreachable_code)]
-fn run_application(term: &Term) -> Result<(), anyhow::Error> {
-    // Embed the icon at compile time
-    const ICON_DATA: &[u8] = include_bytes!("../assets/hwinfo-steelseries-icon.ico");
+impl App {
+    fn new(term: Term, event_loop_proxy: EventLoopProxy<UserEvent>) -> Self {
+        Self {
+            term,
+            steelseries: None,
+            hwinfo: None,
+            config_file: None,
+            pages_vec: Vec::new(),
+            is_summary: true,
+            is_vertical: true,
+            gpu: String::new(),
+            decimal: false,
+            pages: 1,
+            page_time: 5,
+            sensors_per_line: 1,
+            i: Wrapping(0),
+            disconnect_count: 0,
+            page_counter: 0,
+            was_disconnected: false,
+            last_update: Instant::now(),
+            display_in_console: cfg!(debug_assertions),
+            _tray_icon: None,
+            exit_menu_id: None,
+            event_loop_proxy: Some(event_loop_proxy),
+        }
+    }
 
-    let mut tray_builder = TrayIconBuilder::new().with_tooltip("HWiNFO-SteelSeries");
+    fn setup_tray_icon(&mut self) -> Result<(), anyhow::Error> {
+        let event_loop_proxy = self.event_loop_proxy.as_ref().unwrap().clone();
 
-    // Decode the embedded ICO file
-    let icon_result = ImageReader::new(Cursor::new(ICON_DATA))
-        .with_guessed_format()
-        .map_err(|e| format!("Format error: {}", e))
-        .and_then(|reader| reader.decode().map_err(|e| format!("Decode error: {}", e)));
+        // Embed the icon at compile time
+        const ICON_DATA: &[u8] = include_bytes!("../assets/hwinfo-steelseries-icon.ico");
 
-    match icon_result {
-        Ok(img) => {
-            let rgba = img.to_rgba8();
-            let (width, height) = rgba.dimensions();
-            match Icon::from_rgba(rgba.into_raw(), width, height) {
-                Ok(icon) => {
-                    info!(
-                        "Successfully loaded embedded tray icon ({}x{})",
-                        width, height
-                    );
-                    tray_builder = tray_builder.with_icon(icon);
-                }
-                Err(e) => {
-                    warn!("Failed to create icon from RGBA data: {}", e);
+        // Create menu
+        let tray_menu = Menu::new();
+        let exit_menu_item = MenuItem::new("Exit", true, None);
+        tray_menu.append(&exit_menu_item)?;
+
+        // Save exit menu ID
+        self.exit_menu_id = Some(exit_menu_item.id().clone());
+
+        // Decode the embedded ICO file
+        let icon_result = ImageReader::new(Cursor::new(ICON_DATA))
+            .with_guessed_format()
+            .map_err(|e| format!("Format error: {}", e))
+            .and_then(|reader| reader.decode().map_err(|e| format!("Decode error: {}", e)));
+
+        let icon: Option<Icon> = match icon_result {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (width, height) = rgba.dimensions();
+                match Icon::from_rgba(rgba.into_raw(), width, height) {
+                    Ok(icon) => {
+                        info!(
+                            "Successfully loaded embedded tray icon ({}x{})",
+                            width, height
+                        );
+                        Some(icon)
+                    }
+                    Err(e) => {
+                        warn!("Failed to create icon from RGBA data: {}", e);
+                        None
+                    }
                 }
             }
-        }
-        Err(e) => {
-            warn!(
-                "Failed to decode embedded icon (continuing without icon): {}",
-                e
-            );
-        }
-    }
+            Err(e) => {
+                warn!(
+                    "Failed to decode embedded icon (continuing without icon): {}",
+                    e
+                );
+                None
+            }
+        };
 
-    let _tray = tray_builder
-        .build()
-        .map_err(|e| {
-            warn!("Failed to build tray icon (continuing without icon): {}", e);
-        })
-        .ok();
-
-    let mut client = connect_steelseries(term)?;
-
-    let mut hwinfo = connect_hwinfo(term)?;
-    hwinfo.pull().map_err(|e| {
-        error!("Failed to pull initial HWiNFO data: {}", e);
-        e
-    })?;
-
-    info!("Loading configuration from conf.ini");
-    let config_file = match Ini::load_from_file("conf.ini") {
-        Ok(conf) => {
-            info!("Configuration file loaded successfully");
-            conf
-        }
-        Err(err) => {
-            warn!("Configuration file not found: {}. Creating new config", err);
-            settings_create_config(term, &hwinfo)?
-        }
-    };
-
-    let config = AppConfig::from_ini(&config_file).map_err(|e| {
-        error!("Failed to parse configuration: {}", e);
-        e
-    })?;
-    info!("Configuration parsed successfully");
-
-    #[cfg(debug_assertions)]
-    let display_in_console = true;
-    #[cfg(not(debug_assertions))]
-    let display_in_console = false;
-
-    info!("Setting up {} page(s)", config.pages);
-    let mut pages_vec = Vec::new();
-    for i in 1..=config.pages {
-        // Bind the event handler regardless of whether we're in summary or custom mode
-        let handler = page_handler(3, "line1", "line2", "line3", None);
-        client
-            .bind_event(
-                format!("PAGE{}", i).as_str(),
-                None,
-                None,
-                None,
-                None,
-                vec![handler],
-            )
+        // Build tray icon WITH menu attached
+        let tray_icon = TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip("HWiNFO-SteelSeries")
+            .with_icon(icon.unwrap())
+            .build()
             .map_err(|e| {
-                error!("Failed to bind event for PAGE{}: {}", i, e);
+                error!("Failed to build tray icon: {}", e);
                 e
             })?;
-        info!("Successfully bound event for PAGE{}", i);
 
-        // For custom mode, store the sensor configuration
-        if !config.is_summary {
-            match config_file.section(Some(format!("PAGE{}.Sensors", i))) {
-                Some(page) => {
-                    pages_vec.push(page);
-                }
-                None => {
-                    warn!("PAGE{}.Sensors section not found in config", i);
-                    continue;
-                }
-            };
+        self._tray_icon = Some(tray_icon);
+        info!("Tray icon created successfully");
+
+        // Set up event handlers to forward events to winit event loop
+        let proxy_tray = event_loop_proxy.clone();
+        TrayIconEvent::set_event_handler(Some(move |event| {
+            debug!("Tray event handler called: {:?}", event);
+            let _ = proxy_tray.send_event(UserEvent::TrayIconEvent(event));
+        }));
+
+        let proxy_menu = event_loop_proxy;
+        MenuEvent::set_event_handler(Some(move |event| {
+            debug!("Menu event handler called: {:?}", event);
+            let _ = proxy_menu.send_event(UserEvent::MenuEvent(event));
+        }));
+
+        Ok(())
+    }
+
+    fn initialize(&mut self) -> Result<(), anyhow::Error> {
+        // Connect to services
+        self.steelseries = Some(connect_steelseries(&self.term)?);
+
+        let mut hwinfo = connect_hwinfo(&self.term)?;
+        hwinfo.pull().map_err(|e| {
+            error!("Failed to pull initial HWiNFO data: {}", e);
+            e
+        })?;
+        self.hwinfo = Some(hwinfo);
+
+        // Load configuration
+        info!("Loading configuration from conf.ini");
+        let config_file = match Ini::load_from_file("conf.ini") {
+            Ok(conf) => {
+                info!("Configuration file loaded successfully");
+                conf
+            }
+            Err(err) => {
+                warn!("Configuration file not found: {}. Creating new config", err);
+                settings_create_config(&self.term, self.hwinfo.as_ref().unwrap())?
+            }
+        };
+
+        // Store config_file first
+        self.config_file = Some(config_file);
+
+        let config = AppConfig::from_ini(self.config_file.as_ref().unwrap()).map_err(|e| {
+            error!("Failed to parse configuration: {}", e);
+            e
+        })?;
+        info!("Configuration parsed successfully");
+
+        // Store config values
+        self.is_summary = config.is_summary;
+        self.is_vertical = config.is_vertical;
+        self.gpu = config.gpu.to_string();
+        self.decimal = config.decimal;
+        self.pages = config.pages;
+        self.page_time = config.page_time;
+        self.sensors_per_line = config.sensors_per_line;
+
+        // Setup pages
+        info!("Setting up {} page(s)", self.pages);
+        let steelseries = self.steelseries.as_mut().unwrap();
+
+        for i in 1..=self.pages {
+            let handler = page_handler(3, "line1", "line2", "line3", None);
+            steelseries
+                .bind_event(
+                    format!("PAGE{}", i).as_str(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    vec![handler],
+                )
+                .map_err(|e| {
+                    error!("Failed to bind event for PAGE{}: {}", i, e);
+                    e
+                })?;
+            info!("Successfully bound event for PAGE{}", i);
+
+            // For custom mode, store the sensor configuration
+            if !self.is_summary {
+                match self.config_file.as_ref().unwrap().section(Some(format!("PAGE{}.Sensors", i))) {
+                    Some(page) => {
+                        self.pages_vec.push(page.clone());
+                    }
+                    None => {
+                        warn!("PAGE{}.Sensors section not found in config", i);
+                        continue;
+                    }
+                };
+            }
         }
+
+        steelseries.start_heartbeat();
+
+        // Hide console window in release mode after successful startup
+        #[cfg(not(debug_assertions))]
+        {
+            thread::sleep(Duration::from_millis(500));
+            console_window(Console::HIDE);
+        }
+
+        Ok(())
     }
 
-    info!("Starting heartbeat");
-    client.start_heartbeat();
-    info!("Entering main loop");
+    fn update_display(&mut self) -> Result<(), anyhow::Error> {
+        let hwinfo = self.hwinfo.as_mut().unwrap();
+        let steelseries = self.steelseries.as_mut().unwrap();
 
-    // Hide console window in release mode after successful startup
-    #[cfg(not(debug_assertions))]
-    {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        console_window(Console::HIDE);
-    }
-
-    let mut i = Wrapping(0isize);
-    let mut disconnect_count: usize = 0;
-    let mut page_counter: usize = 0;
-    let mut was_disconnected = false;
-    loop {
         let old = hwinfo.clone();
-        if let Err(e) = hwinfo.pull() {
-            error!("Error pulling HWiNFO data: {}", e);
-            return Err(e);
-        }
+        hwinfo.pull()?;
 
-        let disconnected = check_hwinfo_connection(&old, &hwinfo, &mut disconnect_count, 5);
+        let disconnected = check_hwinfo_connection(&old, hwinfo, &mut self.disconnect_count, 5);
         drop(old);
 
-        // Hide console when reconnected (transitioned from disconnected to connected)
-        if was_disconnected && !disconnected {
+        // Hide console when reconnected
+        if self.was_disconnected && !disconnected {
             #[cfg(not(debug_assertions))]
             console_window(Console::HIDE);
         }
-        was_disconnected = disconnected;
+        self.was_disconnected = disconnected;
 
         if disconnected {
             warn!("Disconnected from HWiNFO (no data updates for 5 cycles)");
             console_window(Console::SHOW);
-            term.clear_line()?;
-            term.write_line("Disconnected from HWiNFO")?;
+            self.term.clear_line()?;
+            self.term.write_line("Disconnected from HWiNFO")?;
             let value = json!({
                 "line1": "Disconnected",
                 "line2": "FROM",
                 "line3": "HWiNFO"
             });
-            if let Err(e) = client.trigger_event_frame("ERROR", i.0, value) {
+            if let Err(e) = steelseries.trigger_event_frame("ERROR", self.i.0, value) {
                 error!("Failed to trigger error frame: {}", e);
             }
-            i += 1;
-            std::thread::sleep(std::time::Duration::from_millis(TICK_RATE));
-            continue;
+            self.i += 1;
+            self.last_update = Instant::now();
+            return Ok(());
         }
 
-        let value = if config.is_summary {
-            match fetch_summary_sensors(&hwinfo, config.gpu) {
+        let value = if self.is_summary {
+            match fetch_summary_sensors(hwinfo, &self.gpu) {
                 Ok(sensors) => {
-                    if config.is_vertical {
-                        format_vertical_summary(&sensors, config.decimal)
+                    if self.is_vertical {
+                        format_vertical_summary(&sensors, self.decimal)
                     } else {
-                        format_horizontal_summary(&sensors, config.decimal)
+                        format_horizontal_summary(&sensors, self.decimal)
                     }
                 }
                 Err(e) => {
@@ -350,49 +445,170 @@ fn run_application(term: &Term) -> Result<(), anyhow::Error> {
             }
         } else {
             // Custom Sensors - Logic to alternate between pages
-            if i.0 % config.page_time == 0 && i.0 != 0 {
-                page_counter = (page_counter + 1) % config.pages;
-                debug!("Switching to page {}", page_counter + 1);
+            if self.i.0 % self.page_time == 0 && self.i.0 != 0 {
+                self.page_counter = (self.page_counter + 1) % self.pages;
+                debug!("Switching to page {}", self.page_counter + 1);
             }
-            let pages_sensors = pages_vec[page_counter];
+            let pages_sensors = &self.pages_vec[self.page_counter];
 
             let mut labels = vec![""; CUSTOM_SENSORS];
             let mut units = vec![""; CUSTOM_SENSORS];
             let mut values = vec![String::new(); CUSTOM_SENSORS];
 
-            if let Err(e) = run_sensors(
+            run_sensors(
                 pages_sensors,
                 &mut labels,
                 &mut units,
                 &mut values,
-                &hwinfo,
-                config.decimal,
-            ) {
-                error!("Failed to run sensors for page {}: {}", page_counter + 1, e);
-                return Err(e);
-            }
-            format_custom_value(config.sensors_per_line, labels, values, units)
-        };
-        if display_in_console {
-            display_value_in_console(term, &value)?;
-        }
-        if let Err(e) =
-            client.trigger_event_frame(format!("PAGE{}", page_counter + 1).as_str(), i.0, value)
-        {
-            error!(
-                "Failed to trigger event frame for PAGE{}: {}",
-                page_counter + 1,
-                e
-            );
-            return Err(e);
-        }
-        i += 1;
-        std::thread::sleep(std::time::Duration::from_millis(TICK_RATE));
-    }
-    client.stop_heartbeat()?;
+                hwinfo,
+                self.decimal,
+            )?;
 
+            format_custom_value(self.sensors_per_line, labels, values, units)
+        };
+
+        if self.display_in_console {
+            display_value_in_console(&self.term, &value)?;
+        }
+
+        steelseries.trigger_event_frame(
+            format!("PAGE{}", self.page_counter + 1).as_str(),
+            self.i.0,
+            value,
+        )?;
+
+        self.i += 1;
+        Ok(())
+    }
+}
+
+impl ApplicationHandler<UserEvent> for App {
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn window_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        _event: winit::event::WindowEvent,
+    ) {
+        // We don't have any windows, so this is a no-op
+    }
+
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if cause == StartCause::Init {
+            info!("Event loop initialized, setting up tray icon");
+
+            // Create tray icon
+            if let Err(e) = self.setup_tray_icon() {
+                error!("Failed to setup tray icon: {}", e);
+                event_loop.exit();
+                return;
+            }
+
+            // Initialize the application
+            if let Err(e) = self.initialize() {
+                error!("Failed to initialize application: {}", e);
+                event_loop.exit();
+                return;
+            }
+
+            info!("Application initialized successfully");
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::TrayIconEvent(event) => {
+                debug!("Received tray icon event: {:?}", event);
+                match event {
+                    TrayIconEvent::Click { button, .. } => {
+                        info!("Tray icon clicked with button: {:?}", button);
+                        if button == tray_icon::MouseButton::Left {
+                            console_window(Console::SHOW);
+                        }
+                    }
+                    TrayIconEvent::DoubleClick { button, .. } => {
+                        info!("Tray icon double-clicked with button: {:?}", button);
+                    }
+                    _ => {}
+                }
+            }
+            UserEvent::MenuEvent(event) => {
+                debug!("Received menu event: {:?}", event);
+                if let Some(exit_id) = &self.exit_menu_id {
+                    if event.id() == exit_id {
+                        info!("Exit menu item clicked, shutting down");
+                        if let Some(steelseries) = self.steelseries.as_mut() {
+                            let _ = steelseries.stop_heartbeat();
+                        }
+                        event_loop.exit();
+                    }
+                }
+            }
+            UserEvent::UpdateDisplay => {
+                // Only update if enough time has passed
+                if self.last_update.elapsed() >= Duration::from_millis(TICK_RATE) {
+                    self.last_update = Instant::now();
+
+                    if let Err(e) = self.update_display() {
+                        error!("Failed to update display: {}", e);
+                        let _ = handle_fatal_error(&self.term, e);
+                        event_loop.exit();
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn main() -> Result<(), anyhow::Error> {
+    // Initialize logger - set RUST_LOG environment variable to control log level
+    // e.g., RUST_LOG=debug, RUST_LOG=info, RUST_LOG=warn, RUST_LOG=error
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    info!("Starting HWiNFO-SteelSeries application");
+
+    // Create the winit event loop
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(|e| {
+            error!("Failed to create event loop: {}", e);
+            anyhow::anyhow!("Failed to create event loop: {}", e)
+        })?;
+
+    // Set control flow to Wait (low CPU usage, event-driven)
+    event_loop.set_control_flow(ControlFlow::Wait);
+
+    // Spawn timer thread to trigger display updates
+    let proxy = event_loop.create_proxy();
+    thread::spawn(move || {
+        info!("Update timer thread started");
+        loop {
+            thread::sleep(Duration::from_millis(TICK_RATE));
+            if proxy.send_event(UserEvent::UpdateDisplay).is_err() {
+                info!("Event loop closed, exiting timer thread");
+                break;
+            }
+        }
+    });
+
+    // Create application state with event loop proxy
+    let proxy_for_app = event_loop.create_proxy();
+    let mut app = App::new(Term::stdout(), proxy_for_app);
+
+    // Run the event loop
+    info!("Starting winit event loop");
+    event_loop
+        .run_app(&mut app)
+        .map_err(|e| {
+            error!("Event loop error: {}", e);
+            anyhow::anyhow!("Event loop error: {}", e)
+        })?;
+
+    info!("Application exited successfully");
     Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
