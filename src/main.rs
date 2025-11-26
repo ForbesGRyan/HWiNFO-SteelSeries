@@ -395,9 +395,15 @@ impl App {
     }
 
     fn update_display(&mut self) -> Result<(), anyhow::Error> {
-        let hwinfo = self.hwinfo.as_mut().unwrap();
-        let steelseries = self.steelseries.as_mut().unwrap();
-
+        let hwinfo = match self.hwinfo.as_mut(){
+            Some(hwinfo) => hwinfo,
+            None => return Err(anyhow::anyhow!("HWiNFO not initialized")),
+        };
+        let steelseries = match self.steelseries.as_mut(){
+            Some(steelseries) => steelseries,
+            None => return Err(anyhow::anyhow!("SteelSeries not initialized")),
+        };
+        
         let old = hwinfo.clone();
         hwinfo.pull()?;
 
@@ -521,14 +527,22 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::TrayIconEvent(event) => {
                 debug!("Received tray icon event: {:?}", event);
                 match event {
-                    TrayIconEvent::Click { button, .. } => {
-                        info!("Tray icon clicked with button: {:?}", button);
-                        if button == tray_icon::MouseButton::Left {
-                            console_window(Console::SHOW);
+                    TrayIconEvent::Click {
+                        button,
+                        button_state,
+                        ..
+                    } => {
+                        // Only handle button release (up) to avoid duplicate events
+                        // Windows sends both button down and button up events
+                        if button_state == tray_icon::MouseButtonState::Up {
+                            debug!("Tray icon clicked with button: {:?}", button);
                         }
                     }
                     TrayIconEvent::DoubleClick { button, .. } => {
-                        info!("Tray icon double-clicked with button: {:?}", button);
+                        debug!("Tray icon double-clicked with button: {:?}", button);
+                        if button == tray_icon::MouseButton::Left {
+                            console_window(Console::SHOW);
+                        }
                     }
                     _ => {}
                 }
