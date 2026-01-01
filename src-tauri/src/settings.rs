@@ -1,4 +1,4 @@
-use crate::consts::Style;
+use crate::consts::{Style, CUSTOM_SENSORS};
 use anyhow::anyhow;
 use console::Term;
 use dialoguer::Input;
@@ -6,36 +6,58 @@ use hwinfo_steelseries_oled::{Hwinfo, SensorReadingType};
 use ini::Ini;
 use log::{error, info, warn};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CustomSensor {
+    pub sensor: String,
+    pub label: String,
+    pub unit: String,
+    pub convert: String,
+}
+
 // Configuration struct for parsing existing config files
-#[derive(Debug)]
-pub struct AppConfig<'a> {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppConfig {
     pub is_summary: bool,
     pub is_vertical: bool,
-    pub gpu: &'a str,
+    pub gpu: String,
     pub decimal: bool,
     pub pages: usize,
     pub page_time: isize,
     pub sensors_per_line: u8,
+    pub direct_usb: bool,
+    pub custom_sensors: Vec<Vec<CustomSensor>>,
 }
 
-impl<'a> AppConfig<'a> {
-    pub fn from_ini(config: &'a Ini) -> Result<Self, anyhow::Error> {
-        let main = config
-            .section(Some("Main"))
-            .ok_or_else(|| anyhow::anyhow!("Main config section not found"))?;
+impl AppConfig {
+    pub fn from_ini(config: &Ini) -> Result<Self, anyhow::Error> {
+        println!("AppConfig: Reading from ini...");
+        let main = config.section(Some("Main"));
+
+        if main.is_none() {
+            println!("AppConfig error: 'Main' section not found in INI");
+            // Instead of erroring, let's look for any section to see if we loaded the wrong file
+            for section in config.sections() {
+                println!("AppConfig debug: Found section: {:?}", section);
+            }
+        }
+
+        let main = main.ok_or_else(|| anyhow::anyhow!("Main config section not found"))?;
 
         let style = main
             .get("style")
-            .ok_or_else(|| anyhow::anyhow!("Style not found"))?
-            .to_lowercase();
+            .map(|s| s.to_lowercase())
+            .unwrap_or_else(|| {
+                println!("AppConfig warning: 'style' key not found, defaulting to 'vertical'");
+                "vertical".to_string()
+            });
 
         let is_summary = matches!(style.as_str(), "vertical" | "horizontal");
         let is_vertical = style == "vertical";
 
         let gpu = if is_summary {
-            main.get("gpu").unwrap_or("")
+            main.get("gpu").unwrap_or("").to_string()
         } else {
-            ""
+            String::new()
         };
 
         let decimal = main
@@ -62,6 +84,16 @@ impl<'a> AppConfig<'a> {
             1
         };
 
+        let direct_usb = main
+            .get("direct_usb")
+            .and_then(|d| d.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        println!(
+            "AppConfig: Loaded main settings. is_summary={}, direct_usb={}",
+            is_summary, direct_usb
+        );
+
         Ok(Self {
             is_summary,
             is_vertical,
@@ -70,6 +102,37 @@ impl<'a> AppConfig<'a> {
             pages,
             page_time,
             sensors_per_line,
+            direct_usb,
+            custom_sensors: {
+                let mut all_pages = Vec::new();
+                for i in 1..=pages {
+                    let mut page_sensors = Vec::new();
+                    if let Some(section) = config.section(Some(format!("PAGE{}.Sensors", i))) {
+                        for k in 0..CUSTOM_SENSORS {
+                            if let Some(sensor) = section.get(format!("sensor_{}", k)) {
+                                let label = section
+                                    .get(format!("label_{}", k))
+                                    .unwrap_or("")
+                                    .to_string();
+                                let unit =
+                                    section.get(format!("unit_{}", k)).unwrap_or("").to_string();
+                                let convert = section
+                                    .get(format!("convert_{}", k))
+                                    .unwrap_or("")
+                                    .to_string();
+                                page_sensors.push(CustomSensor {
+                                    sensor: sensor.to_string(),
+                                    label,
+                                    unit,
+                                    convert,
+                                });
+                            }
+                        }
+                    }
+                    all_pages.push(page_sensors);
+                }
+                all_pages
+            },
         })
     }
 }
@@ -252,16 +315,31 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
     conf.with_section(Some("Main"))
         .set("style", style.to_string());
 
+    let direct_usb: bool = match Input::new()
+        .with_prompt("Connection Type\n1) SteelSeries GG (GameSense)\n2) Direct USB (HID)")
+        .interact_text()
+        .unwrap_or(1)
+    {
+        1 => false,
+        2 => true,
+        _ => false,
+    };
+
+    conf.with_section(Some("Main"))
+        .set("direct_usb", direct_usb.to_string());
+
     if style != Style::Custom {
         configure_gpu_selection(term, hwinfo, &mut conf)?;
     } else {
-        println!("\n3 lines will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro.");
+        println!(
+            "\nUp to 5 lines will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro."
+        );
 
         let lines: u8 = Input::new()
-            .with_prompt("How many lines? (2-3)")
+            .with_prompt("How many lines? (2-5)")
             .interact_text()
             .ok()
-            .filter(|&l| l == 2 || l == 3)
+            .filter(|&l| l >= 2 && l <= 5)
             .unwrap_or(3);
 
         let sensors_per_line: u8 = Input::new()
@@ -300,6 +378,7 @@ mod tests {
         pages: usize,
         page_time: isize,
         sensors_per_line: u8,
+        direct_usb: bool,
     ) -> Ini {
         let mut conf = Ini::new();
         conf.with_section(Some("Main")).set("style", style);
@@ -312,14 +391,15 @@ mod tests {
             .set("decimal", decimal.to_string())
             .set("pages", pages.to_string())
             .set("page_time", page_time.to_string())
-            .set("sensors_per_line", sensors_per_line.to_string());
+            .set("sensors_per_line", sensors_per_line.to_string())
+            .set("direct_usb", direct_usb.to_string());
 
         conf
     }
 
     #[test]
     fn test_appconfig_vertical_summary() {
-        let conf = create_test_config("Vertical", None, true, 1, 5, 1);
+        let conf = create_test_config("Vertical", None, true, 1, 5, 1, false);
         let config = AppConfig::from_ini(&conf).unwrap();
 
         assert!(config.is_summary);
@@ -332,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_appconfig_horizontal_summary() {
-        let conf = create_test_config("Horizontal", Some("GPU [#0]"), false, 1, 10, 1);
+        let conf = create_test_config("Horizontal", Some("GPU [#0]"), false, 1, 10, 1, true);
         let config = AppConfig::from_ini(&conf).unwrap();
 
         assert!(config.is_summary);
@@ -344,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_appconfig_custom_mode() {
-        let conf = create_test_config("Custom", None, false, 2, 8, 3);
+        let conf = create_test_config("Custom", None, false, 2, 8, 3, false);
         let config = AppConfig::from_ini(&conf).unwrap();
 
         assert!(!config.is_summary);
@@ -367,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_appconfig_page_time_out_of_range() {
-        let conf = create_test_config("Vertical", None, false, 1, 100, 1);
+        let conf = create_test_config("Vertical", None, false, 1, 100, 1, false);
         let config = AppConfig::from_ini(&conf).unwrap();
 
         // Should cap at 5 for values outside 0..=60
@@ -376,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_appconfig_page_time_negative() {
-        let conf = create_test_config("Vertical", None, false, 1, -5, 1);
+        let conf = create_test_config("Vertical", None, false, 1, -5, 1, false);
         let config = AppConfig::from_ini(&conf).unwrap();
 
         // Should use default 5 for negative values

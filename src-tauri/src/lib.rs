@@ -1,6 +1,7 @@
 use anyhow;
 use std::io::{Error, ErrorKind};
 use std::os::windows::ffi::OsStrExt;
+use std::sync::Arc;
 use std::{collections::HashMap, ffi::OsStr, iter::once};
 use strum::FromRepr;
 use winapi::ctypes::c_void;
@@ -104,9 +105,24 @@ impl PartialEq for Sensor {
 impl Eq for Sensor {}
 
 #[derive(Clone)]
+struct SharedMemoryView(*const c_void);
+unsafe impl Send for SharedMemoryView {}
+unsafe impl Sync for SharedMemoryView {}
+
+impl Drop for SharedMemoryView {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                UnmapViewOfFile(self.0 as *mut _);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Hwinfo {
     // shared_memory_handle: Handle,
-    pub(crate) shared_memory_view: *const c_void,
+    pub(crate) shared_memory_view: Arc<SharedMemoryView>,
     // num_sensors: u32,
     pub(crate) num_reading_elements: u32,
     pub(crate) offset_reading_section: u32,
@@ -205,7 +221,7 @@ impl Hwinfo {
         //     UnmapViewOfFile(shared_memory_view);
         // }
         Ok(Hwinfo {
-            shared_memory_view,
+            shared_memory_view: Arc::new(SharedMemoryView(shared_memory_view)),
             num_reading_elements,
             offset_reading_section,
             size_reading_section,
@@ -319,14 +335,7 @@ impl Hwinfo {
     }
 }
 
-impl Drop for Hwinfo {
-    fn drop(&mut self) {
-        unsafe {
-            UnmapViewOfFile(self.shared_memory_view as *mut _);
-            // CloseHandle(self.shared_memory_handle);
-        };
-    }
-}
+// Drop is now handled by SharedMemoryView inside Arc
 
 #[cfg(test)]
 mod tests {
@@ -426,7 +435,7 @@ mod tests {
         sensor_names.push(gpu_name.to_string());
 
         Hwinfo {
-            shared_memory_view: std::ptr::null(),
+            shared_memory_view: Arc::new(SharedMemoryView(std::ptr::null())),
             num_reading_elements: 4,
             offset_reading_section: 0,
             size_reading_section: 0,

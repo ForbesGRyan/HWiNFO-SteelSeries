@@ -1,7 +1,8 @@
 use console::Term;
 use gamesense::client::GameSenseClient;
+use hidapi::{HidApi, HidDevice};
 use hwinfo_steelseries_oled::Hwinfo;
-use log::{info, warn};
+use log::{error, info, warn};
 
 fn retry_connect<T, F>(term: &Term, service_name: &str, connect_fn: F) -> Result<T, anyhow::Error>
 where
@@ -39,5 +40,29 @@ pub fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
 pub fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
     retry_connect(term, "SteelSeries GG", || {
         GameSenseClient::new("HWINFO", "HWiNFO_Stats", "Ryan", None)
+    })
+}
+
+pub fn connect_hid(term: &Term, api: &HidApi) -> Result<HidDevice, anyhow::Error> {
+    retry_connect(term, "SteelSeries OLED (HID)", || {
+        let vendor_id = 0x1038u16;
+        let product_id = 0x12E0u16;
+        let interface_number = 0x04i32;
+        let usage_page = 0xFFC0u16;
+
+        let device_info = api
+            .device_list()
+            .find(|d| {
+                d.vendor_id() == vendor_id
+                    && d.product_id() == product_id
+                    && d.interface_number() == interface_number
+                    && d.usage_page() == usage_page
+            })
+            .ok_or_else(|| anyhow::anyhow!("OLED device not found"))?;
+
+        device_info.open_device(api).map_err(|e| {
+            error!("Failed to open HID device: {}", e);
+            anyhow::anyhow!("Failed to open HID device: {}", e)
+        })
     })
 }

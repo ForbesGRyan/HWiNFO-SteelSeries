@@ -1,14 +1,6 @@
 use gamesense::handler::screen::{self, ScreenHandler};
 
-pub fn page_handler(
-    ttl: isize,
-    label_1: &str,
-    label_2: &str,
-    label_3: &str,
-    bold: Option<bool>,
-) -> ScreenHandler {
-    let labels = [label_1, label_2, label_3];
-
+pub fn page_handler(ttl: isize, labels: &[&str], bold: Option<bool>) -> ScreenHandler {
     let lines = labels
         .iter()
         .map(|label| screen::LineData {

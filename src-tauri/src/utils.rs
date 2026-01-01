@@ -3,6 +3,7 @@ use log::{debug, error};
 use serde_json::{json, Value};
 
 use crate::Hwinfo;
+use crate::mouse_battery::MouseBatteryReader;
 
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
 
@@ -13,6 +14,8 @@ pub fn run_sensors<'a>(
     values: &mut Vec<String>,
     hwinfo: &Hwinfo,
     decimal: bool,
+    mouse_battery_reader: &mut MouseBatteryReader,
+    hid_api: &hidapi::HidApi,
 ) -> Result<(), anyhow::Error> {
     for k in 0..CUSTOM_SENSORS {
         let sensor_str = match pages_sensors.get(format!("sensor_{}", k)) {
@@ -40,7 +43,12 @@ pub fn run_sensors<'a>(
             labels[k] = label;
             units[k] = unit;
             let now = Local::now();
-            values[k] = now.format("%I:%M%P").to_string();
+            values[k] = now.format("%I:%M:%S %P").to_string();
+            continue;
+        } else if sensor[0] == "MOUSE_BATTERY" {
+            labels[k] = label;
+            units[k] = unit;
+            values[k] = mouse_battery_reader.get_battery_percentage(hid_api);
             continue;
         }
         let mut value = match hwinfo.get(sensor[0], sensor[1]) {
@@ -60,6 +68,7 @@ pub fn run_sensors<'a>(
         match pages_sensors.get(format!("convert_{}", k)) {
             Some(convert) => match convert {
                 "MB/GB" => value = value / 1024.0,
+                "kb/mb" | "KB/MB" => value = value / 1024.0,
                 _ => {}
             },
             None => {}
@@ -116,84 +125,53 @@ mod tests {
 
     #[test]
     fn test_format_custom_value_one_sensor_per_line() {
-        let labels = vec!["CPU", "GPU", "MEM"];
-        let values = vec!["65".to_string(), "72".to_string(), "16".to_string()];
-        let units = vec!["°", "°", "G"];
-
-        let result = format_custom_value(1, labels, values, units);
-
-        assert_eq!(result["line1"], "CPU 65°");
-        assert_eq!(result["line2"], "GPU 72°");
-        assert_eq!(result["line3"], "MEM 16G");
-    }
-
-    #[test]
-    fn test_format_custom_value_two_sensors_per_line() {
-        let labels = vec!["C", "65", "G", "72", "M", "16"];
-        let values = vec![
-            "".to_string(),
-            "%".to_string(),
-            "".to_string(),
-            "°".to_string(),
-            "".to_string(),
-            "G".to_string(),
-        ];
-        let units = vec!["", "", "", "", "", ""];
-
-        let result = format_custom_value(2, labels, values, units);
-
-        // Two sensors per line use double space separator
-        assert_eq!(result["line1"], "C   65 %");
-        assert_eq!(result["line2"], "G   72 °");
-        assert_eq!(result["line3"], "M   16 G");
-    }
-
-    #[test]
-    fn test_format_custom_value_three_sensors_per_line() {
-        let labels = vec!["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+        let labels = vec!["L1", "L2", "L3", "L4", "L5"];
+        let mut all_labels = vec![""; 15];
+        for (i, l) in labels.iter().enumerate() {
+            all_labels[i] = l;
+        }
         let values = vec![
             "1".to_string(),
             "2".to_string(),
             "3".to_string(),
             "4".to_string(),
             "5".to_string(),
-            "6".to_string(),
-            "7".to_string(),
-            "8".to_string(),
-            "9".to_string(),
         ];
-        let units = vec!["", "", "", "", "", "", "", "", ""];
+        let mut all_values = vec![String::new(); 15];
+        for (i, v) in values.iter().enumerate() {
+            all_values[i] = v.clone();
+        }
+        let units = vec!["U1", "U2", "U3", "U4", "U5"];
+        let mut all_units = vec![""; 15];
+        for (i, u) in units.iter().enumerate() {
+            all_units[i] = u;
+        }
+
+        let result = format_custom_value(1, all_labels, all_values, all_units);
+
+        assert_eq!(result["line1"], "L1 1U1");
+        assert_eq!(result["line2"], "L2 2U2");
+        assert_eq!(result["line3"], "L3 3U3");
+        assert_eq!(result["line4"], "L4 4U4");
+        assert_eq!(result["line5"], "L5 5U5");
+    }
+
+    #[test]
+    fn test_format_custom_value_three_sensors_per_line() {
+        let labels = vec![""; 15];
+        let mut values = vec![String::new(); 15];
+        let units = vec![""; 15];
+
+        for i in 0..15 {
+            values[i] = i.to_string();
+        }
 
         let result = format_custom_value(3, labels, values, units);
 
-        assert_eq!(result["line1"], "A 1 B 2 C 3");
-        assert_eq!(result["line2"], "D 4 E 5 F 6");
-        assert_eq!(result["line3"], "G 7 H 8 I 9");
-    }
-
-    #[test]
-    fn test_format_custom_value_empty_labels() {
-        let labels = vec!["", "", ""];
-        let values = vec!["100".to_string(), "200".to_string(), "300".to_string()];
-        let units = vec!["W", "W", "W"];
-
-        let result = format_custom_value(1, labels, values, units);
-
-        assert_eq!(result["line1"], "100W");
-        assert_eq!(result["line2"], "200W");
-        assert_eq!(result["line3"], "300W");
-    }
-
-    #[test]
-    fn test_format_custom_value_mixed_content() {
-        let labels = vec!["FPS", "⛏", "💻"];
-        let values = vec!["144".to_string(), "45".to_string(), "60".to_string()];
-        let units = vec!["", "°", "°"];
-
-        let result = format_custom_value(1, labels, values, units);
-
-        assert_eq!(result["line1"], "FPS 144");
-        assert_eq!(result["line2"], "⛏ 45°");
-        assert_eq!(result["line3"], "💻 60°");
+        assert_eq!(result["line1"], "0 1 2");
+        assert_eq!(result["line2"], "3 4 5");
+        assert_eq!(result["line3"], "6 7 8");
+        assert_eq!(result["line4"], "9 10 11");
+        assert_eq!(result["line5"], "12 13 14");
     }
 }

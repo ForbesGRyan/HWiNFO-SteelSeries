@@ -79,13 +79,27 @@ Run `hwinfo-steelseries-oled.exe`. On first launch:
 2. For **Summary** modes with multiple GPUs, you'll be asked to select which GPU to monitor
 
 3. For **Custom** mode, you'll configure:
-   - Number of lines (2-3)
+   - Number of lines (2-5)
    - Sensors per line (1-3)
    - Which specific sensors to display
 
 4. Configuration is saved to `conf.ini` in the same directory
 
 The application will start displaying data on your SteelSeries OLED screen.
+
+## Usage
+
+### System Tray Menu
+
+The application runs in the system tray with the following options available via right-click:
+
+- **Settings...**: Opens the configuration GUI to modify your display settings (also wakes the display if in sleep/white screen mode)
+- **Reload Config**: Reloads the `conf.ini` file without restarting the application (also wakes the display if in sleep/white screen mode)
+- **Sleep Display**: Puts the OLED screen to sleep by clearing it (all pixels off) and stopping updates. The screen stays blank until you wake it up.
+- **White Screen**: Fills the OLED screen with white (all pixels on) and stops updates. Useful for testing the display or as a flashlight. The screen stays white until you wake it up.
+- **Exit**: Stops the application and closes the OLED display
+
+**Waking Up**: To resume normal operation from Sleep Display or White Screen mode, use Settings or Reload Config from the tray menu, or double-click the tray icon to open the Settings GUI.
 
 ## Configuration
 
@@ -122,57 +136,27 @@ Custom mode allows you to display any sensor from HWiNFO with full control over 
 [Main]
 style=Custom
 sensors_per_line=3  # 1-3 sensors per line
-pages=2             # Number of pages
+pages=1             # Number of pages
 page_time=10        # Seconds between page switches
 decimal=false       # Show decimal places
+direct_usb=true     # Direct USB (HID) connection
 
 [PAGE1.Sensors]
-sensor_0="RTSS;Framerate"
-label_0="FPS"
+sensor_0="CLOCK"
+label_0="Time:"
 unit_0=""
 
-sensor_1="GPU [#0]: NVIDIA GeForce RTX 3090;GPU Temperature"
-label_1="GPU"
-unit_1="°"
+# ... more sensors up to sensor_14 (5 lines * 3 sensors) ...
 
-sensor_2="GPU [#0]: NVIDIA GeForce RTX 3090;GPU Core Load"
-label_2=""
-unit_2="%"
+sensor_12="Network: Intel Ethernet Controller I225-V;Current UP rate"
+label_12="NET ^"
+unit_12="mb/s"
+convert_12="kb/mb"
 
-sensor_3="CPU [#0]: AMD Ryzen 9 7950X3D;CPU (Tctl/Tdie)"
-label_3="CPU"
-unit_3="°"
-
-sensor_4="CPU [#0]: AMD Ryzen 9 7950X3D;Total CPU Usage"
-label_4=""
-unit_4="%"
-
-sensor_5="CPU [#0]: AMD Ryzen 9 7950X3D;CPU Package Power"
-label_5=""
-unit_5="W"
-
-[PAGE2.Sensors]
-sensor_0="System: ASUS;Physical Memory Used"
-label_0="RAM"
-unit_0="G"
-convert_0="MB/GB"
-
-sensor_1="System: ASUS;Physical Memory Available"
-label_1=""
-unit_1="G"
-convert_1="MB/GB"
-
-sensor_2="System: ASUS;Physical Memory Load"
-label_2=""
-unit_2="%"
-
-sensor_3="Network: Intel Ethernet Controller I225-V;Current UP rate"
-label_3="NET ▲"
-unit_3="k/s"
-
-sensor_4="Network: Intel Ethernet Controller I225-V;Current DL rate"
-label_4="NET ▼"
-unit_4="k/s"
+sensor_13="Network: Intel Ethernet Controller I225-V;Current DL rate"
+label_13="NET v"
+unit_13="mb/s"
+convert_13="kb/mb"
 ```
 
 #### Custom Mode Output Examples
@@ -201,9 +185,67 @@ To find sensor names:
 
 ### Special Sensors
 
-- **CLOCK**: Displays current time
-- **BLANK**: Empty sensor (useful for spacing)
+Special sensors don't pull data from HWiNFO - they provide additional functionality:
+
+- **CLOCK**: Displays current time (12-hour format with am/pm)
+  - Example: `03:45pm`
+  - Configuration: `sensor_0="CLOCK"`
+
+- **BLANK**: Empty sensor slot for spacing/alignment
+  - Useful for multi-sensor layouts
+  - Configuration: `sensor_0="BLANK"`
+
+- **MOUSE_BATTERY**: Wireless gaming mouse battery percentage
+  - Shows battery level (e.g., `75`)
+  - Displays `N/A` if mouse disconnected or not supported
+  - Compatible with Logitech G-series, SteelSeries Aerox, Razer wireless mice
+  - Automatically detects common gaming mice
+  - Configuration example:
+    ```ini
+    sensor_0="MOUSE_BATTERY"
+    label_0="Mouse:"
+    unit_0="%"
+    ```
+  - **Note**: Only works with wireless gaming mice that expose HID battery information. Standard office mice and wired mice are not supported.
+
+  **Adding Support for Your Mouse:**
+
+  If your mouse isn't detected automatically, you can discover the battery report ID:
+
+  1. **Find your mouse VID/PID** (in Device Manager → Properties → Details → Hardware IDs)
+     - Format: `HID\VID_046D&PID_C539` means VID=046d, PID=c539
+
+  2. **Run discovery mode:**
+     ```cmd
+     hwinfo-steelseries-oled.exe --discover-mouse-battery 046d c539
+     ```
+     Or with 0x prefix:
+     ```cmd
+     hwinfo-steelseries-oled.exe --discover-mouse-battery 0x046d 0xc539
+     ```
+
+  3. **Review the results** - The tool will test all report IDs and highlight likely battery values:
+     ```
+     Report ID: 0x07
+       Raw data: [07, 75, 00, 00]
+       Likely battery: 75%
+       <- USE THIS REPORT ID
+     ```
+
+  4. **Add your mouse profile** to `src-tauri/src/mouse_battery.rs`:
+     ```rust
+     // In MOUSE_PROFILES constant, add:
+     (0x046d, 0xc539, 0x07, "Your Mouse Model Name"),
+     ```
+
+  5. **Rebuild the application:**
+     ```cmd
+     cd src-tauri
+     cargo build --release
+     ```
+
 - **RTSS**: Framerate from RivaTuner Statistics Server (if installed)
+  - Not currently implemented
 
 ### Unit Conversion
 
@@ -218,6 +260,7 @@ convert_0="MB/GB"
 
 **Available conversions:**
 - `MB/GB`: Converts megabytes to gigabytes (divides by 1024)
+- `kb/mb`: Converts kilobytes to megabytes (divides by 1024)
 
 This is particularly useful for memory sensors that HWiNFO reports in MB but you want to display in GB. The conversion happens before displaying the value on the OLED screen.
 
@@ -239,7 +282,7 @@ This is particularly useful for memory sensors that HWiNFO reports in MB but you
 | `sensor_X` | Sensor to display | - | `"Category;Reading Name"` |
 | `label_X` | Display label for sensor | - | Any text (can be empty) |
 | `unit_X` | Unit to display after value | - | Any text (°, %, W, G, etc.) |
-| `convert_X` | Unit conversion | None | `MB/GB` |
+| `convert_X` | Unit conversion | None | `MB/GB`, `kb/mb` |
 
 ## Troubleshooting
 
@@ -272,6 +315,45 @@ This is particularly useful for memory sensors that HWiNFO reports in MB but you
 2. Some sensors only appear when the hardware is active
 3. Run the config wizard again to see available sensors
 4. Delete `conf.ini` and reconfigure from scratch
+
+### Mouse Battery Shows "N/A"
+
+**Problem**: MOUSE_BATTERY special sensor displays "N/A" instead of battery percentage
+
+**Solutions**:
+1. **Check mouse compatibility**: Only wireless gaming mice are supported
+   - Supported brands: Logitech G-series, SteelSeries Aerox, Razer
+   - Standard office mice don't expose battery information
+   - Wired mice have no battery to report
+
+2. **Verify mouse is powered on and connected**
+   - Ensure mouse is not in sleep mode
+   - Check wireless receiver is plugged in
+   - Try moving the mouse to wake it up
+
+3. **Enable debug logging** to see detection details:
+   ```cmd
+   set RUST_LOG=debug
+   hwinfo-steelseries-oled.exe
+   ```
+   Look for messages like:
+   - `"Enumerating HID devices for gaming mice..."`
+   - `"Found compatible mouse: ..."`
+   - `"Mouse battery: X%"`
+
+4. **Check supported mouse list** in `src-tauri/src/mouse_battery.rs`:
+   - If your mouse isn't listed, use discovery mode to find the battery report ID
+   - Run: `hwinfo-steelseries-oled.exe --discover-mouse-battery <VID> <PID>`
+   - See "Adding Support for Your Mouse" in the Special Sensors section above
+
+5. **Verify HID API is initialized**:
+   - The application should show a HID API connection on startup
+   - Check console output for any HID-related errors
+
+6. **Use discovery mode** to identify the correct report ID:
+   - Find your mouse VID/PID in Device Manager
+   - Run discovery mode with your mouse VID/PID
+   - Add the detected report ID to the MOUSE_PROFILES list
 
 ### Configuration File Errors
 

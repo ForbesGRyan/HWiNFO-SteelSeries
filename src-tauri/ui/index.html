@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HWiNFO-SteelSeries Settings</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --text-color: #c9d1d9;
+            --accent-color: #58a6ff;
+            --secondary-bg: #161b22;
+            --border-color: #30363d;
+            --hover-color: #1f6feb;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        h1 {
+            color: var(--accent-color);
+            font-size: 1.5rem;
+            margin: 0;
+        }
+
+        .section {
+            background-color: var(--secondary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: block;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 5px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 10px;
+            align-items: center;
+        }
+
+        label {
+            font-size: 0.9rem;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select {
+            background-color: var(--bg-color);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            padding: 5px;
+            border-radius: 4px;
+            width: 100%;
+        }
+
+        input[type="checkbox"] {
+            width: auto;
+        }
+
+        .preview-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            background-color: #000;
+            padding: 20px;
+            border-radius: 8px;
+            border: 2px solid var(--border-color);
+        }
+
+        #oled-preview {
+            width: 256px;
+            height: 128px;
+            image-rendering: pixelated;
+            background-color: #111;
+        }
+
+        .button-group {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.2s;
+        }
+
+        .btn-primary {
+            background-color: var(--hover-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--accent-color);
+        }
+
+        .btn-secondary {
+            background-color: var(--secondary-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background-color: var(--border-color);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 10px;
+        }
+
+        .tab {
+            padding: 5px 15px;
+            cursor: pointer;
+            border-radius: 4px 4px 0 0;
+            border: 1px solid var(--border-color);
+            background-color: var(--secondary-bg);
+        }
+
+        .tab.active {
+            background-color: var(--hover-color);
+            border-color: var(--hover-color);
+            color: white;
+        }
+
+        .sensor-row {
+            display: grid;
+            grid-template-columns: 1fr 2fr 0.5fr 0.5fr;
+            gap: 5px;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>HWiNFO-SteelSeries Settings</h1>
+
+    <div class="section">
+        <span class="section-title">OLED Preview</span>
+        <div class="preview-container">
+            <canvas id="oled-preview" width="128" height="64"></canvas>
+            <span style="font-size: 0.8rem; color: #888;">Live Preview</span>
+        </div>
+    </div>
+
+    <div class="section">
+        <span class="section-title">Main Settings</span>
+        <div class="grid">
+            <label for="direct-usb">Direct USB (HID) Mode</label>
+            <input type="checkbox" id="direct-usb">
+
+            <label for="decimal">Show Decimals</label>
+            <input type="checkbox" id="decimal">
+
+            <label for="style">Display Style</label>
+            <select id="style">
+                <option value="Horizontal">Summary (Horizontal)</option>
+                <option value="Vertical">Summary (Vertical)</option>
+                <option value="Custom">Custom Sensors</option>
+            </select>
+
+            <label for="gpu-name" id="gpu-name-label">GPU Name Pattern</label>
+            <input type="text" id="gpu-name" placeholder="Leave empty for auto">
+        </div>
+    </div>
+
+    <div id="custom-sensors-section" class="section" style="display: none;">
+        <span class="section-title">Custom Sensors</span>
+        <div class="grid" style="margin-bottom: 10px;">
+            <label for="pages">Number of Pages</label>
+            <input type="number" id="pages" min="1" max="10">
+
+            <label for="page-time">Page Display Time (s)</label>
+            <input type="number" id="page-time" min="1" max="60">
+
+            <label for="sensors-per-line">Sensors per Line</label>
+            <input type="number" id="sensors-per-line" min="1" max="3">
+        </div>
+
+        <div class="tabs" id="page-tabs">
+            <!-- Tabs injected by JS -->
+        </div>
+
+        <div id="sensor-grid-container">
+            <div class="sensor-row" style="font-weight: bold; border-bottom: 1px solid var(--border-color);">
+                <span>Label</span>
+                <span>Sensor (Name;Reading)</span>
+                <span>Unit</span>
+                <span>Conv</span>
+            </div>
+            <div id="sensor-rows">
+                <!-- Rows injected by JS -->
+            </div>
+        </div>
+    </div>
+
+    <div class="button-group">
+        <button class="btn-secondary" id="btn-reload">Reload from File</button>
+        <button class="btn-primary" id="btn-save">Save Configuration</button>
+    </div>
+
+    <script>
+        const { invoke } = window.__TAURI__.core;
+
+        let config = {};
+        let activePage = 0;
+
+        async function loadConfig() {
+            try {
+                console.log("Invoking get_config...");
+                config = await invoke('get_config');
+                console.log("Config received:", JSON.stringify(config, null, 2));
+                console.log("Config keys:", Object.keys(config));
+                console.log("direct_usb value:", config.direct_usb);
+                updateUI();
+            } catch (e) {
+                console.error("Failed to load config:", e);
+                alert("Error loading config: " + e);
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('direct-usb').checked = config.direct_usb;
+            document.getElementById('decimal').checked = config.decimal;
+
+            let style = "Horizontal";
+            if (!config.is_summary) style = "Custom";
+            else if (config.is_vertical) style = "Vertical";
+            document.getElementById('style').value = style;
+
+            document.getElementById('gpu-name').value = config.gpu || '';
+
+            const isCustom = style === "Custom";
+            document.getElementById('custom-sensors-section').style.display = isCustom ? 'block' : 'none';
+            document.getElementById('gpu-name-label').style.display = isCustom ? 'none' : 'block';
+            document.getElementById('gpu-name').style.display = isCustom ? 'none' : 'block';
+
+            if (isCustom) {
+                document.getElementById('pages').value = config.pages;
+                document.getElementById('page-time').value = config.page_time;
+                document.getElementById('sensors_per_line').value = config.sensors_per_line;
+                renderTabs();
+                renderSensors();
+            }
+        }
+
+        function renderTabs() {
+            const tabsContainer = document.getElementById('page-tabs');
+            tabsContainer.innerHTML = '';
+            for (let i = 0; i < config.pages; i++) {
+                const tab = document.createElement('div');
+                tab.className = `tab ${activePage === i ? 'active' : ''}`;
+                tab.innerText = `Page ${i + 1}`;
+                tab.onclick = () => {
+                    activePage = i;
+                    renderTabs();
+                    renderSensors();
+                };
+                tabsContainer.appendChild(tab);
+            }
+        }
+
+        function renderSensors() {
+            const rowsContainer = document.getElementById('sensor-rows');
+            rowsContainer.innerHTML = '';
+
+            const page = config.custom_sensors[activePage] || [];
+            const totalLines = 5; // Fixed for now
+            const sensorsPerLine = parseInt(document.getElementById('sensors-per-line').value) || 1;
+            const totalSensors = totalLines * sensorsPerLine;
+
+            for (let i = 0; i < totalSensors; i++) {
+                const sensor = page[i] || { label: '', sensor: '', unit: '', convert: '' };
+                const row = document.createElement('div');
+                row.className = 'sensor-row';
+
+                row.innerHTML = `
+                    <input type="text" value="${sensor.label}" onchange="updateSensor(${i}, 'label', this.value)">
+                    <input type="text" value="${sensor.sensor}" onchange="updateSensor(${i}, 'sensor', this.value)">
+                    <input type="text" value="${sensor.unit}" onchange="updateSensor(${i}, 'unit', this.value)">
+                    <input type="text" value="${sensor.convert}" onchange="updateSensor(${i}, 'convert', this.value)">
+                `;
+                rowsContainer.appendChild(row);
+            }
+        }
+
+        function updateSensor(index, field, value) {
+            if (!config.custom_sensors[activePage]) {
+                config.custom_sensors[activePage] = [];
+            }
+            if (!config.custom_sensors[activePage][index]) {
+                config.custom_sensors[activePage][index] = { label: '', sensor: '', unit: '', convert: '' };
+            }
+            config.custom_sensors[activePage][index][field] = value;
+        }
+
+        document.getElementById('btn-save').onclick = async () => {
+            const style = document.getElementById('style').value;
+            config.direct_usb = document.getElementById('direct-usb').checked;
+            config.decimal = document.getElementById('decimal').checked;
+            config.gpu = document.getElementById('gpu-name').value;
+
+            if (style === "Custom") {
+                config.is_summary = false;
+                config.pages = parseInt(document.getElementById('pages').value);
+                config.page_time = parseInt(document.getElementById('page-time').value);
+                config.sensors_per_line = parseInt(document.getElementById('sensors-per-line').value);
+            } else {
+                config.is_summary = true;
+                config.is_vertical = style === "Vertical";
+            }
+
+            await invoke('save_config', { config });
+            alert('Settings saved!');
+        };
+
+        document.getElementById('btn-reload').onclick = loadConfig;
+
+        // Periodic preview update
+        async function updatePreview() {
+            try {
+                const previewData = await invoke('get_preview');
+                const canvas = document.getElementById('oled-preview');
+                const ctx = canvas.getContext('2d');
+                const imgData = ctx.createImageData(128, 64);
+
+                // Convert bitmap to RGBA
+                for (let i = 0; i < previewData.length; i++) {
+                    const val = previewData[i];
+                    imgData.data[i * 4] = val;     // R
+                    imgData.data[i * 4 + 1] = val; // G
+                    imgData.data[i * 4 + 2] = val; // B
+                    imgData.data[i * 4 + 3] = 255; // A
+                }
+                if (previewData.some(v => v !== 0)) {
+                    // console.log("Preview has non-zero pixels");
+                } else {
+                    // console.warn("Preview is entirely black");
+                }
+                ctx.putImageData(imgData, 0, 0);
+            } catch (e) {
+                console.error("Preview failed", e);
+            }
+        }
+
+        setInterval(updatePreview, 1000);
+        window.addEventListener('DOMContentLoaded', loadConfig);
+    </script>
+</body>
+
+</html>

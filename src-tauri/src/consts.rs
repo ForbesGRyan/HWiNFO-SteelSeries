@@ -15,9 +15,9 @@ impl std::fmt::Display for Style {
     }
 }
 
-pub const CUSTOM_SENSORS: usize = 9;
-pub const DISPLAY_LINES: usize = 3;
-pub const TICK_RATE: u64 = 1000;
+pub const CUSTOM_SENSORS: usize = 15;
+pub const DISPLAY_LINES: usize = 5;
+pub const TICK_RATE: u64 = 500;
 
 #[cfg(test)]
 mod tests {
@@ -53,8 +53,8 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(CUSTOM_SENSORS, 9);
-        assert_eq!(DISPLAY_LINES, 3);
-        assert_eq!(TICK_RATE, 1000);
+        assert_eq!(CUSTOM_SENSORS, 15);
+        assert_eq!(DISPLAY_LINES, 5);
+        assert_eq!(TICK_RATE, 500);
     }
 }

@@ -1,0 +1,32 @@
+[package]
+name = "hwinfo-steelseries-oled"
+version = "0.1.6"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+console = "0.16"
+dialoguer = "0.12"
+env_logger = "0.11"
+gamesense = "0.1.2"
+image = "0.25"
+log = "0.4"
+hidapi = "2.6"
+rusb = "0.9"
+rust-ini = "0.21"
+serde_json = "1.0"
+strum = { version = "0.27", features = ["derive"] }
+tray-icon = "0.21"
+winapi = {version="0.3", features=["memoryapi", "winnt", "wincon", "winuser"]}
+winit = "0.30"
+embedded-graphics = "0.8"
+profont = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2.0" }
+tauri-utils = "2.0"
+
+[build-dependencies]
+tauri-build = "2.0"
