@@ -169,3 +169,398 @@ impl UnicodeEmoji for char {
             || (0x2700..=0x27BF).contains(&u)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===========================================
+    // OledBuffer::new() tests
+    // ===========================================
+
+    #[test]
+    fn test_oled_buffer_new_creates_correct_size() {
+        let buffer = OledBuffer::new();
+        // 128 columns * 8 bytes per column = 1024 bytes
+        assert_eq!(buffer.data.len(), 128 * 8);
+    }
+
+    #[test]
+    fn test_oled_buffer_new_initialized_to_zeros() {
+        let buffer = OledBuffer::new();
+        // All bytes should be zero (black/off)
+        for byte in buffer.data.iter() {
+            assert_eq!(*byte, 0);
+        }
+    }
+
+    // ===========================================
+    // OledBuffer::set_pixel() tests
+    // ===========================================
+
+    #[test]
+    fn test_set_pixel_at_origin() {
+        let mut buffer = OledBuffer::new();
+        buffer.set_pixel(0, 0, true);
+
+        // Pixel at (0,0) should set bit 0 of byte at index 0
+        assert_eq!(buffer.data[0] & 1, 1);
+    }
+
+    #[test]
+    fn test_set_pixel_at_max_bounds() {
+        let mut buffer = OledBuffer::new();
+        // Max valid coordinates are (127, 63) for 128x64 display
+        buffer.set_pixel(127, 63, true);
+
+        // Column 127, row 63 -> byte_row = 63/8 = 7, bit = 63%8 = 7
+        // idx = 127 * 8 + 7 = 1023
+        let idx = 127 * 8 + 7;
+        assert_eq!(buffer.data[idx] & (1 << 7), 1 << 7);
+    }
+
+    #[test]
+    fn test_set_pixel_out_of_bounds_x_does_not_panic() {
+        let mut buffer = OledBuffer::new();
+        // Should not panic, just be ignored
+        buffer.set_pixel(128, 0, true);
+        buffer.set_pixel(200, 0, true);
+
+        // Buffer should remain all zeros
+        for byte in buffer.data.iter() {
+            assert_eq!(*byte, 0);
+        }
+    }
+
+    #[test]
+    fn test_set_pixel_out_of_bounds_y_does_not_panic() {
+        let mut buffer = OledBuffer::new();
+        // Should not panic, just be ignored
+        buffer.set_pixel(0, 64, true);
+        buffer.set_pixel(0, 100, true);
+
+        // Buffer should remain all zeros
+        for byte in buffer.data.iter() {
+            assert_eq!(*byte, 0);
+        }
+    }
+
+    #[test]
+    fn test_set_pixel_can_turn_off() {
+        let mut buffer = OledBuffer::new();
+        buffer.set_pixel(5, 5, true);
+
+        // Verify pixel is on
+        let idx = 5 * 8 + 0; // byte_row = 5/8 = 0
+        let bit = 5 % 8;
+        assert_ne!(buffer.data[idx] & (1 << bit), 0);
+
+        // Turn it off
+        buffer.set_pixel(5, 5, false);
+        assert_eq!(buffer.data[idx] & (1 << bit), 0);
+    }
+
+    #[test]
+    fn test_set_pixel_different_y_positions() {
+        let mut buffer = OledBuffer::new();
+
+        // Set pixels at different y positions in same column
+        buffer.set_pixel(0, 0, true); // bit 0 of byte 0
+        buffer.set_pixel(0, 7, true); // bit 7 of byte 0
+        buffer.set_pixel(0, 8, true); // bit 0 of byte 1
+
+        assert_eq!(buffer.data[0], 0b10000001); // bits 0 and 7
+        assert_eq!(buffer.data[1], 0b00000001); // bit 0
+    }
+
+    // ===========================================
+    // OledBuffer::get_chunk() tests
+    // ===========================================
+
+    #[test]
+    fn test_get_chunk_at_offset_zero() {
+        let mut buffer = OledBuffer::new();
+        buffer.set_pixel(0, 0, true);
+
+        let chunk = buffer.get_chunk(0, 1);
+        // Should get 8 bytes for 1 column
+        assert_eq!(chunk.len(), 8);
+        assert_eq!(chunk[0], 1); // First byte should have bit 0 set
+    }
+
+    #[test]
+    fn test_get_chunk_multiple_columns() {
+        let buffer = OledBuffer::new();
+
+        let chunk = buffer.get_chunk(0, 10);
+        // 10 columns * 8 bytes = 80 bytes
+        assert_eq!(chunk.len(), 80);
+    }
+
+    #[test]
+    fn test_get_chunk_at_middle_offset() {
+        let mut buffer = OledBuffer::new();
+        buffer.set_pixel(64, 0, true);
+
+        let chunk = buffer.get_chunk(64, 1);
+        assert_eq!(chunk.len(), 8);
+        assert_eq!(chunk[0], 1); // First byte of this column should have bit 0 set
+    }
+
+    #[test]
+    fn test_get_chunk_preserves_data() {
+        let mut buffer = OledBuffer::new();
+        // Set a pattern in column 5
+        buffer.set_pixel(5, 0, true);
+        buffer.set_pixel(5, 1, true);
+        buffer.set_pixel(5, 2, true);
+
+        let chunk = buffer.get_chunk(5, 1);
+        assert_eq!(chunk[0], 0b00000111); // bits 0, 1, 2 set
+    }
+
+    // ===========================================
+    // get_emoji_icon() tests
+    // ===========================================
+
+    #[test]
+    fn test_get_emoji_icon_fire() {
+        let result = get_emoji_icon("🔥");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &ICON_FIRE);
+    }
+
+    #[test]
+    fn test_get_emoji_icon_snowflake() {
+        let result = get_emoji_icon("❄");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &ICON_FAN);
+    }
+
+    #[test]
+    fn test_get_emoji_icon_bolt() {
+        let result = get_emoji_icon("⚡");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &ICON_BOLT);
+    }
+
+    #[test]
+    fn test_get_emoji_icon_chart() {
+        let result = get_emoji_icon("📈");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &ICON_CHART);
+    }
+
+    #[test]
+    fn test_get_emoji_icon_disk() {
+        let result = get_emoji_icon("💾");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &ICON_DISK);
+    }
+
+    #[test]
+    fn test_get_emoji_icon_unknown_returns_none() {
+        let result = get_emoji_icon("hello");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_emoji_icon_empty_string_returns_none() {
+        let result = get_emoji_icon("");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_emoji_icon_with_text_containing_emoji() {
+        // The function uses contains(), so text with emoji should match
+        let result = get_emoji_icon("Temperature 🔥");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &ICON_FIRE);
+    }
+
+    // ===========================================
+    // render_text_to_oled() tests
+    // ===========================================
+
+    #[test]
+    fn test_render_text_empty_string() {
+        let buffer = render_text_to_oled("", 0);
+        // Should return a valid buffer
+        assert_eq!(buffer.data.len(), 128 * 8);
+    }
+
+    #[test]
+    fn test_render_text_simple_ascii() {
+        let buffer = render_text_to_oled("Hello", 0);
+        // Buffer should have some pixels set (not all zeros)
+        let has_pixels = buffer.data.iter().any(|&b| b != 0);
+        assert!(has_pixels, "Text should render some pixels");
+    }
+
+    #[test]
+    fn test_render_text_multiple_lines() {
+        let buffer = render_text_to_oled("Line1\nLine2\nLine3", 0);
+        let has_pixels = buffer.data.iter().any(|&b| b != 0);
+        assert!(has_pixels, "Multi-line text should render some pixels");
+    }
+
+    #[test]
+    fn test_render_text_with_emoji() {
+        let buffer = render_text_to_oled("🔥 Hot", 0);
+        let has_pixels = buffer.data.iter().any(|&b| b != 0);
+        assert!(has_pixels, "Text with emoji should render some pixels");
+    }
+
+    #[test]
+    fn test_render_text_correct_buffer_dimensions() {
+        let buffer = render_text_to_oled("Test", 0);
+        // OriginDimensions should report 128x64
+        assert_eq!(buffer.size(), Size::new(128, 64));
+    }
+
+    #[test]
+    fn test_render_text_with_x_offset() {
+        let buffer_no_offset = render_text_to_oled("A", 0);
+        let buffer_with_offset = render_text_to_oled("A", 50);
+
+        // Both should have pixels, but in different positions
+        let has_pixels_no_offset = buffer_no_offset.data.iter().any(|&b| b != 0);
+        let has_pixels_with_offset = buffer_with_offset.data.iter().any(|&b| b != 0);
+
+        assert!(has_pixels_no_offset);
+        assert!(has_pixels_with_offset);
+
+        // The buffers should be different due to different x positions
+        assert_ne!(buffer_no_offset.data, buffer_with_offset.data);
+    }
+
+    // ===========================================
+    // UnicodeEmoji trait tests
+    // ===========================================
+
+    #[test]
+    fn test_is_emoji_fire() {
+        assert!('🔥'.is_emoji());
+    }
+
+    #[test]
+    fn test_is_emoji_snowflake() {
+        assert!('❄'.is_emoji());
+    }
+
+    #[test]
+    fn test_is_emoji_bolt() {
+        assert!('⚡'.is_emoji());
+    }
+
+    #[test]
+    fn test_is_emoji_chart() {
+        assert!('📈'.is_emoji());
+    }
+
+    #[test]
+    fn test_is_emoji_disk() {
+        assert!('💾'.is_emoji());
+    }
+
+    #[test]
+    fn test_is_emoji_ascii_letter_false() {
+        assert!(!('A'.is_emoji()));
+        assert!(!('z'.is_emoji()));
+    }
+
+    #[test]
+    fn test_is_emoji_digit_false() {
+        assert!(!('0'.is_emoji()));
+        assert!(!('9'.is_emoji()));
+    }
+
+    #[test]
+    fn test_is_emoji_space_false() {
+        assert!(!(' '.is_emoji()));
+    }
+
+    #[test]
+    fn test_is_emoji_punctuation_false() {
+        assert!(!('.'.is_emoji()));
+        assert!(!('!'.is_emoji()));
+        assert!(!('?'.is_emoji()));
+    }
+
+    #[test]
+    fn test_is_emoji_various_emojis() {
+        // Test emojis in different unicode ranges
+        assert!('☀'.is_emoji()); // U+2600 range (Miscellaneous Symbols)
+        assert!('✂'.is_emoji()); // U+2700 range (Dingbats)
+        assert!('🌀'.is_emoji()); // U+1F300 range (Miscellaneous Symbols and Pictographs)
+    }
+
+    // ===========================================
+    // DrawTarget implementation tests
+    // ===========================================
+
+    #[test]
+    fn test_draw_target_size() {
+        let buffer = OledBuffer::new();
+        let size = buffer.size();
+        assert_eq!(size.width, 128);
+        assert_eq!(size.height, 64);
+    }
+
+    #[test]
+    fn test_draw_target_draw_iter() {
+        use embedded_graphics::prelude::*;
+
+        let mut buffer = OledBuffer::new();
+        let pixels = vec![
+            Pixel(Point::new(10, 10), BinaryColor::On),
+            Pixel(Point::new(20, 20), BinaryColor::On),
+        ];
+
+        let result = buffer.draw_iter(pixels);
+        assert!(result.is_ok());
+
+        // Verify pixels were set
+        // For (10, 10): col=10, byte_row=10/8=1, bit=10%8=2, idx=10*8+1=81
+        let idx1 = 10 * 8 + 1;
+        assert_ne!(buffer.data[idx1] & (1 << 2), 0);
+
+        // For (20, 20): col=20, byte_row=20/8=2, bit=20%8=4, idx=20*8+2=162
+        let idx2 = 20 * 8 + 2;
+        assert_ne!(buffer.data[idx2] & (1 << 4), 0);
+    }
+
+    #[test]
+    fn test_draw_target_ignores_negative_coordinates() {
+        let mut buffer = OledBuffer::new();
+        let pixels = vec![
+            Pixel(Point::new(-1, 0), BinaryColor::On),
+            Pixel(Point::new(0, -1), BinaryColor::On),
+        ];
+
+        let result = buffer.draw_iter(pixels);
+        assert!(result.is_ok());
+
+        // Buffer should remain all zeros
+        for byte in buffer.data.iter() {
+            assert_eq!(*byte, 0);
+        }
+    }
+
+    #[test]
+    fn test_draw_target_ignores_out_of_bounds() {
+        let mut buffer = OledBuffer::new();
+        let pixels = vec![
+            Pixel(Point::new(128, 0), BinaryColor::On),
+            Pixel(Point::new(0, 64), BinaryColor::On),
+        ];
+
+        let result = buffer.draw_iter(pixels);
+        assert!(result.is_ok());
+
+        // Buffer should remain all zeros
+        for byte in buffer.data.iter() {
+            assert_eq!(*byte, 0);
+        }
+    }
+}

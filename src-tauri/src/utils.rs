@@ -3,6 +3,7 @@ use log::{debug, error};
 use serde_json::{json, Value};
 
 use crate::Hwinfo;
+use crate::media::{MediaField, MediaReader};
 use crate::mouse_battery::MouseBatteryReader;
 
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
@@ -15,7 +16,8 @@ pub fn run_sensors<'a>(
     hwinfo: &Hwinfo,
     decimal: bool,
     mouse_battery_reader: &mut MouseBatteryReader,
-    hid_api: &hidapi::HidApi,
+    media_reader: &mut MediaReader,
+    hid_api: Option<&hidapi::HidApi>,
 ) -> Result<(), anyhow::Error> {
     for k in 0..CUSTOM_SENSORS {
         let sensor_str = match pages_sensors.get(format!("sensor_{}", k)) {
@@ -49,6 +51,22 @@ pub fn run_sensors<'a>(
             labels[k] = label;
             units[k] = unit;
             values[k] = mouse_battery_reader.get_battery_percentage(hid_api);
+            continue;
+        } else if let Some(media_field) = MediaField::from_sensor_name(sensor[0]) {
+            // Handle MEDIA_* sensors (MEDIA_TITLE, MEDIA_ARTIST, MEDIA_ALBUM, MEDIA_APP)
+            match media_reader.get_media_field(media_field) {
+                Some(value) => {
+                    labels[k] = label;
+                    units[k] = unit;
+                    values[k] = value;
+                }
+                None => {
+                    // Hide sensor when nothing is playing - use empty strings
+                    labels[k] = "";
+                    units[k] = "";
+                    values[k] = String::new();
+                }
+            }
             continue;
         }
         let mut value = match hwinfo.get(sensor[0], sensor[1]) {

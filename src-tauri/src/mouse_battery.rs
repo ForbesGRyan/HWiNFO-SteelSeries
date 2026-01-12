@@ -64,8 +64,16 @@ impl MouseBatteryReader {
 
     /// Get battery percentage as a formatted string
     /// Returns cached value if less than 30 seconds old
-    /// Returns "N/A" if mouse not found or error occurs
-    pub fn get_battery_percentage(&mut self, api: &HidApi) -> String {
+    /// Returns "N/A" if mouse not found, HID API not available, or error occurs
+    pub fn get_battery_percentage(&mut self, api: Option<&HidApi>) -> String {
+        // If no HID API is available (e.g., using GameSense mode), return N/A
+        let api = match api {
+            Some(api) => api,
+            None => {
+                debug!("HID API not available, returning N/A for mouse battery");
+                return String::from("N/A");
+            }
+        };
         // Check cache expiration (30 seconds)
         if let Some(last_read) = self.last_read {
             if last_read.elapsed() < Duration::from_secs(30) {
@@ -661,6 +669,8 @@ fn parse_likely_battery(data: &[u8]) -> Option<u8> {
 mod tests {
     use super::*;
 
+    // ==================== parse_battery_report tests ====================
+
     #[test]
     fn test_parse_battery_report_logitech() {
         // Logitech format: [ReportID, Percentage, ...]
@@ -689,6 +699,8 @@ mod tests {
         assert_eq!(MouseBatteryReader::parse_battery_report(&data), None);
     }
 
+    // ==================== new() and Default trait tests ====================
+
     #[test]
     fn test_new_reader_defaults() {
         let reader = MouseBatteryReader::new();
@@ -696,4 +708,233 @@ mod tests {
         assert!(reader.last_read.is_none());
         assert!(reader.cached_device.is_none());
     }
+
+    #[test]
+    fn test_default_trait_implementation() {
+        // Test that Default::default() produces the same result as new()
+        let reader_new = MouseBatteryReader::new();
+        let reader_default = MouseBatteryReader::default();
+
+        assert_eq!(reader_new.cached_value, reader_default.cached_value);
+        assert_eq!(reader_new.last_read.is_none(), reader_default.last_read.is_none());
+        assert_eq!(reader_new.cached_device.is_none(), reader_default.cached_device.is_none());
+        assert_eq!(reader_new.last_successful_read.is_none(), reader_default.last_successful_read.is_none());
+    }
+
+    // ==================== get_battery_percentage tests ====================
+
+    #[test]
+    fn test_get_battery_percentage_with_none_hidapi() {
+        // When HidApi is None, should return "N/A" immediately
+        let mut reader = MouseBatteryReader::new();
+        let result = reader.get_battery_percentage(None);
+        assert_eq!(result, "N/A");
+    }
+
+    #[test]
+    fn test_get_battery_percentage_returns_cached_value_unchanged() {
+        // When HidApi is None, the cached_value should remain "N/A"
+        let mut reader = MouseBatteryReader::new();
+        reader.cached_value = String::from("50"); // Simulate a previous read
+
+        // With None HidApi, it should return N/A (not the cached value)
+        let result = reader.get_battery_percentage(None);
+        assert_eq!(result, "N/A");
+    }
+
+    // ==================== parse_likely_battery tests ====================
+
+    #[test]
+    fn test_parse_likely_battery_with_valid_value() {
+        // Valid battery value in data (after report ID)
+        let data = [0x08, 85, 0x00, 0x00];
+        assert_eq!(parse_likely_battery(&data), Some(85));
+    }
+
+    #[test]
+    fn test_parse_likely_battery_with_multiple_valid_values() {
+        // Multiple valid values - should return the first one after report ID
+        let data = [0x08, 75, 50, 25, 0x00];
+        assert_eq!(parse_likely_battery(&data), Some(75));
+    }
+
+    #[test]
+    fn test_parse_likely_battery_with_100_percent() {
+        // Full battery
+        let data = [0x04, 100, 0x00];
+        assert_eq!(parse_likely_battery(&data), Some(100));
+    }
+
+    #[test]
+    fn test_parse_likely_battery_with_1_percent() {
+        // Minimum non-zero battery
+        let data = [0x04, 1, 0xFF, 0xFF];
+        assert_eq!(parse_likely_battery(&data), Some(1));
+    }
+
+    #[test]
+    fn test_parse_likely_battery_with_zero_first_position() {
+        // Zero battery at position 1 (index 1) - should return Some(0)
+        let data = [0x08, 0, 0xFF, 0xFF];
+        assert_eq!(parse_likely_battery(&data), Some(0));
+    }
+
+    #[test]
+    fn test_parse_likely_battery_no_valid_values() {
+        // All values > 100 (except report ID)
+        let data = [0x08, 255, 200, 150, 128];
+        assert_eq!(parse_likely_battery(&data), None);
+    }
+
+    #[test]
+    fn test_parse_likely_battery_empty_data() {
+        // Empty data
+        let data: [u8; 0] = [];
+        assert_eq!(parse_likely_battery(&data), None);
+    }
+
+    #[test]
+    fn test_parse_likely_battery_single_byte() {
+        // Only report ID, no data
+        let data = [0x08];
+        assert_eq!(parse_likely_battery(&data), None);
+    }
+
+    #[test]
+    fn test_parse_likely_battery_two_bytes_with_valid() {
+        // Minimum valid data: report ID + battery
+        let data = [0x08, 42];
+        assert_eq!(parse_likely_battery(&data), Some(42));
+    }
+
+    #[test]
+    fn test_parse_likely_battery_skips_first_byte() {
+        // First byte is valid percentage but should be skipped (it's report ID)
+        let data = [50, 200, 200, 200];
+        // 50 is the report ID, all other values are > 100
+        assert_eq!(parse_likely_battery(&data), None);
+    }
+
+    #[test]
+    fn test_parse_likely_battery_prioritizes_nonzero() {
+        // Zero first, then valid value - should return the non-zero value
+        let data = [0x08, 0, 75, 0, 0];
+        assert_eq!(parse_likely_battery(&data), Some(75));
+    }
+
+    // ==================== MOUSE_PROFILES constant validation ====================
+
+    #[test]
+    fn test_mouse_profiles_have_valid_vendor_ids() {
+        // Verify all profiles have non-zero vendor IDs
+        for (vid, _pid, _report_id, name) in MOUSE_PROFILES {
+            assert!(*vid > 0, "Profile '{}' has invalid vendor ID 0", name);
+        }
+    }
+
+    #[test]
+    fn test_mouse_profiles_have_valid_product_ids() {
+        // Verify all profiles have non-zero product IDs
+        for (_vid, pid, _report_id, name) in MOUSE_PROFILES {
+            assert!(*pid > 0, "Profile '{}' has invalid product ID 0", name);
+        }
+    }
+
+    #[test]
+    fn test_mouse_profiles_have_valid_report_ids() {
+        // Verify all profiles have non-zero report IDs
+        for (_vid, _pid, report_id, name) in MOUSE_PROFILES {
+            assert!(*report_id > 0, "Profile '{}' has invalid report ID 0", name);
+        }
+    }
+
+    #[test]
+    fn test_mouse_profiles_have_names() {
+        // Verify all profiles have non-empty names
+        for (_vid, _pid, _report_id, name) in MOUSE_PROFILES {
+            assert!(!name.is_empty(), "Profile has empty name");
+        }
+    }
+
+    #[test]
+    fn test_mouse_profiles_known_vendors() {
+        // Verify known vendor IDs are correct
+        let logitech_vid = 0x046d;
+        let steelseries_vid = 0x1038;
+        let razer_vid = 0x1532;
+
+        let logitech_count = MOUSE_PROFILES.iter().filter(|(vid, _, _, _)| *vid == logitech_vid).count();
+        let steelseries_count = MOUSE_PROFILES.iter().filter(|(vid, _, _, _)| *vid == steelseries_vid).count();
+        let razer_count = MOUSE_PROFILES.iter().filter(|(vid, _, _, _)| *vid == razer_vid).count();
+
+        assert!(logitech_count > 0, "Expected Logitech profiles");
+        assert!(steelseries_count > 0, "Expected SteelSeries profiles");
+        assert!(razer_count > 0, "Expected Razer profiles");
+    }
+
+    #[test]
+    fn test_mouse_profiles_count() {
+        // Verify we have a reasonable number of profiles
+        assert!(MOUSE_PROFILES.len() >= 10, "Expected at least 10 mouse profiles, got {}", MOUSE_PROFILES.len());
+    }
+
+    // ==================== PULSAR_MICE constant validation ====================
+
+    #[test]
+    fn test_pulsar_mice_have_valid_vendor_ids() {
+        // Verify all Pulsar mice have non-zero vendor IDs
+        for (vid, _pid, name) in PULSAR_MICE {
+            assert!(*vid > 0, "Pulsar mouse '{}' has invalid vendor ID 0", name);
+        }
+    }
+
+    #[test]
+    fn test_pulsar_mice_have_valid_product_ids() {
+        // Verify all Pulsar mice have non-zero product IDs
+        for (_vid, pid, name) in PULSAR_MICE {
+            assert!(*pid > 0, "Pulsar mouse '{}' has invalid product ID 0", name);
+        }
+    }
+
+    #[test]
+    fn test_pulsar_mice_have_names() {
+        // Verify all Pulsar mice have non-empty names
+        for (_vid, _pid, name) in PULSAR_MICE {
+            assert!(!name.is_empty(), "Pulsar mouse has empty name");
+        }
+    }
+
+    #[test]
+    fn test_pulsar_mice_count() {
+        // Verify we have Pulsar mice defined
+        assert!(PULSAR_MICE.len() >= 1, "Expected at least 1 Pulsar mouse profile, got {}", PULSAR_MICE.len());
+    }
+
+    #[test]
+    fn test_pulsar_mice_known_vendor_ids() {
+        // Pulsar uses multiple vendor IDs
+        let valid_pulsar_vids = [0x3710, 0x0e7e];
+
+        for (vid, _pid, name) in PULSAR_MICE {
+            assert!(
+                valid_pulsar_vids.contains(vid),
+                "Pulsar mouse '{}' has unexpected vendor ID: 0x{:04x}",
+                name,
+                vid
+            );
+        }
+    }
+
+    // ==================== Integration test notes ====================
+    // The following functions require actual HID hardware and cannot be unit tested:
+    //
+    // - try_read_battery(): Requires HidApi with real devices
+    // - find_mouse_device(): Requires HidApi device enumeration
+    // - read_battery_from_device(): Requires opening real HID device
+    // - try_read_pulsar_battery_hidapi(): Requires Pulsar mouse hardware
+    // - read_pulsar_battery_hid(): Requires Pulsar mouse hardware
+    // - discover_battery_report_id(): Requires HidApi and real devices
+    // - discover_all_devices_for_battery(): Requires HidApi and real devices
+    //
+    // These would need integration tests with mock HID devices or actual hardware.
 }

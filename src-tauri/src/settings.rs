@@ -223,7 +223,13 @@ fn configure_custom_sensors(
         }
 
         let sensor_name = &hwinfo.sensor_names[category];
-        let sensor = hwinfo.sensors.get(sensor_name).unwrap();
+        let sensor = hwinfo.sensors.get(sensor_name).ok_or_else(|| {
+            error!("Sensor '{}' not found in HWiNFO data", sensor_name);
+            anyhow::anyhow!(
+                "Sensor '{}' not found - HWiNFO data may have changed",
+                sensor_name
+            )
+        })?;
 
         // Display available readings for selected sensor in HWiNFO order
         println!("\n{}:", sensor_name);
@@ -243,7 +249,16 @@ fn configure_custom_sensors(
 
         // Get the selected reading to determine default unit
         let selected_reading_name = &sensor.reading_names[sensor_selection];
-        let reading = sensor.readings.get(selected_reading_name).unwrap();
+        let reading = sensor.readings.get(selected_reading_name).ok_or_else(|| {
+            error!(
+                "Reading '{}' not found in sensor '{}'",
+                selected_reading_name, sensor_name
+            );
+            anyhow::anyhow!(
+                "Reading '{}' not found - HWiNFO data may have changed",
+                selected_reading_name
+            )
+        })?;
         let default_unit = get_default_unit(reading.t_reading);
 
         // Prompt for unit with default suggestion
@@ -482,7 +497,10 @@ mod tests {
 
         let result = AppConfig::from_ini(&conf);
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Style not found");
+        // When style is missing, the code defaults to "vertical" (summary mode)
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert!(config.is_summary);
+        assert!(config.is_vertical);
     }
 }

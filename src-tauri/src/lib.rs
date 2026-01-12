@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, ffi::OsStr, iter::once};
 use strum::FromRepr;
 use winapi::ctypes::c_void;
+use winapi::um::handleapi::CloseHandle;
 use winapi::um::memoryapi::{MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ};
 
 const HWINFO_SENSORS_MAP_FILE_NAME2: &str = "Global\\HWiNFO_SENS_SM2";
@@ -165,6 +166,10 @@ impl Hwinfo {
             // Map the shared memory into the process's address space
             MapViewOfFile(shared_memory_handle, FILE_MAP_READ, 0, 0, 0)
         };
+        // Close the handle after mapping - the view remains valid until UnmapViewOfFile
+        unsafe {
+            CloseHandle(shared_memory_handle);
+        }
         if shared_memory_view.is_null() {
             // println!("Failed to map view of shared memory");
             return Err(anyhow::Error::new(Error::new(
@@ -177,7 +182,12 @@ impl Hwinfo {
             let shared_memory_content = std::slice::from_raw_parts(start, hwinfo_memory_size);
             let (_prefix, aligned, _suffix) =
                 shared_memory_content.align_to::<HwinfoSensorsSharedMem2>();
-            // .1[0]
+            if aligned.is_empty() {
+                return Err(anyhow::Error::new(Error::new(
+                    ErrorKind::InvalidData,
+                    "Failed to align shared memory data for HwinfoSensorsSharedMem2",
+                )));
+            }
             aligned[0]
         };
         let num_sensors = hwinfo_memory.dw_num_sensor_elements;
@@ -196,9 +206,15 @@ impl Hwinfo {
             let sensor = unsafe {
                 let ptr = start.offset(offset as isize);
                 let sensor_element = std::slice::from_raw_parts(ptr, size_sensor_element as usize);
-                let (_prefix, sensor, _suffix) =
-                    &sensor_element.align_to::<HwinfoSensorsSensorElement>();
-                sensor[0]
+                let (_prefix, aligned, _suffix) =
+                    sensor_element.align_to::<HwinfoSensorsSensorElement>();
+                if aligned.is_empty() {
+                    return Err(anyhow::Error::new(Error::new(
+                        ErrorKind::InvalidData,
+                        "Failed to align sensor element data",
+                    )));
+                }
+                aligned[0]
             };
             let sensor_name = String::from_utf8(sensor.utf_sensor_name_user.to_vec())?
                 .trim_matches(char::from(0))
@@ -247,10 +263,20 @@ impl Hwinfo {
                 self.shared_memory_name.as_ptr(), // Name of the shared memory object
             )
         };
+        if shared_memory_handle.is_null() {
+            return Err(anyhow::Error::new(Error::new(
+                ErrorKind::NotFound,
+                "Failed to open shared memory object",
+            )));
+        }
         let shared_memory_view = unsafe {
             // Map the shared memory into the process's address space
             MapViewOfFile(shared_memory_handle, FILE_MAP_READ, 0, 0, 0)
         };
+        // Close the handle after mapping - the view remains valid until UnmapViewOfFile
+        unsafe {
+            CloseHandle(shared_memory_handle);
+        }
         if shared_memory_view.is_null() {
             println!("Failed to map view of shared memory");
             return Err(anyhow::Error::new(Error::new(
@@ -269,7 +295,17 @@ impl Hwinfo {
             // if sensor_reading.len() != 460 {
             //     panic!();
             // }
-            let reading = unsafe { &sensor_reading.align_to::<HwinfoSensorsReadingElement>().1[0] };
+            let reading = unsafe {
+                let (_prefix, aligned, _suffix) =
+                    sensor_reading.align_to::<HwinfoSensorsReadingElement>();
+                if aligned.is_empty() {
+                    return Err(anyhow::Error::new(Error::new(
+                        ErrorKind::InvalidData,
+                        "Failed to align reading element data",
+                    )));
+                }
+                &aligned[0]
+            };
             let label = String::from_utf8(reading.utf_label_user.to_vec())?
                 .trim_matches(char::from(0))
                 .to_string();
@@ -331,6 +367,77 @@ impl Hwinfo {
             )))
         } else {
             Ok(results)
+        }
+    }
+
+    /// Creates a mock Hwinfo instance for testing purposes.
+    /// This bypasses the shared memory initialization and allows direct sensor injection.
+    pub fn new_mock(sensors: HashMap<String, Sensor>, sensor_names: Vec<String>) -> Self {
+        Hwinfo {
+            shared_memory_view: Arc::new(SharedMemoryView(std::ptr::null())),
+            num_reading_elements: 0,
+            offset_reading_section: 0,
+            size_reading_section: 0,
+            shared_memory_name: vec![],
+            sensors,
+            sensor_names,
+        }
+    }
+}
+
+impl HwinfoSensorsReadingElement {
+    /// Creates a mock reading element for testing purposes.
+    pub fn new_mock(
+        sensor_index: u32,
+        reading_id: u32,
+        label: &str,
+        value: f64,
+    ) -> Self {
+        let mut label_user = [0u8; HWINFO_SENSORS_STRING_LEN2];
+        label.as_bytes().iter().enumerate().for_each(|(i, &b)| {
+            if i < HWINFO_SENSORS_STRING_LEN2 {
+                label_user[i] = b;
+            }
+        });
+
+        HwinfoSensorsReadingElement {
+            t_reading: SensorReadingType::SensorTypeTemp,
+            _blank: [0; 3],
+            dw_sensor_index: sensor_index,
+            dw_reading_id: reading_id,
+            sz_label_orig: [0; HWINFO_SENSORS_STRING_LEN2],
+            sz_label_user: [0; HWINFO_SENSORS_STRING_LEN2],
+            sz_unit: [0; HWINFO_UNIT_STRING_LEN],
+            value,
+            value_min: value - 10.0,
+            value_max: value + 10.0,
+            value_avg: value,
+            utf_label_user: label_user,
+            utf_unit: [0; HWINFO_UNIT_STRING_LEN],
+        }
+    }
+}
+
+impl HwinfoSensorsSensorElement {
+    /// Creates a mock sensor element for testing purposes.
+    pub fn new_mock(sensor_id: u32, sensor_name: &str) -> Self {
+        let mut name_user = [0u8; HWINFO_SENSORS_STRING_LEN2];
+        sensor_name
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .for_each(|(i, &b)| {
+                if i < HWINFO_SENSORS_STRING_LEN2 {
+                    name_user[i] = b;
+                }
+            });
+
+        HwinfoSensorsSensorElement {
+            dw_sensor_id: sensor_id,
+            dw_sensor_inst: 0,
+            sz_sensor_name_orig: [0; HWINFO_SENSORS_STRING_LEN2],
+            sz_sensor_name_user: [0; HWINFO_SENSORS_STRING_LEN2],
+            utf_sensor_name_user: name_user,
         }
     }
 }
