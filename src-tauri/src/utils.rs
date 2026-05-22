@@ -2,7 +2,7 @@ use chrono::Local;
 use log::{debug, error};
 use serde_json::{json, Value};
 
-use crate::Hwinfo;
+use hwinfo_steelseries_oled::Hwinfo;
 use crate::media::{MediaField, MediaReader};
 use crate::mouse_battery::MouseBatteryReader;
 
@@ -27,6 +27,11 @@ pub fn run_sensors<'a>(
 
         // Remove quotes if they exist (for backwards compatibility with old configs)
         let sensor_str = sensor_str.trim_matches('"');
+
+        // Skip empty sensor entries
+        if sensor_str.trim().is_empty() {
+            continue;
+        }
 
         let sensor: Vec<&str> = sensor_str.split(";").collect();
         let label = match pages_sensors.get(format!("label_{}", k)) {
@@ -67,6 +72,10 @@ pub fn run_sensors<'a>(
                     values[k] = String::new();
                 }
             }
+            continue;
+        }
+        if sensor.len() < 2 {
+            error!("Malformed sensor entry (missing ';'): {}", sensor_str);
             continue;
         }
         let mut value = match hwinfo.get(sensor[0], sensor[1]) {
