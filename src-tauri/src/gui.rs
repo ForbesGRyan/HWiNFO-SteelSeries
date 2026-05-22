@@ -14,7 +14,6 @@ use tauri::{command, State};
 const SPECIAL_SENSORS: &[(&str, &str)] = &[
     ("CLOCK", "Current time (12-hour)"),
     ("BLANK", "Empty spacer"),
-    ("MOUSE_BATTERY", "Wireless mouse battery %"),
     ("MEDIA_TITLE", "Now-playing track title"),
     ("MEDIA_ARTIST", "Now-playing artist"),
     ("MEDIA_ALBUM", "Now-playing album"),

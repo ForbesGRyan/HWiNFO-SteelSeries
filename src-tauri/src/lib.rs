@@ -123,6 +123,7 @@ impl Drop for SharedMemoryView {
 #[derive(Clone)]
 pub struct Hwinfo {
     // shared_memory_handle: Handle,
+    #[allow(dead_code)] // held for its Drop (unmaps view); not read directly
     pub(crate) shared_memory_view: Arc<SharedMemoryView>,
     // num_sensors: u32,
     pub(crate) num_reading_elements: u32,

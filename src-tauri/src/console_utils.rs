@@ -26,6 +26,7 @@ pub fn console_window(action: Console) {
     }
 }
 
+#[allow(dead_code)]
 pub fn display_value_in_console(term: &Term, value: &Value) -> anyhow::Result<()> {
     term.clear_screen()?;
     for i in 0..DISPLAY_LINES {

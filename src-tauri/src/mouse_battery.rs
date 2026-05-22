@@ -2,7 +2,6 @@ use hidapi::HidApi;
 use log::{debug, info, warn};
 use std::ffi::CString;
 use std::time::{Duration, Instant};
-use rusb::{Context, DeviceHandle, UsbContext};
 
 /// Known gaming mouse profiles with battery support
 /// Format: (VendorID, ProductID, BatteryReportID, Name)
