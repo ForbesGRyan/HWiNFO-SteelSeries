@@ -25,6 +25,8 @@ pub struct AppConfig {
     pub page_time: isize,
     pub sensors_per_line: u8,
     pub direct_usb: bool,
+    #[serde(default)]
+    pub direct_usb_serial: String,
     pub custom_sensors: Vec<Vec<CustomSensor>>,
 }
 
@@ -89,6 +91,8 @@ impl AppConfig {
             .and_then(|d| d.parse::<bool>().ok())
             .unwrap_or(false);
 
+        let direct_usb_serial = main.get("direct_usb_serial").unwrap_or("").to_string();
+
         println!(
             "AppConfig: Loaded main settings. is_summary={}, direct_usb={}",
             is_summary, direct_usb
@@ -103,6 +107,7 @@ impl AppConfig {
             page_time,
             sensors_per_line,
             direct_usb,
+            direct_usb_serial,
             custom_sensors: {
                 let mut all_pages = Vec::new();
                 for i in 1..=pages {
@@ -135,6 +140,62 @@ impl AppConfig {
             },
         })
     }
+}
+
+/// Map the "Choose style" menu input (1/2/3) to a Style. Returns None for invalid input.
+fn style_from_choice(input: u8) -> Option<Style> {
+    match input {
+        1 => Some(Style::Vertical),
+        2 => Some(Style::Horizontal),
+        3 => Some(Style::Custom),
+        _ => None,
+    }
+}
+
+/// Map the "Connection Type" menu input (1/2) to direct_usb bool. Anything else → false.
+fn direct_usb_from_choice(input: u8) -> bool {
+    matches!(input, 2)
+}
+
+/// Clamp the "lines" input to the allowed 2..=5 range; out-of-range inputs default to 3.
+fn validate_lines(input: u8) -> u8 {
+    if (2..=5).contains(&input) { input } else { 3 }
+}
+
+/// Validate the "sensors per line" input; returns None if outside 1..=3.
+fn validate_sensors_per_line(input: u8) -> Option<u8> {
+    if (1..=3).contains(&input) { Some(input) } else { None }
+}
+
+/// Pick the unit to write: user input wins; falls back to default_unit when empty.
+fn pick_unit(default_unit: &str, user_input: &str) -> String {
+    if user_input.is_empty() {
+        default_unit.to_string()
+    } else {
+        user_input.to_string()
+    }
+}
+
+/// Resolve a category index against the sensor_names list. Errors if out of range.
+fn validate_category_selection(idx: usize, sensor_names: &[String]) -> Result<&String, anyhow::Error> {
+    sensor_names
+        .get(idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid category selection: {} (max: {})", idx, sensor_names.len().saturating_sub(1)))
+}
+
+/// Resolve a reading index against a sensor's reading_names. Errors if out of range.
+fn validate_reading_selection<'a>(
+    idx: usize,
+    reading_names: &'a [String],
+) -> Result<&'a String, anyhow::Error> {
+    reading_names
+        .get(idx)
+        .ok_or_else(|| anyhow::anyhow!("Invalid reading selection: {} (max: {})", idx, reading_names.len().saturating_sub(1)))
+}
+
+/// Format the canonical sensor id used in conf.ini: `Category;Reading`.
+fn format_sensor_id(category: &str, reading: &str) -> String {
+    format!("{};{}", category, reading)
 }
 
 fn get_default_unit(reading_type: SensorReadingType) -> &'static str {
@@ -212,18 +273,14 @@ fn configure_custom_sensors(
             .interact_text()
             .unwrap_or(0);
 
-        if category >= hwinfo.sensor_names.len() {
-            error!(
-                "Invalid category selection: {} (max: {})",
-                category,
-                hwinfo.sensor_names.len() - 1
-            );
-            println!("Category out of range, please try again.");
-            return Err(anyhow::anyhow!("Invalid category selection"));
-        }
+        let sensor_name = validate_category_selection(category, &hwinfo.sensor_names)
+            .inspect_err(|e| {
+                error!("{}", e);
+                println!("Category out of range, please try again.");
+            })?
+            .clone();
 
-        let sensor_name = &hwinfo.sensor_names[category];
-        let sensor = hwinfo.sensors.get(sensor_name).ok_or_else(|| {
+        let sensor = hwinfo.sensors.get(&sensor_name).ok_or_else(|| {
             error!("Sensor '{}' not found in HWiNFO data", sensor_name);
             anyhow::anyhow!(
                 "Sensor '{}' not found - HWiNFO data may have changed",
@@ -231,25 +288,18 @@ fn configure_custom_sensors(
             )
         })?;
 
-        // Display available readings for selected sensor in HWiNFO order
         println!("\n{}:", sensor_name);
-        let temp_readings: Vec<String> = sensor
-            .reading_names
-            .iter()
-            .enumerate()
-            .map(|(i, reading_name)| {
-                println!("\t{}) {}", i, reading_name);
-                format!("{};{}", sensor_name, reading_name)
-            })
-            .collect();
+        for (i, reading_name) in sensor.reading_names.iter().enumerate() {
+            println!("\t{}) {}", i, reading_name);
+        }
 
         let sensor_selection: usize = Input::new().with_prompt("Sensor").interact_text()?;
-        let sensor_selected = &temp_readings[sensor_selection];
+        let selected_reading_name =
+            validate_reading_selection(sensor_selection, &sensor.reading_names)?.clone();
+        let sensor_selected = format_sensor_id(&sensor_name, &selected_reading_name);
         let label: String = Input::new().with_prompt("Label").interact_text()?;
 
-        // Get the selected reading to determine default unit
-        let selected_reading_name = &sensor.reading_names[sensor_selection];
-        let reading = sensor.readings.get(selected_reading_name).ok_or_else(|| {
+        let reading = sensor.readings.get(&selected_reading_name).ok_or_else(|| {
             error!(
                 "Reading '{}' not found in sensor '{}'",
                 selected_reading_name, sensor_name
@@ -261,7 +311,6 @@ fn configure_custom_sensors(
         })?;
         let default_unit = get_default_unit(reading.t_reading);
 
-        // Prompt for unit with default suggestion
         let unit: String = if default_unit.is_empty() {
             Input::new().with_prompt("Unit").interact_text()?
         } else {
@@ -269,11 +318,7 @@ fn configure_custom_sensors(
                 .with_prompt(format!("Unit (default: {})", default_unit))
                 .allow_empty(true)
                 .interact_text()?;
-            if input.is_empty() {
-                default_unit.to_string()
-            } else {
-                input
-            }
+            pick_unit(default_unit, &input)
         };
 
         conf.with_section(Some("PAGE1.Sensors"))
@@ -315,11 +360,9 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
         }
     };
 
-    let style: Style = match input {
-        1 => Style::Vertical,
-        2 => Style::Horizontal,
-        3 => Style::Custom,
-        _ => {
+    let style: Style = match style_from_choice(input) {
+        Some(s) => s,
+        None => {
             warn!("Invalid style input: {}", input);
             term.write_line("Invalid input")?;
             return settings_create_config(term, hwinfo);
@@ -330,15 +373,11 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
     conf.with_section(Some("Main"))
         .set("style", style.to_string());
 
-    let direct_usb: bool = match Input::new()
+    let direct_usb_input: u8 = Input::new()
         .with_prompt("Connection Type\n1) SteelSeries GG (GameSense)\n2) Direct USB (HID)")
         .interact_text()
-        .unwrap_or(1)
-    {
-        1 => false,
-        2 => true,
-        _ => false,
-    };
+        .unwrap_or(1);
+    let direct_usb = direct_usb_from_choice(direct_usb_input);
 
     conf.with_section(Some("Main"))
         .set("direct_usb", direct_usb.to_string());
@@ -350,20 +389,19 @@ pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyho
             "\nUp to 5 lines will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro."
         );
 
-        let lines: u8 = Input::new()
+        let raw_lines: u8 = Input::new()
             .with_prompt("How many lines? (2-5)")
             .interact_text()
-            .ok()
-            .filter(|&l| l >= 2 && l <= 5)
             .unwrap_or(3);
+        let lines = validate_lines(raw_lines);
 
-        let sensors_per_line: u8 = Input::new()
+        let raw_spl: u8 = Input::new()
             .with_prompt("How many sensors per line? (1-3)")
             .interact_text()?;
-
-        if !(1..=3).contains(&sensors_per_line) {
-            return settings_create_config(term, hwinfo);
-        }
+        let sensors_per_line = match validate_sensors_per_line(raw_spl) {
+            Some(v) => v,
+            None => return settings_create_config(term, hwinfo),
+        };
 
         conf.with_section(Some("Main"))
             .set("sensors_per_line", sensors_per_line.to_string());
@@ -488,6 +526,158 @@ mod tests {
             result.unwrap_err().to_string(),
             "Main config section not found"
         );
+    }
+
+    // ==================== style_from_choice ====================
+
+    #[test]
+    fn test_style_from_choice_valid() {
+        assert_eq!(style_from_choice(1), Some(Style::Vertical));
+        assert_eq!(style_from_choice(2), Some(Style::Horizontal));
+        assert_eq!(style_from_choice(3), Some(Style::Custom));
+    }
+
+    #[test]
+    fn test_style_from_choice_invalid() {
+        assert!(style_from_choice(0).is_none());
+        assert!(style_from_choice(4).is_none());
+        assert!(style_from_choice(255).is_none());
+    }
+
+    // ==================== direct_usb_from_choice ====================
+
+    #[test]
+    fn test_direct_usb_from_choice_gamesense() {
+        assert!(!direct_usb_from_choice(1));
+    }
+
+    #[test]
+    fn test_direct_usb_from_choice_direct_usb() {
+        assert!(direct_usb_from_choice(2));
+    }
+
+    #[test]
+    fn test_direct_usb_from_choice_invalid_defaults_to_gamesense() {
+        assert!(!direct_usb_from_choice(0));
+        assert!(!direct_usb_from_choice(99));
+    }
+
+    // ==================== validate_lines ====================
+
+    #[test]
+    fn test_validate_lines_in_range() {
+        for n in 2..=5 {
+            assert_eq!(validate_lines(n), n);
+        }
+    }
+
+    #[test]
+    fn test_validate_lines_below_range_defaults_to_three() {
+        assert_eq!(validate_lines(0), 3);
+        assert_eq!(validate_lines(1), 3);
+    }
+
+    #[test]
+    fn test_validate_lines_above_range_defaults_to_three() {
+        assert_eq!(validate_lines(6), 3);
+        assert_eq!(validate_lines(255), 3);
+    }
+
+    // ==================== validate_sensors_per_line ====================
+
+    #[test]
+    fn test_validate_sensors_per_line_in_range() {
+        for n in 1..=3 {
+            assert_eq!(validate_sensors_per_line(n), Some(n));
+        }
+    }
+
+    #[test]
+    fn test_validate_sensors_per_line_out_of_range() {
+        assert!(validate_sensors_per_line(0).is_none());
+        assert!(validate_sensors_per_line(4).is_none());
+        assert!(validate_sensors_per_line(255).is_none());
+    }
+
+    // ==================== pick_unit ====================
+
+    #[test]
+    fn test_pick_unit_uses_input_when_non_empty() {
+        assert_eq!(pick_unit("°", "K"), "K");
+    }
+
+    #[test]
+    fn test_pick_unit_falls_back_to_default_when_empty() {
+        assert_eq!(pick_unit("°", ""), "°");
+    }
+
+    #[test]
+    fn test_pick_unit_empty_default_and_empty_input() {
+        assert_eq!(pick_unit("", ""), "");
+    }
+
+    // ==================== validate_category_selection ====================
+
+    #[test]
+    fn test_validate_category_selection_valid() {
+        let names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        assert_eq!(validate_category_selection(0, &names).unwrap(), "A");
+        assert_eq!(validate_category_selection(2, &names).unwrap(), "C");
+    }
+
+    #[test]
+    fn test_validate_category_selection_out_of_range() {
+        let names = vec!["A".to_string()];
+        let err = validate_category_selection(5, &names).unwrap_err();
+        assert!(format!("{}", err).contains("Invalid category selection"));
+    }
+
+    #[test]
+    fn test_validate_category_selection_empty_list() {
+        let names: Vec<String> = vec![];
+        assert!(validate_category_selection(0, &names).is_err());
+    }
+
+    // ==================== validate_reading_selection ====================
+
+    #[test]
+    fn test_validate_reading_selection_valid() {
+        let readings = vec!["Temp".to_string(), "Load".to_string()];
+        assert_eq!(validate_reading_selection(1, &readings).unwrap(), "Load");
+    }
+
+    #[test]
+    fn test_validate_reading_selection_out_of_range() {
+        let readings = vec!["Temp".to_string()];
+        let err = validate_reading_selection(7, &readings).unwrap_err();
+        assert!(format!("{}", err).contains("Invalid reading selection"));
+    }
+
+    // ==================== format_sensor_id ====================
+
+    #[test]
+    fn test_format_sensor_id() {
+        assert_eq!(format_sensor_id("CPU [#0]", "Temperature"), "CPU [#0];Temperature");
+        assert_eq!(format_sensor_id("", ""), ";");
+    }
+
+    // ==================== get_default_unit ====================
+
+    #[test]
+    fn test_get_default_unit_known_types() {
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeTemp), "°");
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeVolt), "V");
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeFan), "RPM");
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeCurrent), "A");
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypePower), "W");
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeClock), "MHz");
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeUsage), "%");
+    }
+
+    #[test]
+    fn test_get_default_unit_unknown_types_empty() {
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeNone), "");
+        assert_eq!(get_default_unit(SensorReadingType::SensorTypeOther), "");
     }
 
     #[test]
