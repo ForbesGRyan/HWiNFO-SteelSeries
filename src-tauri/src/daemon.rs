@@ -20,6 +20,7 @@ use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
+#[derive(Debug)]
 struct SummarySensors {
     cpu_temp: f64,
     cpu_usage: f64,
@@ -218,6 +219,64 @@ fn check_disconnect(old: &Hwinfo, new: &Hwinfo, count: &mut usize, limit: usize)
     *count >= limit
 }
 
+fn next_page_counter(i: isize, page_time: isize, pages: usize, current: usize) -> usize {
+    if pages == 0 || page_time <= 0 {
+        return current;
+    }
+    let ticks_per_second = 1000 / TICK_RATE as isize;
+    let interval = page_time * ticks_per_second;
+    if interval > 0 && i != 0 && i % interval == 0 {
+        (current + 1) % pages
+    } else {
+        current
+    }
+}
+
+fn disconnected_value() -> Value {
+    json!({ "line1": "Disconnected", "line2": "FROM", "line3": "HWiNFO" })
+}
+
+fn build_display_value(
+    config: &AppConfig,
+    hwinfo: &Hwinfo,
+    pages_vec: &[ini::Properties],
+    page_counter: usize,
+    mouse: &mut MouseBatteryReader,
+    media: &mut MediaReader,
+    hid_api: Option<&hidapi::HidApi>,
+) -> Result<Value, anyhow::Error> {
+    if config.is_summary {
+        let sensors = fetch_summary_sensors(hwinfo, &config.gpu)?;
+        if config.is_vertical {
+            Ok(format_vertical_summary(&sensors, config.decimal))
+        } else {
+            Ok(format_horizontal_summary(&sensors, config.decimal))
+        }
+    } else {
+        let pages_sensors = pages_vec
+            .get(page_counter)
+            .ok_or_else(|| anyhow!("Page {} missing", page_counter))?;
+
+        let mut labels = vec![""; CUSTOM_SENSORS];
+        let mut units = vec![""; CUSTOM_SENSORS];
+        let mut values = vec![String::new(); CUSTOM_SENSORS];
+
+        run_sensors(
+            pages_sensors,
+            &mut labels,
+            &mut units,
+            &mut values,
+            hwinfo,
+            config.decimal,
+            mouse,
+            media,
+            hid_api,
+        )?;
+
+        Ok(format_custom_value(config.sensors_per_line, labels, values, units))
+    }
+}
+
 struct Daemon {
     state: Shared,
     app: AppHandle,
@@ -320,7 +379,7 @@ impl Daemon {
 
             let api = hidapi::HidApi::new()
                 .map_err(|e| anyhow!("HID API init failed: {}", e))?;
-            let device = connect_hid(&self.term, &api)?;
+            let device = connect_hid(&self.term, &api, &self.config.direct_usb_serial)?;
             self.oled = Some(OledClient::Hid(device));
             self.hid_api = Some(api);
 
@@ -447,7 +506,7 @@ impl Daemon {
 
         if disconnected {
             warn!("HWiNFO disconnected");
-            let value = json!({ "line1": "Disconnected", "line2": "FROM", "line3": "HWiNFO" });
+            let value = disconnected_value();
             let buffer = value_to_oled_buffer(&value);
             let _ = oled.trigger_frame("ERROR", self.i.0, &value, &buffer);
 
@@ -463,41 +522,29 @@ impl Daemon {
             return Ok(());
         }
 
-        // Build display value
-        let value = if self.config.is_summary {
-            let sensors = fetch_summary_sensors(hwinfo, &self.config.gpu)?;
-            if self.config.is_vertical {
-                format_vertical_summary(&sensors, self.config.decimal)
-            } else {
-                format_horizontal_summary(&sensors, self.config.decimal)
-            }
-        } else {
-            let ticks_per_second = 1000 / TICK_RATE as isize;
-            if self.i.0 % (self.config.page_time * ticks_per_second) == 0 && self.i.0 != 0 {
-                self.page_counter = (self.page_counter + 1) % self.config.pages;
+        // Advance page counter (custom mode only)
+        if !self.config.is_summary {
+            let next = next_page_counter(
+                self.i.0,
+                self.config.page_time,
+                self.config.pages,
+                self.page_counter,
+            );
+            if next != self.page_counter {
+                self.page_counter = next;
                 debug!("Switching to page {}", self.page_counter + 1);
             }
-            let pages_sensors = self.pages_vec.get(self.page_counter)
-                .ok_or_else(|| anyhow!("Page {} missing", self.page_counter))?;
+        }
 
-            let mut labels = vec![""; CUSTOM_SENSORS];
-            let mut units = vec![""; CUSTOM_SENSORS];
-            let mut values = vec![String::new(); CUSTOM_SENSORS];
-
-            run_sensors(
-                pages_sensors,
-                &mut labels,
-                &mut units,
-                &mut values,
-                hwinfo,
-                self.config.decimal,
-                &mut self.mouse_battery_reader,
-                &mut self.media_reader,
-                self.hid_api.as_ref(),
-            )?;
-
-            format_custom_value(self.config.sensors_per_line, labels, values, units)
-        };
+        let value = build_display_value(
+            &self.config,
+            hwinfo,
+            &self.pages_vec,
+            self.page_counter,
+            &mut self.mouse_battery_reader,
+            &mut self.media_reader,
+            self.hid_api.as_ref(),
+        )?;
 
         let buffer = value_to_oled_buffer(&value);
         let event_name = format!("PAGE{}", self.page_counter + 1);
@@ -569,3 +616,285 @@ pub fn spawn(state: Shared, app: AppHandle, config: AppConfig) {
 // Ensure Arc usage compiles regardless of Mutex location elsewhere
 #[allow(dead_code)]
 fn _arc_assert(_: Arc<()>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::AppConfig;
+    use hwinfo_steelseries_oled::{
+        HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
+    };
+    use std::collections::HashMap;
+
+    fn sample_summary() -> SummarySensors {
+        SummarySensors {
+            cpu_temp: 42.0,
+            cpu_usage: 50.0,
+            gpu_temp: 60.0,
+            gpu_usage: 70.0,
+            mem_used: 8.0,
+            mem_free: 8.0,
+            mem_load: 50.0,
+        }
+    }
+
+    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Hwinfo {
+        let mut sensors: HashMap<String, Sensor> = HashMap::new();
+        let mut sensor_names: Vec<String> = Vec::new();
+        for (sk, rk, val) in entries {
+            let entry = sensors.entry(sk.to_string()).or_insert_with(|| {
+                sensor_names.push(sk.to_string());
+                Sensor {
+                    info: HwinfoSensorsSensorElement::new_mock(0, sk),
+                    readings: HashMap::new(),
+                    reading_names: Vec::new(),
+                }
+            });
+            entry.readings.insert(
+                rk.to_string(),
+                HwinfoSensorsReadingElement::new_mock(0, 0, rk, *val),
+            );
+            entry.reading_names.push(rk.to_string());
+        }
+        Hwinfo::new_mock(sensors, sensor_names)
+    }
+
+    fn full_summary_hwinfo() -> Hwinfo {
+        build_hwinfo(&[
+            ("CPU", "Total CPU Usage", 50.0),
+            ("CPU", "CPU (Tctl/Tdie)", 42.0),
+            ("GPU", "GPU Core Load", 70.0),
+            ("GPU", "GPU Temperature", 60.0),
+            ("MEM", "Physical Memory Used", 8192.0),
+            ("MEM", "Physical Memory Available", 8192.0),
+            ("MEM", "Physical Memory Load", 50.0),
+        ])
+    }
+
+    fn base_config() -> AppConfig {
+        AppConfig {
+            is_summary: true,
+            is_vertical: true,
+            gpu: String::new(),
+            decimal: false,
+            pages: 1,
+            page_time: 5,
+            sensors_per_line: 1,
+            direct_usb: false,
+            direct_usb_serial: String::new(),
+            custom_sensors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_next_page_counter_advances_at_interval() {
+        // TICK_RATE = 500 → ticks_per_second = 2 → interval = page_time * 2
+        // page_time=5 → interval=10
+        assert_eq!(next_page_counter(10, 5, 3, 0), 1);
+        assert_eq!(next_page_counter(20, 5, 3, 1), 2);
+        assert_eq!(next_page_counter(30, 5, 3, 2), 0); // wraps
+    }
+
+    #[test]
+    fn test_next_page_counter_keeps_when_not_at_boundary() {
+        assert_eq!(next_page_counter(5, 5, 3, 0), 0);
+        assert_eq!(next_page_counter(1, 5, 3, 1), 1);
+    }
+
+    #[test]
+    fn test_next_page_counter_zero_tick_does_not_advance() {
+        assert_eq!(next_page_counter(0, 5, 3, 0), 0);
+    }
+
+    #[test]
+    fn test_next_page_counter_handles_zero_pages_or_page_time() {
+        assert_eq!(next_page_counter(10, 5, 0, 0), 0);
+        assert_eq!(next_page_counter(10, 0, 3, 1), 1);
+        assert_eq!(next_page_counter(10, -1, 3, 1), 1);
+    }
+
+    #[test]
+    fn test_disconnected_value_has_three_lines() {
+        let v = disconnected_value();
+        assert_eq!(v["line1"], "Disconnected");
+        assert_eq!(v["line2"], "FROM");
+        assert_eq!(v["line3"], "HWiNFO");
+    }
+
+    #[test]
+    fn test_fetch_summary_sensors_uses_find_first_when_gpu_empty() {
+        let hw = full_summary_hwinfo();
+        let s = fetch_summary_sensors(&hw, "").unwrap();
+        assert_eq!(s.cpu_temp, 42.0);
+        assert_eq!(s.gpu_temp, 60.0);
+        assert_eq!(s.mem_used, 8.0); // 8192/1024
+    }
+
+    #[test]
+    fn test_fetch_summary_sensors_uses_named_gpu() {
+        let hw = full_summary_hwinfo();
+        let s = fetch_summary_sensors(&hw, "GPU").unwrap();
+        assert_eq!(s.gpu_temp, 60.0);
+    }
+
+    #[test]
+    fn test_fetch_summary_sensors_named_gpu_missing_errors() {
+        let hw = full_summary_hwinfo();
+        let err = fetch_summary_sensors(&hw, "NoSuchGpu").unwrap_err();
+        assert!(format!("{}", err).contains("GPU Temperature not found"));
+    }
+
+    #[test]
+    fn test_fetch_summary_sensors_missing_cpu_temp_errors() {
+        let hw = build_hwinfo(&[("CPU", "Total CPU Usage", 50.0)]);
+        assert!(fetch_summary_sensors(&hw, "").is_err());
+    }
+
+    #[test]
+    fn test_format_vertical_summary_no_decimal() {
+        let v = format_vertical_summary(&sample_summary(), false);
+        assert_eq!(v["line1"], "CPU   GPU   MEM");
+        assert_eq!(v["line2"], "42°   60°   8G");
+        assert_eq!(v["line3"], "50%    70%    8G");
+    }
+
+    #[test]
+    fn test_format_vertical_summary_decimal() {
+        let v = format_vertical_summary(&sample_summary(), true);
+        assert_eq!(v["line2"], "42.0° 60.0° 8.0G");
+        assert_eq!(v["line3"], "50.0% 70.0% 8.0G");
+    }
+
+    #[test]
+    fn test_format_horizontal_summary_no_decimal() {
+        let v = format_horizontal_summary(&sample_summary(), false);
+        assert_eq!(v["line1"], "CPU 42° 50%");
+        assert_eq!(v["line2"], "GPU 60° 70%");
+        assert_eq!(v["line3"], "MEM 8G 50%");
+    }
+
+    #[test]
+    fn test_format_horizontal_summary_decimal() {
+        let v = format_horizontal_summary(&sample_summary(), true);
+        assert_eq!(v["line1"], "CPU 42.0° 50.0%");
+    }
+
+    #[test]
+    fn test_build_display_value_summary_vertical() {
+        let cfg = base_config();
+        let hw = full_summary_hwinfo();
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+
+        let v = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, None).unwrap();
+        assert_eq!(v["line1"], "CPU   GPU   MEM");
+    }
+
+    #[test]
+    fn test_build_display_value_summary_horizontal() {
+        let mut cfg = base_config();
+        cfg.is_vertical = false;
+        let hw = full_summary_hwinfo();
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+
+        let v = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, None).unwrap();
+        assert_eq!(v["line1"], "CPU 42° 50%");
+    }
+
+    #[test]
+    fn test_build_display_value_custom_missing_page_errors() {
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        let hw = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+
+        let err = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, None).unwrap_err();
+        assert!(format!("{}", err).contains("Page 0 missing"));
+    }
+
+    #[test]
+    fn test_build_display_value_custom_renders_blank_sensor() {
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.sensors_per_line = 1;
+        let hw = build_hwinfo(&[]);
+        let mut props = ini::Properties::new();
+        props.insert("sensor_0", "BLANK");
+        props.insert("label_0", "X");
+
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+
+        let v = build_display_value(&cfg, &hw, &[props], 0, &mut mouse, &mut media, None).unwrap();
+        assert!(v["line1"].as_str().unwrap().contains("X"));
+    }
+
+    #[test]
+    fn test_value_to_oled_buffer_populates_text() {
+        let v = json!({ "line1": "Hi", "line2": "There", "line3": "" });
+        let buf = value_to_oled_buffer(&v);
+        // Some pixels should be lit
+        assert!(buf.data.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn test_value_to_sensor_values_collects_lines() {
+        let v = json!({ "line1": "A", "line2": "B", "line3": "C" });
+        let svs = value_to_sensor_values(&v);
+        assert_eq!(svs.len(), 3);
+        assert_eq!(svs[0].label, "Line 1");
+        assert_eq!(svs[0].value, "A");
+        assert_eq!(svs[2].value, "C");
+    }
+
+    #[test]
+    fn test_value_to_sensor_values_skips_missing_lines() {
+        let v = json!({ "line1": "Only" });
+        let svs = value_to_sensor_values(&v);
+        assert_eq!(svs.len(), 1);
+        assert_eq!(svs[0].value, "Only");
+    }
+
+    #[test]
+    fn test_check_disconnect_increments_on_match() {
+        let hw = build_hwinfo(&[("S", "R", 1.0)]);
+        let mut count = 0;
+        assert!(!check_disconnect(&hw, &hw, &mut count, 3));
+        assert_eq!(count, 1);
+        assert!(!check_disconnect(&hw, &hw, &mut count, 3));
+        assert_eq!(count, 2);
+        assert!(check_disconnect(&hw, &hw, &mut count, 3));
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_check_disconnect_resets_on_change() {
+        let a = build_hwinfo(&[("S", "R", 1.0)]);
+        let b = build_hwinfo(&[("S", "R", 2.0)]);
+        let mut count = 2;
+        assert!(!check_disconnect(&a, &b, &mut count, 3));
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_check_disconnect_caps_at_limit() {
+        let hw = build_hwinfo(&[("S", "R", 1.0)]);
+        let mut count = 5;
+        check_disconnect(&hw, &hw, &mut count, 3);
+        assert_eq!(count, 3); // capped to limit
+    }
+
+    #[test]
+    fn test_buffer_to_rgba_grayscale_size_and_mapping() {
+        let mut buf = OledBuffer::new();
+        buf.set_pixel(0, 0, true);
+        buf.set_pixel(127, 63, true);
+        let px = buffer_to_rgba_grayscale(&buf);
+        assert_eq!(px.len(), 128 * 64);
+        assert_eq!(px[0], 255); // (0,0)
+        assert_eq!(px[63 * 128 + 127], 255); // (127,63)
+        assert_eq!(px[1], 0); // (1,0) unlit
+    }
+}

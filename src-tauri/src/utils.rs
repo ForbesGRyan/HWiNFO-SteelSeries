@@ -149,6 +149,311 @@ pub fn format_custom_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hwinfo_steelseries_oled::{
+        HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
+    };
+    use std::collections::HashMap;
+
+    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Hwinfo {
+        let mut sensors: HashMap<String, Sensor> = HashMap::new();
+        let mut sensor_names: Vec<String> = Vec::new();
+        for (sensor_key, reading_key, value) in entries {
+            let entry = sensors.entry(sensor_key.to_string()).or_insert_with(|| {
+                sensor_names.push(sensor_key.to_string());
+                Sensor {
+                    info: HwinfoSensorsSensorElement::new_mock(0, sensor_key),
+                    readings: HashMap::new(),
+                    reading_names: Vec::new(),
+                }
+            });
+            entry.readings.insert(
+                reading_key.to_string(),
+                HwinfoSensorsReadingElement::new_mock(0, 0, reading_key, *value),
+            );
+            entry.reading_names.push(reading_key.to_string());
+        }
+        Hwinfo::new_mock(sensors, sensor_names)
+    }
+
+    fn make_props(pairs: &[(&str, &str)]) -> ini::Properties {
+        let mut p = ini::Properties::new();
+        for (k, v) in pairs {
+            p.insert(*k, *v);
+        }
+        p
+    }
+
+    fn empty_buffers<'a>() -> (Vec<&'a str>, Vec<&'a str>, Vec<String>) {
+        (
+            vec![""; CUSTOM_SENSORS],
+            vec![""; CUSTOM_SENSORS],
+            vec![String::new(); CUSTOM_SENSORS],
+        )
+    }
+
+    #[test]
+    fn test_run_sensors_blank_skips_value() {
+        let props = make_props(&[
+            ("sensor_0", "BLANK"),
+            ("label_0", "spacer"),
+            ("unit_0", ""),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "spacer");
+        assert_eq!(units[0], "");
+        assert_eq!(values[0], "");
+    }
+
+    #[test]
+    fn test_run_sensors_clock_formats_time() {
+        let props = make_props(&[
+            ("sensor_0", "CLOCK"),
+            ("label_0", "T"),
+            ("unit_0", ""),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "T");
+        // HH:MM:SS am/pm
+        let re_like = values[0].len() == 11
+            && values[0].chars().nth(2) == Some(':')
+            && values[0].chars().nth(5) == Some(':')
+            && (values[0].ends_with("am") || values[0].ends_with("pm"));
+        assert!(re_like, "unexpected CLOCK value: {}", values[0]);
+    }
+
+    #[test]
+    fn test_run_sensors_mouse_battery_returns_na_without_hidapi() {
+        let props = make_props(&[
+            ("sensor_0", "MOUSE_BATTERY"),
+            ("label_0", "MB"),
+            ("unit_0", "%"),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "MB");
+        assert_eq!(units[0], "%");
+        assert_eq!(values[0], "N/A");
+    }
+
+    #[test]
+    fn test_run_sensors_media_hides_when_nothing_playing() {
+        // MediaReader::new() has no manager and is_playing=false → field is None → hide sensor.
+        let props = make_props(&[
+            ("sensor_0", "MEDIA_TITLE"),
+            ("label_0", "Title:"),
+            ("unit_0", ""),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "");
+        assert_eq!(units[0], "");
+        assert_eq!(values[0], "");
+    }
+
+    #[test]
+    fn test_run_sensors_regular_lookup_integer_format() {
+        let props = make_props(&[
+            ("sensor_0", "CPU [#0];Temperature"),
+            ("label_0", "CPU"),
+            ("unit_0", "°C"),
+        ]);
+        let hwinfo = build_hwinfo(&[("CPU [#0]", "Temperature", 42.7)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "CPU");
+        assert_eq!(units[0], "°C");
+        assert_eq!(values[0], "43"); // {:02.0} rounds 42.7
+    }
+
+    #[test]
+    fn test_run_sensors_decimal_format() {
+        let props = make_props(&[
+            ("sensor_0", "CPU;Temp"),
+            ("label_0", ""),
+            ("unit_0", ""),
+        ]);
+        let hwinfo = build_hwinfo(&[("CPU", "Temp", 42.75)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, true, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(values[0], "42.8"); // {:.1}
+    }
+
+    #[test]
+    fn test_run_sensors_integer_pads_single_digit() {
+        let props = make_props(&[("sensor_0", "S;R")]);
+        let hwinfo = build_hwinfo(&[("S", "R", 7.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(values[0], "07"); // {:02.0}
+    }
+
+    #[test]
+    fn test_run_sensors_mb_gb_conversion() {
+        let props = make_props(&[
+            ("sensor_0", "MEM;Used"),
+            ("convert_0", "MB/GB"),
+        ]);
+        let hwinfo = build_hwinfo(&[("MEM", "Used", 8192.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, true, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(values[0], "8.0"); // 8192 / 1024 = 8.0
+    }
+
+    #[test]
+    fn test_run_sensors_kb_mb_conversion_both_cases() {
+        for convert in &["kb/mb", "KB/MB"] {
+            let props = make_props(&[("sensor_0", "S;R"), ("convert_0", *convert)]);
+            let hwinfo = build_hwinfo(&[("S", "R", 2048.0)]);
+            let mut mouse = MouseBatteryReader::new();
+            let mut media = MediaReader::new();
+            let (mut labels, mut units, mut values) = empty_buffers();
+
+            run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, true, &mut mouse, &mut media, None).unwrap();
+
+            assert_eq!(values[0], "2.0", "convert={}", convert);
+        }
+    }
+
+    #[test]
+    fn test_run_sensors_quoted_sensor_backwards_compat() {
+        let props = make_props(&[("sensor_0", "\"CPU;Temp\"")]);
+        let hwinfo = build_hwinfo(&[("CPU", "Temp", 50.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(values[0], "50");
+    }
+
+    #[test]
+    fn test_run_sensors_empty_sensor_string_skipped() {
+        let props = make_props(&[("sensor_0", "   ")]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "");
+        assert_eq!(values[0], "");
+    }
+
+    #[test]
+    fn test_run_sensors_no_sensor_key_skipped() {
+        let props = make_props(&[]); // no sensor_* at all
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert!(values.iter().all(|v| v.is_empty()));
+    }
+
+    #[test]
+    fn test_run_sensors_malformed_no_semicolon_skipped() {
+        // No ';' separator → logs error and continues; buffers untouched.
+        let props = make_props(&[("sensor_0", "NoSeparator")]);
+        let hwinfo = build_hwinfo(&[("NoSeparator", "X", 1.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "");
+        assert_eq!(values[0], "");
+    }
+
+    #[test]
+    fn test_run_sensors_missing_sensor_returns_err() {
+        let props = make_props(&[("sensor_0", "GHOST;Reading")]);
+        let hwinfo = build_hwinfo(&[("CPU", "Temp", 1.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        let err = run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap_err();
+        assert!(format!("{}", err).contains("Sensor not found"));
+    }
+
+    #[test]
+    fn test_run_sensors_label_unit_default_when_missing() {
+        let props = make_props(&[("sensor_0", "S;R")]); // no label_0/unit_0
+        let hwinfo = build_hwinfo(&[("S", "R", 10.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "");
+        assert_eq!(units[0], "");
+        assert_eq!(values[0], "10");
+    }
+
+    #[test]
+    fn test_run_sensors_multiple_sensors_at_different_indices() {
+        let props = make_props(&[
+            ("sensor_0", "CPU;Temp"),
+            ("sensor_2", "GPU;Temp"),
+            ("label_2", "G"),
+            ("unit_2", "°C"),
+        ]);
+        let hwinfo = build_hwinfo(&[("CPU", "Temp", 40.0), ("GPU", "Temp", 60.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(values[0], "40");
+        assert_eq!(values[1], ""); // untouched
+        assert_eq!(labels[2], "G");
+        assert_eq!(values[2], "60");
+    }
 
     #[test]
     fn test_format_custom_value_one_sensor_per_line() {

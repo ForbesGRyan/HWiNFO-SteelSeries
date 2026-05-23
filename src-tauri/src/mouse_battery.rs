@@ -33,6 +33,72 @@ const PULSAR_MICE: &[(u16, u16, &str)] = &[
     (0x0e7e, 0x2014, "Pulsar X2A Wireless"),
 ];
 
+/// Classification of a feature-report response against an expected battery value.
+#[derive(Debug, PartialEq, Eq)]
+enum ReportClass {
+    ContainsExpected,
+    ContainsEncoded,
+    LikelyBattery(u8),
+    Plain,
+}
+
+/// Match (vid, pid) against MOUSE_PROFILES; returns (battery_report_id, name) on hit.
+fn match_mouse_profile(vid: u16, pid: u16) -> Option<(u8, &'static str)> {
+    MOUSE_PROFILES
+        .iter()
+        .find(|(v, p, _, _)| *v == vid && *p == pid)
+        .map(|(_, _, report_id, name)| (*report_id, *name))
+}
+
+/// Match (vid, pid) against PULSAR_MICE; returns mouse name on hit.
+fn match_pulsar_mouse(vid: u16, pid: u16) -> Option<&'static str> {
+    PULSAR_MICE
+        .iter()
+        .find(|(v, p, _)| *v == vid && *p == pid)
+        .map(|(_, _, name)| *name)
+}
+
+/// Build the 17-byte Pulsar POWER feature-report request.
+fn build_pulsar_power_request() -> [u8; 17] {
+    let mut request = [0u8; 17];
+    request[0] = 0x08; // Report ID / payload header
+    request[1] = 0x04; // POWER command
+    request[16] = 0x49; // checksum: 0x55 - (0x08 + 0x04)
+    request
+}
+
+/// Parse Pulsar POWER response: battery percentage at byte index 6, valid if ≤ 100.
+fn parse_pulsar_power_response(response: &[u8]) -> Option<u8> {
+    if response.len() >= 7 && response[6] <= 100 {
+        Some(response[6])
+    } else {
+        None
+    }
+}
+
+/// Classify a feature-report response against an optional expected value.
+fn classify_report_response(data: &[u8], expected: Option<u8>) -> ReportClass {
+    if let Some(exp) = expected {
+        if data.iter().any(|&b| b == exp) {
+            return ReportClass::ContainsExpected;
+        }
+        let doubled = exp.saturating_mul(2);
+        let hex_as_dec = u8::from_str_radix(&format!("{:02x}", exp), 10).unwrap_or(255);
+        if data.iter().any(|&b| b == doubled || b == hex_as_dec) {
+            return ReportClass::ContainsEncoded;
+        }
+    }
+    match parse_likely_battery(data) {
+        Some(b) => ReportClass::LikelyBattery(b),
+        None => ReportClass::Plain,
+    }
+}
+
+/// Position of expected battery byte within a report payload.
+fn find_battery_in_report(data: &[u8], expected: u8) -> Option<usize> {
+    data.iter().position(|&b| b == expected)
+}
+
 /// Cached mouse device information
 #[derive(Clone)]
 struct CachedMouseDevice {
@@ -172,30 +238,21 @@ impl MouseBatteryReader {
             let vid = device_info.vendor_id();
             let pid = device_info.product_id();
 
-            // Check if this is a Pulsar mouse
-            for (pulsar_vid, pulsar_pid, name) in PULSAR_MICE {
-                if vid == *pulsar_vid && pid == *pulsar_pid {
-                    info!("Found Pulsar mouse via HID: {} ({:04x}:{:04x})", name, vid, pid);
+            if let Some(name) = match_pulsar_mouse(vid, pid) {
+                info!("Found Pulsar mouse via HID: {} ({:04x}:{:04x})", name, vid, pid);
 
-                    // Try to open the device
-                    match device_info.open_device(api) {
-                        Ok(device) => {
-                            // Try to read battery using HID feature reports
-                            match Self::read_pulsar_battery_hid(&device) {
-                                Ok(percentage) => {
-                                    info!("Pulsar {} battery: {}%", name, percentage);
-                                    return Ok(percentage);
-                                }
-                                Err(e) => {
-                                    debug!("Failed to read battery from {}: {}", name, e);
-                                    continue;
-                                }
-                            }
+                match device_info.open_device(api) {
+                    Ok(device) => match Self::read_pulsar_battery_hid(&device) {
+                        Ok(percentage) => {
+                            info!("Pulsar {} battery: {}%", name, percentage);
+                            return Ok(percentage);
                         }
                         Err(e) => {
-                            debug!("Failed to open Pulsar device {}: {}", name, e);
-                            continue;
+                            debug!("Failed to read battery from {}: {}", name, e);
                         }
+                    },
+                    Err(e) => {
+                        debug!("Failed to open Pulsar device {}: {}", name, e);
                     }
                 }
             }
@@ -206,41 +263,19 @@ impl MouseBatteryReader {
 
     /// Read battery from a Pulsar mouse using HID feature reports
     fn read_pulsar_battery_hid(device: &hidapi::HidDevice) -> Result<u8, anyhow::Error> {
-        // Build POWER command payload (17 bytes)
-        // [Header, Command, 14 data bytes, Checksum]
-        let mut request = [0u8; 17];
-        request[0] = 0x08; // Report ID / Payload header
-        request[1] = 0x04; // POWER command
-        // Bytes 2-15 are zeros
-        request[16] = 0x49; // Checksum: 0x55 - (0x08 + 0x04) = 0x49
-
-        debug!("Sending Pulsar POWER command via feature report...");
-
-        // Send feature report (hidapi will handle the Set Report control transfer)
+        let request = build_pulsar_power_request();
         device.send_feature_report(&request)
             .map_err(|e| anyhow::anyhow!("Failed to send feature report: {}", e))?;
 
-        debug!("Sent feature report, reading response...");
-
-        // Read response via feature report (hidapi will handle the Get Report control transfer)
         let mut response = [0u8; 17];
-        response[0] = 0x08; // Report ID
-
+        response[0] = 0x08;
         let bytes_read = device.get_feature_report(&mut response)
             .map_err(|e| anyhow::anyhow!("Failed to read feature report: {}", e))?;
 
         debug!("Received {} bytes from Pulsar: {:02x?}", bytes_read, &response[..bytes_read]);
 
-        // Battery percentage is at byte 6 (0-indexed, so 7th byte total)
-        if bytes_read >= 7 {
-            let battery = response[6];
-            if battery <= 100 {
-                debug!("Pulsar battery value: {}%", battery);
-                return Ok(battery);
-            }
-        }
-
-        Err(anyhow::anyhow!("Invalid battery response from Pulsar"))
+        parse_pulsar_power_response(&response[..bytes_read])
+            .ok_or_else(|| anyhow::anyhow!("Invalid battery response from Pulsar"))
     }
 
     /// Find a compatible gaming mouse in the HID device list
@@ -249,18 +284,13 @@ impl MouseBatteryReader {
             let vid = device_info.vendor_id();
             let pid = device_info.product_id();
 
-            // Check if this device matches a known profile
-            if let Some((_, _, report_id, name)) = MOUSE_PROFILES
-                .iter()
-                .find(|(v, p, _, _)| *v == vid && *p == pid)
-            {
+            if let Some((report_id, name)) = match_mouse_profile(vid, pid) {
                 debug!("Found compatible mouse: {} ({:04x}:{:04x})", name, vid, pid);
-
                 return Ok(CachedMouseDevice {
                     vendor_id: vid,
                     product_id: pid,
                     path: device_info.path().to_owned(),
-                    battery_report_id: *report_id,
+                    battery_report_id: report_id,
                 });
             }
         }
@@ -463,44 +493,25 @@ pub fn discover_battery_report_id(
                     reports_found += 1;
                     let data = buf[..bytes_read].to_vec();
                     let likely_battery = parse_likely_battery(&data);
+                    let class = classify_report_response(&data, expected_battery);
 
-                    // Check if this report contains the expected battery value
-                    let contains_expected = if let Some(expected) = expected_battery {
-                        data.iter().any(|&b| b == expected)
-                    } else {
-                        false
-                    };
-
-                    // Also check for common encodings of the expected value
-                    let contains_encoded = if let Some(expected) = expected_battery {
-                        let doubled = expected.saturating_mul(2); // Some devices store as percentage * 2
-                        let hex_as_dec = u8::from_str_radix(&format!("{:02x}", expected), 10).unwrap_or(255);
-                        data.iter().any(|&b| b == doubled || b == hex_as_dec)
-                    } else {
-                        false
-                    };
-
-                    // Show ALL reports with data, highlight matches
-                    if contains_expected {
-                        info!(
+                    match class {
+                        ReportClass::ContainsExpected => info!(
                             "    Feature 0x{:02x}: {} bytes - {:02x?} *** CONTAINS EXPECTED VALUE {}% ***",
-                            report_id, bytes_read, &data[..bytes_read], expected_battery.unwrap()
-                        );
-                    } else if contains_encoded {
-                        info!(
+                            report_id, bytes_read, &data, expected_battery.unwrap()
+                        ),
+                        ReportClass::ContainsEncoded => info!(
                             "    Feature 0x{:02x}: {} bytes - {:02x?} ** CONTAINS ENCODED VALUE ({}*2={} or other encoding) **",
-                            report_id, bytes_read, &data[..bytes_read], expected_battery.unwrap(), expected_battery.unwrap() * 2
-                        );
-                    } else if let Some(battery) = likely_battery {
-                        info!(
+                            report_id, bytes_read, &data, expected_battery.unwrap(), expected_battery.unwrap() * 2
+                        ),
+                        ReportClass::LikelyBattery(b) => info!(
                             "    Feature 0x{:02x}: {} bytes - {:02x?} <- LIKELY BATTERY: {}%",
-                            report_id, bytes_read, &data[..bytes_read], battery
-                        );
-                    } else {
-                        info!(
+                            report_id, bytes_read, &data, b
+                        ),
+                        ReportClass::Plain => info!(
                             "    Feature 0x{:02x}: {} bytes - {:02x?}",
-                            report_id, bytes_read, &data[..bytes_read]
-                        );
+                            report_id, bytes_read, &data
+                        ),
                     }
 
                     interface_results.push((report_id, data, likely_battery));
@@ -592,12 +603,7 @@ pub fn discover_all_devices_for_battery(
             match device.get_feature_report(&mut buf) {
                 Ok(bytes_read) if bytes_read > 0 => {
                     let data = &buf[..bytes_read];
-
-                    // Check if this report contains the expected battery value
-                    if data.iter().any(|&b| b == expected_battery) {
-                        // Found a match!
-                        let position = data.iter().position(|&b| b == expected_battery).unwrap();
-
+                    if let Some(position) = find_battery_in_report(data, expected_battery) {
                         info!("*** MATCH FOUND ***");
                         info!("  Device: {:04x}:{:04x} - {} ({})", vid, pid, product_name, manufacturer);
                         info!("  Report ID: 0x{:02x}", report_id);
@@ -608,8 +614,8 @@ pub fn discover_all_devices_for_battery(
                         found_matches.push((vid, pid, report_id, position, product_name.to_string()));
                     }
                 }
-                Ok(_) => {} // No data
-                Err(_) => {} // Error reading report
+                Ok(_) => {}
+                Err(_) => {}
             }
 
             // Small delay to avoid overwhelming the device
@@ -924,16 +930,185 @@ mod tests {
         }
     }
 
-    // ==================== Integration test notes ====================
-    // The following functions require actual HID hardware and cannot be unit tested:
-    //
-    // - try_read_battery(): Requires HidApi with real devices
-    // - find_mouse_device(): Requires HidApi device enumeration
-    // - read_battery_from_device(): Requires opening real HID device
-    // - try_read_pulsar_battery_hidapi(): Requires Pulsar mouse hardware
-    // - read_pulsar_battery_hid(): Requires Pulsar mouse hardware
-    // - discover_battery_report_id(): Requires HidApi and real devices
-    // - discover_all_devices_for_battery(): Requires HidApi and real devices
-    //
-    // These would need integration tests with mock HID devices or actual hardware.
+    // ==================== match_mouse_profile tests ====================
+
+    #[test]
+    fn test_match_mouse_profile_known_logitech() {
+        let (report_id, name) = match_mouse_profile(0x046d, 0xc539).unwrap();
+        assert_eq!(report_id, 0x07);
+        assert!(name.contains("G502 Lightspeed"));
+    }
+
+    #[test]
+    fn test_match_mouse_profile_known_steelseries() {
+        let (report_id, name) = match_mouse_profile(0x1038, 0x1832).unwrap();
+        assert_eq!(report_id, 0x06);
+        assert!(name.contains("Aerox 3"));
+    }
+
+    #[test]
+    fn test_match_mouse_profile_known_razer() {
+        let (report_id, _) = match_mouse_profile(0x1532, 0x008c).unwrap();
+        assert_eq!(report_id, 0x02);
+    }
+
+    #[test]
+    fn test_match_mouse_profile_unknown() {
+        assert!(match_mouse_profile(0xdead, 0xbeef).is_none());
+    }
+
+    #[test]
+    fn test_match_mouse_profile_matches_every_entry() {
+        for (vid, pid, expected_report, expected_name) in MOUSE_PROFILES {
+            let (rid, name) = match_mouse_profile(*vid, *pid).unwrap();
+            assert_eq!(rid, *expected_report);
+            assert_eq!(name, *expected_name);
+        }
+    }
+
+    // ==================== match_pulsar_mouse tests ====================
+
+    #[test]
+    fn test_match_pulsar_mouse_known() {
+        assert_eq!(match_pulsar_mouse(0x3710, 0x5406), Some("Pulsar 8Kdx Dongle"));
+        assert!(match_pulsar_mouse(0x0e7e, 0x2011).is_some());
+    }
+
+    #[test]
+    fn test_match_pulsar_mouse_unknown() {
+        assert!(match_pulsar_mouse(0x046d, 0xc539).is_none()); // Logitech, not Pulsar
+        assert!(match_pulsar_mouse(0x0000, 0x0000).is_none());
+    }
+
+    #[test]
+    fn test_match_pulsar_mouse_matches_every_entry() {
+        for (vid, pid, expected_name) in PULSAR_MICE {
+            assert_eq!(match_pulsar_mouse(*vid, *pid), Some(*expected_name));
+        }
+    }
+
+    // ==================== Pulsar request/response tests ====================
+
+    #[test]
+    fn test_build_pulsar_power_request_layout() {
+        let req = build_pulsar_power_request();
+        assert_eq!(req.len(), 17);
+        assert_eq!(req[0], 0x08); // report ID
+        assert_eq!(req[1], 0x04); // POWER command
+        for b in &req[2..16] {
+            assert_eq!(*b, 0);
+        }
+        assert_eq!(req[16], 0x49); // checksum
+    }
+
+    #[test]
+    fn test_build_pulsar_power_request_checksum_invariant() {
+        let req = build_pulsar_power_request();
+        // Checksum = 0x55 - (header + command)
+        assert_eq!(req[16], 0x55u8.wrapping_sub(req[0] + req[1]));
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_valid() {
+        let mut resp = [0u8; 17];
+        resp[6] = 85;
+        assert_eq!(parse_pulsar_power_response(&resp), Some(85));
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_zero() {
+        let resp = [0u8; 17];
+        assert_eq!(parse_pulsar_power_response(&resp), Some(0));
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_full() {
+        let mut resp = [0u8; 17];
+        resp[6] = 100;
+        assert_eq!(parse_pulsar_power_response(&resp), Some(100));
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_out_of_range() {
+        let mut resp = [0u8; 17];
+        resp[6] = 101;
+        assert_eq!(parse_pulsar_power_response(&resp), None);
+        resp[6] = 255;
+        assert_eq!(parse_pulsar_power_response(&resp), None);
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_too_short() {
+        let resp = [0u8; 6];
+        assert_eq!(parse_pulsar_power_response(&resp), None);
+    }
+
+    // ==================== classify_report_response tests ====================
+
+    #[test]
+    fn test_classify_report_response_contains_expected() {
+        // expected=75 appears directly in data
+        let data = [0x08, 99, 75, 33];
+        assert_eq!(classify_report_response(&data, Some(75)), ReportClass::ContainsExpected);
+    }
+
+    #[test]
+    fn test_classify_report_response_contains_encoded_doubled() {
+        // expected=50 → doubled=100 appears
+        let data = [0x08, 200, 100, 33];
+        assert_eq!(classify_report_response(&data, Some(50)), ReportClass::ContainsEncoded);
+    }
+
+    #[test]
+    fn test_classify_report_response_likely_battery_with_no_expected() {
+        let data = [0x08, 75, 0, 0];
+        assert_eq!(classify_report_response(&data, None), ReportClass::LikelyBattery(75));
+    }
+
+    #[test]
+    fn test_classify_report_response_plain_no_battery_no_match() {
+        // No expected match, no likely battery (all > 100)
+        let data = [0x08, 200, 200, 200];
+        assert_eq!(classify_report_response(&data, Some(50)), ReportClass::Plain);
+    }
+
+    #[test]
+    fn test_classify_report_response_expected_takes_priority_over_likely() {
+        // Even though byte 75 would be likely battery, the expected check fires first
+        let data = [0x08, 75, 33];
+        assert_eq!(classify_report_response(&data, Some(75)), ReportClass::ContainsExpected);
+    }
+
+    #[test]
+    fn test_classify_report_response_saturating_double() {
+        // expected=200, doubled=255 (saturated). 255 in data → encoded.
+        let data = [0x08, 255, 99];
+        assert_eq!(classify_report_response(&data, Some(200)), ReportClass::ContainsEncoded);
+    }
+
+    // ==================== find_battery_in_report tests ====================
+
+    #[test]
+    fn test_find_battery_in_report_found() {
+        let data = [0x08, 0x00, 75, 0x00];
+        assert_eq!(find_battery_in_report(&data, 75), Some(2));
+    }
+
+    #[test]
+    fn test_find_battery_in_report_first_occurrence() {
+        let data = [0x08, 50, 0x00, 50];
+        assert_eq!(find_battery_in_report(&data, 50), Some(1));
+    }
+
+    #[test]
+    fn test_find_battery_in_report_not_found() {
+        let data = [0x08, 0x00, 0x00, 0x00];
+        assert_eq!(find_battery_in_report(&data, 75), None);
+    }
+
+    #[test]
+    fn test_find_battery_in_report_empty() {
+        let data: [u8; 0] = [];
+        assert_eq!(find_battery_in_report(&data, 50), None);
+    }
 }
