@@ -1,4 +1,8 @@
-use anyhow;
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::upper_case_acronyms)]
+
 use std::io::{Error, ErrorKind};
 use std::os::windows::ffi::OsStrExt;
 use std::sync::Arc;
@@ -59,7 +63,7 @@ impl Eq for HwinfoSensorsReadingElement {}
 
 #[allow(dead_code)]
 #[repr(C, align(1))]
-#[derive(Hash, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct HwinfoSensorsSensorElement {
     // Don't Touch
     pub dw_sensor_id: u32,

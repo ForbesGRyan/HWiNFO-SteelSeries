@@ -106,8 +106,8 @@ pub fn render_text_to_oled(text: &str, x: i32) -> OledBuffer {
     for line in text.lines() {
         let mut current_x = x;
 
-        if line.starts_with("IMG:") {
-            let path = line[4..].trim();
+        if let Some(rest) = line.strip_prefix("IMG:") {
+            let path = rest.trim();
             let _ = load_image_to_buffer(path, &mut buffer, current_x as u32, (y - 10) as u32);
         } else {
             if let Some(icon_data) = get_emoji_icon(line) {
@@ -251,8 +251,8 @@ mod tests {
         buffer.set_pixel(5, 5, true);
 
         // Verify pixel is on
-        let idx = 5 * 8 + 0; // byte_row = 5/8 = 0
-        let bit = 5 % 8;
+        let idx = 5 * 8; // byte_row = 5/8 = 0
+        let bit = 5;
         assert_ne!(buffer.data[idx] & (1 << bit), 0);
 
         // Turn it off

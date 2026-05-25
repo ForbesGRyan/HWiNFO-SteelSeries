@@ -420,7 +420,7 @@ impl<R: Runtime> Daemon<R> {
 
     fn write_state<F: FnOnce(&mut crate::state::SharedState)>(&self, f: F) {
         if let Ok(mut guard) = self.state.lock() {
-            f(&mut *guard);
+            f(&mut guard);
         }
     }
 
@@ -1312,6 +1312,7 @@ mod tests {
         d.oled = Some(Box::new(MockDriver::new()));
     }
 
+    #[allow(dead_code)]
     fn install_summary_hwinfo(d: &mut Daemon<MockRuntime>) {
         d.hwinfo = Some(full_summary_hwinfo());
     }
@@ -1599,7 +1600,7 @@ mod tests {
         if let OledClient::Hid(sender) = &oled {
             // Downcast not possible without Any, but we know FakeHidSender stores calls.
             // We'll test via a separate route below.
-            drop(sender);
+            let _ = sender;
         }
     }
 

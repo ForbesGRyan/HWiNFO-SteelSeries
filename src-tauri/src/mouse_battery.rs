@@ -79,11 +79,11 @@ fn parse_pulsar_power_response(response: &[u8]) -> Option<u8> {
 /// Classify a feature-report response against an optional expected value.
 fn classify_report_response(data: &[u8], expected: Option<u8>) -> ReportClass {
     if let Some(exp) = expected {
-        if data.iter().any(|&b| b == exp) {
+        if data.contains(&exp) {
             return ReportClass::ContainsExpected;
         }
         let doubled = exp.saturating_mul(2);
-        let hex_as_dec = u8::from_str_radix(&format!("{:02x}", exp), 10).unwrap_or(255);
+        let hex_as_dec = format!("{:02x}", exp).parse::<u8>().unwrap_or(255);
         if data.iter().any(|&b| b == doubled || b == hex_as_dec) {
             return ReportClass::ContainsEncoded;
         }
@@ -365,13 +365,7 @@ impl MouseBatteryReader {
         }
 
         // Second pass: accept 0 if that's all we have (battery depleted)
-        for &candidate in &percentage_candidates {
-            if candidate <= 100 {
-                return Some(candidate);
-            }
-        }
-
-        None
+        percentage_candidates.iter().find(|&&candidate| candidate <= 100).copied()
     }
 }
 
@@ -684,6 +678,7 @@ fn format_report_log(
 }
 
 /// Pure helper: count likely-battery hits across discover results.
+#[allow(dead_code)]
 fn count_likely_battery_results(results: &[(u8, Vec<u8>, Option<u8>)]) -> usize {
     results.iter().filter(|(_, _, b)| b.is_some()).count()
 }
@@ -1036,7 +1031,7 @@ mod tests {
     fn test_pulsar_mice_count() {
         // Verify we have Pulsar mice defined
         assert!(
-            PULSAR_MICE.len() >= 1,
+            !PULSAR_MICE.is_empty(),
             "Expected at least 1 Pulsar mouse profile, got {}",
             PULSAR_MICE.len()
         );

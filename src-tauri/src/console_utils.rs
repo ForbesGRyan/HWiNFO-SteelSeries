@@ -10,7 +10,7 @@ pub enum Console {
 }
 
 pub fn console_window(action: Console) {
-    use std::ptr;
+    
     use winapi::um::wincon::GetConsoleWindow;
     use winapi::um::winuser::{ShowWindow, SW_HIDE, SW_SHOW};
     let window = unsafe { GetConsoleWindow() };
@@ -19,7 +19,7 @@ pub fn console_window(action: Console) {
         Console::SHOW => SW_SHOW,
     };
     // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow
-    if window != ptr::null_mut() {
+    if !window.is_null() {
         unsafe {
             ShowWindow(window, sw);
         }
@@ -51,7 +51,7 @@ mod tests {
     fn test_console_enum_show_variant_exists() {
         let action = Console::SHOW;
         match action {
-            Console::SHOW => assert!(true),
+            Console::SHOW => {}
             Console::HIDE => panic!("Expected SHOW variant"),
         }
     }
@@ -60,7 +60,7 @@ mod tests {
     fn test_console_enum_hide_variant_exists() {
         let action = Console::HIDE;
         match action {
-            Console::HIDE => assert!(true),
+            Console::HIDE => {}
             Console::SHOW => panic!("Expected HIDE variant"),
         }
     }

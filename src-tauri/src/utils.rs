@@ -34,14 +34,8 @@ pub fn run_sensors<'a>(
         }
 
         let sensor: Vec<&str> = sensor_str.split(";").collect();
-        let label = match pages_sensors.get(format!("label_{}", k)) {
-            Some(label) => label,
-            None => "",
-        };
-        let unit = match pages_sensors.get(format!("unit_{}", k)) {
-            Some(unit) => unit,
-            None => "",
-        };
+        let label = pages_sensors.get(format!("label_{}", k)).unwrap_or_default();
+        let unit = pages_sensors.get(format!("unit_{}", k)).unwrap_or_default();
         if sensor[0] == "BLANK" {
             labels[k] = label;
             units[k] = unit;
@@ -92,20 +86,16 @@ pub fn run_sensors<'a>(
             }
         }
         .value;
-        match pages_sensors.get(format!("convert_{}", k)) {
-            Some(convert) => match convert {
-                "MB/GB" => value = value / 1024.0,
-                "kb/mb" | "KB/MB" => value = value / 1024.0,
-                _ => {}
-            },
-            None => {}
-        };
-        let value_string: String;
-        if decimal {
-            value_string = format!("{:.1}", &value);
+        if let Some(convert) = pages_sensors.get(format!("convert_{}", k)) { match convert {
+            "MB/GB" => value /= 1024.0,
+            "kb/mb" | "KB/MB" => value /= 1024.0,
+            _ => {}
+        } };
+        let value_string: String = if decimal {
+            format!("{:.1}", &value)
         } else {
-            value_string = format!("{:02.0}", &value);
-        }
+            format!("{:02.0}", &value)
+        };
         labels[k] = label;
         units[k] = unit;
         values[k] = value_string;
@@ -681,23 +671,21 @@ mod tests {
 
     #[test]
     fn test_format_custom_value_one_sensor_per_line() {
-        let labels = vec!["L1", "L2", "L3", "L4", "L5"];
+        let labels = ["L1", "L2", "L3", "L4", "L5"];
         let mut all_labels = vec![""; 15];
         for (i, l) in labels.iter().enumerate() {
             all_labels[i] = l;
         }
-        let values = vec![
-            "1".to_string(),
+        let values = ["1".to_string(),
             "2".to_string(),
             "3".to_string(),
             "4".to_string(),
-            "5".to_string(),
-        ];
+            "5".to_string()];
         let mut all_values = vec![String::new(); 15];
         for (i, v) in values.iter().enumerate() {
             all_values[i] = v.clone();
         }
-        let units = vec!["U1", "U2", "U3", "U4", "U5"];
+        let units = ["U1", "U2", "U3", "U4", "U5"];
         let mut all_units = vec![""; 15];
         for (i, u) in units.iter().enumerate() {
             all_units[i] = u;
@@ -718,8 +706,8 @@ mod tests {
         let mut values = vec![String::new(); 15];
         let units = vec![""; 15];
 
-        for i in 0..15 {
-            values[i] = i.to_string();
+        for (i, v) in values.iter_mut().enumerate().take(15) {
+            *v = i.to_string();
         }
 
         let result = format_custom_value(3, labels, values, units);

@@ -199,10 +199,10 @@ fn validate_category_selection(
 }
 
 /// Resolve a reading index against a sensor's reading_names. Errors if out of range.
-fn validate_reading_selection<'a>(
+fn validate_reading_selection(
     idx: usize,
-    reading_names: &'a [String],
-) -> Result<&'a String, anyhow::Error> {
+    reading_names: &[String],
+) -> Result<&String, anyhow::Error> {
     reading_names.get(idx).ok_or_else(|| {
         anyhow::anyhow!(
             "Invalid reading selection: {} (max: {})",

@@ -1,3 +1,8 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::upper_case_acronyms)]
+
 mod settings;
 use settings::{settings_create_config, AppConfig};
 
@@ -26,7 +31,6 @@ mod daemon;
 
 mod gui;
 
-use anyhow;
 use console::Term;
 use image::ImageReader;
 use ini::Ini;
@@ -655,7 +659,7 @@ mod tests {
     #[test]
     fn test_format_fatal_error_lines_with_cause_chain() {
         use std::io;
-        let io_err = io::Error::new(io::ErrorKind::Other, "inner cause");
+        let io_err = io::Error::other("inner cause");
         let err: anyhow::Error = anyhow::Error::new(io_err).context("outer wrap");
         let lines = format_fatal_error_lines(&err);
         assert!(lines.iter().any(|l| l == "Caused by:"));

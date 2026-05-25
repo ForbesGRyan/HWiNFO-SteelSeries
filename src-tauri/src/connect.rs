@@ -88,7 +88,7 @@ where
 }
 
 pub fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
-    retry_connect(term, "HWiNFO", || Hwinfo::new())
+    retry_connect(term, "HWiNFO", Hwinfo::new)
 }
 
 pub fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error> {
@@ -135,7 +135,7 @@ pub fn pick_oled_index(serials: &[Option<&str>], desired: &str) -> Option<usize>
 }
 
 /// Lists all SteelSeries OLED-capable HID devices.
-pub fn list_oled_devices<'a>(api: &'a HidApi) -> Vec<&'a hidapi::DeviceInfo> {
+pub fn list_oled_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
     api.device_list().filter(|d| is_oled_capable(d)).collect()
 }
 
