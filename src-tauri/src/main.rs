@@ -123,15 +123,18 @@ fn run_discover_all_battery(args: &[String], pos: usize) -> Result<u8, String> {
     }
     let expected = validate_expected_battery_strict(&args[pos + 1])
         .ok_or_else(|| "Expected battery must be 0-100".to_string())?;
-    let hid_api = hidapi::HidApi::new()
-        .map_err(|e| format!("Failed to initialize HID API: {}", e))?;
+    let hid_api =
+        hidapi::HidApi::new().map_err(|e| format!("Failed to initialize HID API: {}", e))?;
     mouse_battery::discover_all_devices_for_battery(&hid_api, expected)
         .map_err(|e| e.to_string())?;
     Ok(expected)
 }
 
 /// Pure helper: execute "--discover-mouse-battery" given argv and flag position.
-fn run_discover_mouse_battery(args: &[String], pos: usize) -> Result<(u16, Option<u16>, Option<u8>), String> {
+fn run_discover_mouse_battery(
+    args: &[String],
+    pos: usize,
+) -> Result<(u16, Option<u16>, Option<u8>), String> {
     if !has_required_arg_after(args, pos) {
         return Err(format!(
             "Usage: {} --discover-mouse-battery <VID> [PID] [EXPECTED]",
@@ -141,8 +144,7 @@ fn run_discover_mouse_battery(args: &[String], pos: usize) -> Result<(u16, Optio
     let vid = parse_hex_u16(&args[pos + 1]).ok_or_else(|| "Invalid VID format".to_string())?;
     let pid = parse_optional_pid(args.get(pos + 2).map(String::as_str));
     let expected = parse_expected_battery(args.get(pos + 3).map(String::as_str));
-    let hid_api = hidapi::HidApi::new()
-        .map_err(|e| format!("Failed to init HID API: {}", e))?;
+    let hid_api = hidapi::HidApi::new().map_err(|e| format!("Failed to init HID API: {}", e))?;
     mouse_battery::discover_battery_report_id(&hid_api, vid, pid, expected)
         .map(|_| (vid, pid, expected))
         .map_err(|e| e.to_string())
@@ -240,7 +242,9 @@ fn apply_tray_menu_event(event_id: &str, shared: &Shared) -> bool {
 
 fn build_tray_icon_image() -> Option<Image<'static>> {
     const ICON_DATA: &[u8] = include_bytes!("../assets/hwinfo-steelseries-icon.ico");
-    let reader = ImageReader::new(Cursor::new(ICON_DATA)).with_guessed_format().ok()?;
+    let reader = ImageReader::new(Cursor::new(ICON_DATA))
+        .with_guessed_format()
+        .ok()?;
     let img = reader.decode().ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -293,19 +297,24 @@ fn main() -> Result<(), anyhow::Error> {
                 .or_else(|| app.default_window_icon().cloned())
                 .ok_or_else(|| anyhow::anyhow!("Failed to load tray icon"))?;
 
-            let settings_item = MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
-            let reload_item = MenuItem::with_id(app, "reload", "Reload Config", true, None::<&str>)?;
+            let settings_item =
+                MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
+            let reload_item =
+                MenuItem::with_id(app, "reload", "Reload Config", true, None::<&str>)?;
             let sleep_item = MenuItem::with_id(app, "sleep", "Sleep Display", true, None::<&str>)?;
             let white_item = MenuItem::with_id(app, "white", "White Screen", true, None::<&str>)?;
             let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[
-                &settings_item,
-                &reload_item,
-                &sleep_item,
-                &white_item,
-                &exit_item,
-            ])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &settings_item,
+                    &reload_item,
+                    &sleep_item,
+                    &white_item,
+                    &exit_item,
+                ],
+            )?;
 
             let shared_for_menu = shared_for_setup.clone();
             TrayIconBuilder::with_id("main-tray")
@@ -342,7 +351,11 @@ fn main() -> Result<(), anyhow::Error> {
             }
 
             // Spawn daemon
-            daemon::spawn(shared_for_setup.clone(), app_handle, config_for_setup.clone());
+            daemon::spawn(
+                shared_for_setup.clone(),
+                app_handle,
+                config_for_setup.clone(),
+            );
 
             Ok(())
         })
@@ -539,7 +552,9 @@ mod tests {
     fn test_format_fatal_error_lines_no_cause() {
         let err = anyhow::anyhow!("boom");
         let lines = format_fatal_error_lines(&err);
-        assert!(lines.iter().any(|l| l.contains("ERROR: Application stopped")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("ERROR: Application stopped")));
         assert!(lines.iter().any(|l| l == "boom"));
         // No "Caused by:" since no source chain
         assert!(!lines.iter().any(|l| l == "Caused by:"));
@@ -578,7 +593,10 @@ mod tests {
         let shared = fresh_shared_for_test();
         let show = apply_tray_menu_event("settings", &shared);
         assert!(show);
-        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::Wake));
+        assert_eq!(
+            shared.lock().unwrap().sleep_requested,
+            Some(SleepCommand::Wake)
+        );
     }
 
     #[test]
@@ -596,7 +614,10 @@ mod tests {
         let shared = fresh_shared_for_test();
         let show = apply_tray_menu_event("sleep", &shared);
         assert!(!show);
-        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::Sleep));
+        assert_eq!(
+            shared.lock().unwrap().sleep_requested,
+            Some(SleepCommand::Sleep)
+        );
     }
 
     #[test]
@@ -604,7 +625,10 @@ mod tests {
         let shared = fresh_shared_for_test();
         let show = apply_tray_menu_event("white", &shared);
         assert!(!show);
-        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::White));
+        assert_eq!(
+            shared.lock().unwrap().sleep_requested,
+            Some(SleepCommand::White)
+        );
     }
 
     #[test]
@@ -640,7 +664,8 @@ mod tests {
 
     #[test]
     fn test_load_or_create_config_at_loads_existing_ini() {
-        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_main_loadcfg_{}.ini", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("hwinfo_ss_main_loadcfg_{}.ini", std::process::id()));
         let mut ini = Ini::new();
         ini.with_section(Some("Main"))
             .set("style", "Horizontal")
@@ -658,7 +683,8 @@ mod tests {
     fn test_load_or_create_config_reads_existing_ini() {
         // Write a minimal valid conf.ini to a temp path, then ensure AppConfig::from_ini round-trips
         // via the same code path load_or_create_config uses.
-        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_main_load_{}.ini", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("hwinfo_ss_main_load_{}.ini", std::process::id()));
         let mut ini = Ini::new();
         ini.with_section(Some("Main"))
             .set("style", "Vertical")

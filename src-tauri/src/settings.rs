@@ -159,12 +159,20 @@ fn direct_usb_from_choice(input: u8) -> bool {
 
 /// Clamp the "lines" input to the allowed 2..=5 range; out-of-range inputs default to 3.
 fn validate_lines(input: u8) -> u8 {
-    if (2..=5).contains(&input) { input } else { 3 }
+    if (2..=5).contains(&input) {
+        input
+    } else {
+        3
+    }
 }
 
 /// Validate the "sensors per line" input; returns None if outside 1..=3.
 fn validate_sensors_per_line(input: u8) -> Option<u8> {
-    if (1..=3).contains(&input) { Some(input) } else { None }
+    if (1..=3).contains(&input) {
+        Some(input)
+    } else {
+        None
+    }
 }
 
 /// Pick the unit to write: user input wins; falls back to default_unit when empty.
@@ -177,10 +185,17 @@ fn pick_unit(default_unit: &str, user_input: &str) -> String {
 }
 
 /// Resolve a category index against the sensor_names list. Errors if out of range.
-fn validate_category_selection(idx: usize, sensor_names: &[String]) -> Result<&String, anyhow::Error> {
-    sensor_names
-        .get(idx)
-        .ok_or_else(|| anyhow::anyhow!("Invalid category selection: {} (max: {})", idx, sensor_names.len().saturating_sub(1)))
+fn validate_category_selection(
+    idx: usize,
+    sensor_names: &[String],
+) -> Result<&String, anyhow::Error> {
+    sensor_names.get(idx).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Invalid category selection: {} (max: {})",
+            idx,
+            sensor_names.len().saturating_sub(1)
+        )
+    })
 }
 
 /// Resolve a reading index against a sensor's reading_names. Errors if out of range.
@@ -188,9 +203,13 @@ fn validate_reading_selection<'a>(
     idx: usize,
     reading_names: &'a [String],
 ) -> Result<&'a String, anyhow::Error> {
-    reading_names
-        .get(idx)
-        .ok_or_else(|| anyhow::anyhow!("Invalid reading selection: {} (max: {})", idx, reading_names.len().saturating_sub(1)))
+    reading_names.get(idx).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Invalid reading selection: {} (max: {})",
+            idx,
+            reading_names.len().saturating_sub(1)
+        )
+    })
 }
 
 /// Format the canonical sensor id used in conf.ini: `Category;Reading`.
@@ -657,7 +676,10 @@ mod tests {
 
     #[test]
     fn test_format_sensor_id() {
-        assert_eq!(format_sensor_id("CPU [#0]", "Temperature"), "CPU [#0];Temperature");
+        assert_eq!(
+            format_sensor_id("CPU [#0]", "Temperature"),
+            "CPU [#0];Temperature"
+        );
         assert_eq!(format_sensor_id("", ""), ";");
     }
 
@@ -790,7 +812,9 @@ mod tests {
     }
 
     fn build_hwinfo_with_gpus(num_gpus: usize) -> Hwinfo {
-        use hwinfo_steelseries_oled::{HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor};
+        use hwinfo_steelseries_oled::{
+            HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
+        };
         use std::collections::HashMap;
         let mut sensors = HashMap::new();
         let mut sensor_names = Vec::new();
@@ -821,7 +845,10 @@ mod tests {
         let mut conf = Ini::new();
         configure_gpu_selection(&term, &hwinfo, &mut conf).unwrap();
         // No "gpu" key written, since single-GPU path skips selection.
-        assert!(conf.section(Some("Main")).and_then(|s| s.get("gpu")).is_none());
+        assert!(conf
+            .section(Some("Main"))
+            .and_then(|s| s.get("gpu"))
+            .is_none());
     }
 
     #[test]
@@ -847,7 +874,10 @@ mod tests {
     #[test]
     fn test_configure_custom_sensors_errors_when_sensor_missing_from_hashmap() {
         // sensor_names points to "Phantom" but sensors map has no key for it → Err
-        let hwinfo = Hwinfo::new_mock(std::collections::HashMap::new(), vec!["Phantom".to_string()]);
+        let hwinfo = Hwinfo::new_mock(
+            std::collections::HashMap::new(),
+            vec!["Phantom".to_string()],
+        );
         let mut conf = Ini::new();
         let r = configure_custom_sensors(&hwinfo, &mut conf, 1, 1);
         match r {
@@ -859,7 +889,9 @@ mod tests {
     #[test]
     fn test_configure_custom_sensors_errors_on_stdin_eof() {
         // Even a single sensor configuration requires Input::interact_text() which fails in tests.
-        use hwinfo_steelseries_oled::{HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor};
+        use hwinfo_steelseries_oled::{
+            HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
+        };
         use std::collections::HashMap;
         let mut sensors = HashMap::new();
         let mut readings = HashMap::new();

@@ -1,5 +1,5 @@
 use crate::connect::{connect_hid, connect_hwinfo, connect_steelseries};
-use crate::consts::{DISPLAY_LINES, TICK_RATE, CUSTOM_SENSORS};
+use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES, TICK_RATE};
 use crate::media::MediaReader;
 use crate::mouse_battery::MouseBatteryReader;
 use crate::render::{render_text_to_oled, OledBuffer};
@@ -160,7 +160,13 @@ fn build_hid_packets_for_buffer(buffer: &OledBuffer) -> Vec<Vec<u8>> {
 
 /// Display driver abstraction so the daemon can be tested with mocks.
 trait DisplayDriver: Send {
-    fn trigger_frame(&mut self, event: &str, i: isize, value: &Value, buffer: &OledBuffer) -> Result<(), anyhow::Error>;
+    fn trigger_frame(
+        &mut self,
+        event: &str,
+        i: isize,
+        value: &Value,
+        buffer: &OledBuffer,
+    ) -> Result<(), anyhow::Error>;
     fn send_blank(&mut self) -> Result<(), anyhow::Error>;
     fn send_white(&mut self) -> Result<(), anyhow::Error>;
     fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error>;
@@ -174,8 +180,7 @@ trait HidSender: Send {
 
 impl HidSender for hidapi::HidDevice {
     fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
-        hidapi::HidDevice::send_feature_report(self, packet)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+        hidapi::HidDevice::send_feature_report(self, packet).map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 
@@ -185,16 +190,34 @@ enum OledClient {
 }
 
 impl DisplayDriver for OledClient {
-    fn trigger_frame(&mut self, event: &str, i: isize, value: &Value, buffer: &OledBuffer) -> Result<(), anyhow::Error> {
+    fn trigger_frame(
+        &mut self,
+        event: &str,
+        i: isize,
+        value: &Value,
+        buffer: &OledBuffer,
+    ) -> Result<(), anyhow::Error> {
         OledClient::trigger_frame(self, event, i, value, buffer)
     }
-    fn send_blank(&mut self) -> Result<(), anyhow::Error> { OledClient::send_blank(self) }
-    fn send_white(&mut self) -> Result<(), anyhow::Error> { OledClient::send_white(self) }
-    fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> { OledClient::stop_heartbeat(self) }
+    fn send_blank(&mut self) -> Result<(), anyhow::Error> {
+        OledClient::send_blank(self)
+    }
+    fn send_white(&mut self) -> Result<(), anyhow::Error> {
+        OledClient::send_white(self)
+    }
+    fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
+        OledClient::stop_heartbeat(self)
+    }
 }
 
 impl OledClient {
-    fn trigger_frame(&mut self, event: &str, i: isize, value: &Value, buffer: &OledBuffer) -> Result<(), anyhow::Error> {
+    fn trigger_frame(
+        &mut self,
+        event: &str,
+        i: isize,
+        value: &Value,
+        buffer: &OledBuffer,
+    ) -> Result<(), anyhow::Error> {
         match self {
             OledClient::GameSense(client) => {
                 client.trigger_event_frame(event, i, value.clone())?;
@@ -342,7 +365,12 @@ fn build_display_value(
             hid_api,
         )?;
 
-        Ok(format_custom_value(config.sensors_per_line, labels, values, units))
+        Ok(format_custom_value(
+            config.sensors_per_line,
+            labels,
+            values,
+            units,
+        ))
     }
 }
 
@@ -482,8 +510,7 @@ impl<R: Runtime> Daemon<R> {
         if self.config.direct_usb {
             self.announce_connecting_direct_usb();
 
-            let api = hidapi::HidApi::new()
-                .map_err(|e| anyhow!("HID API init failed: {}", e))?;
+            let api = hidapi::HidApi::new().map_err(|e| anyhow!("HID API init failed: {}", e))?;
             let device = connect_hid(&self.term, &api, &self.config.direct_usb_serial)?;
             self.oled = Some(Box::new(OledClient::Hid(Box::new(device))));
             self.hid_api = Some(api);
@@ -494,7 +521,8 @@ impl<R: Runtime> Daemon<R> {
 
             let mut gg = connect_steelseries(&self.term)?;
             for i in 1..=self.config.pages {
-                let line_keys: Vec<String> = (1..=DISPLAY_LINES).map(|j| format!("line{}", j)).collect();
+                let line_keys: Vec<String> =
+                    (1..=DISPLAY_LINES).map(|j| format!("line{}", j)).collect();
                 let line_refs: Vec<&str> = line_keys.iter().map(|s| s.as_str()).collect();
                 let handler = page_handler(3, &line_refs, None);
                 gg.bind_event(&format!("PAGE{}", i), None, None, None, None, vec![handler])?;
@@ -510,7 +538,8 @@ impl<R: Runtime> Daemon<R> {
 
     fn reload(&mut self) -> Result<(), anyhow::Error> {
         info!("Daemon: reloading config");
-        let ini = Ini::load_from_file("conf.ini").map_err(|e| anyhow!("Load conf.ini failed: {}", e))?;
+        let ini =
+            Ini::load_from_file("conf.ini").map_err(|e| anyhow!("Load conf.ini failed: {}", e))?;
         let new_config = AppConfig::from_ini(&ini)?;
         self.config = new_config.clone();
 
@@ -557,7 +586,10 @@ impl<R: Runtime> Daemon<R> {
     fn tick(&mut self) -> Result<(), anyhow::Error> {
         // Drain control flags
         let (reload, sleep_cmd) = {
-            let mut g = self.state.lock().map_err(|e| anyhow!("State poisoned: {}", e))?;
+            let mut g = self
+                .state
+                .lock()
+                .map_err(|e| anyhow!("State poisoned: {}", e))?;
             let r = g.reload_requested;
             let s = g.sleep_requested.take();
             g.reload_requested = false;
@@ -567,7 +599,9 @@ impl<R: Runtime> Daemon<R> {
         if reload {
             if let Err(e) = self.reload() {
                 error!("Reload failed: {}", e);
-                self.write_state(|s| { s.last_error = Some(format!("Reload failed: {}", e)); });
+                self.write_state(|s| {
+                    s.last_error = Some(format!("Reload failed: {}", e));
+                });
                 self.push_status();
             }
         }
@@ -580,7 +614,10 @@ impl<R: Runtime> Daemon<R> {
             return Ok(());
         }
 
-        let hwinfo = self.hwinfo.as_mut().ok_or_else(|| anyhow!("hwinfo missing"))?;
+        let hwinfo = self
+            .hwinfo
+            .as_mut()
+            .ok_or_else(|| anyhow!("hwinfo missing"))?;
         let oled = self.oled.as_mut().ok_or_else(|| anyhow!("oled missing"))?;
 
         let old = hwinfo.clone();
@@ -1038,8 +1075,10 @@ mod tests {
     #[test]
     fn test_load_pages_from_ini_returns_existing_sections() {
         let mut ini = Ini::new();
-        ini.with_section(Some("PAGE1.Sensors")).set("sensor_0", "A;1");
-        ini.with_section(Some("PAGE3.Sensors")).set("sensor_0", "C;3");
+        ini.with_section(Some("PAGE1.Sensors"))
+            .set("sensor_0", "A;1");
+        ini.with_section(Some("PAGE3.Sensors"))
+            .set("sensor_0", "C;3");
         let pages = load_pages_from_ini(&ini, 3);
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[0].get("sensor_0"), Some("A;1"));
@@ -1070,10 +1109,10 @@ mod tests {
     }
 
     // ==================== Daemon impl tests via Tauri mock_app ====================
-    use tauri::test::{mock_app, MockRuntime};
-    use tauri::Manager;
     use crate::state::SharedState;
     use std::sync::{Arc, Mutex};
+    use tauri::test::{mock_app, MockRuntime};
+    use tauri::Manager;
 
     fn mock_app_handle() -> tauri::AppHandle<MockRuntime> {
         mock_app().app_handle().clone()
@@ -1207,7 +1246,7 @@ mod tests {
         d.state.lock().unwrap().reload_requested = true;
         let r = d.tick();
         assert!(r.is_ok()); // is_sleeping=true short-circuits after reload-fail
-        // reload_requested cleared even on failure
+                            // reload_requested cleared even on failure
         assert!(!d.state.lock().unwrap().reload_requested);
     }
 
@@ -1240,7 +1279,13 @@ mod tests {
         }
     }
     impl DisplayDriver for MockDriver {
-        fn trigger_frame(&mut self, _event: &str, _i: isize, _value: &Value, _buf: &OledBuffer) -> Result<(), anyhow::Error> {
+        fn trigger_frame(
+            &mut self,
+            _event: &str,
+            _i: isize,
+            _value: &Value,
+            _buf: &OledBuffer,
+        ) -> Result<(), anyhow::Error> {
             self.trigger_calls += 1;
             if self.next_trigger_err {
                 self.next_trigger_err = false;
@@ -1466,7 +1511,14 @@ mod tests {
         let d = daemon_for_tests();
         let err = anyhow!("boom");
         d.record_connect_failure(&err);
-        assert!(d.state.lock().unwrap().last_error.as_deref().unwrap().contains("Connect failed"));
+        assert!(d
+            .state
+            .lock()
+            .unwrap()
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("Connect failed"));
     }
 
     #[test]
@@ -1474,7 +1526,14 @@ mod tests {
         let d = daemon_for_tests();
         let err = anyhow!("tick err");
         d.record_tick_failure(&err);
-        assert!(d.state.lock().unwrap().last_error.as_deref().unwrap().contains("Tick error"));
+        assert!(d
+            .state
+            .lock()
+            .unwrap()
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("Tick error"));
     }
 
     #[test]
@@ -1506,8 +1565,18 @@ mod tests {
         calls: std::sync::Mutex<Vec<Vec<u8>>>,
     }
     impl FakeHidSender {
-        fn new() -> Self { Self { fail: false, calls: std::sync::Mutex::new(Vec::new()) } }
-        fn failing() -> Self { Self { fail: true, calls: std::sync::Mutex::new(Vec::new()) } }
+        fn new() -> Self {
+            Self {
+                fail: false,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn failing() -> Self {
+            Self {
+                fail: true,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
     }
     impl HidSender for FakeHidSender {
         fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
@@ -1559,7 +1628,8 @@ mod tests {
     #[test]
     fn test_oled_client_hid_via_display_driver_trait() {
         // Exercise OledClient's DisplayDriver impl via dyn dispatch (covers the trait wrapper methods).
-        let mut drv: Box<dyn DisplayDriver> = Box::new(OledClient::Hid(Box::new(FakeHidSender::new())));
+        let mut drv: Box<dyn DisplayDriver> =
+            Box::new(OledClient::Hid(Box::new(FakeHidSender::new())));
         let buf = OledBuffer::new();
         let val = json!({});
         assert!(drv.trigger_frame("E", 0, &val, &buf).is_ok());
@@ -1598,7 +1668,7 @@ mod tests {
         assert_eq!(p[3], 0);
         assert_eq!(p[4], 32); // chunk_width
         assert_eq!(p[5], 48); // screen_height
-        // Bitmap follows
+                              // Bitmap follows
         assert_eq!(p[6], 0xAB);
         assert_eq!(p[105], 0xAB);
         // Padded to 1024

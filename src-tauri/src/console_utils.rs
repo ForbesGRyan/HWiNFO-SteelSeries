@@ -245,6 +245,9 @@ mod tests {
     fn test_display_lines_constant_usage() {
         // Verify DISPLAY_LINES constant matches expected value
         // This ensures the loop in display_value_in_console iterates correctly
-        assert_eq!(DISPLAY_LINES, 5, "DISPLAY_LINES should be 5 for this Tauri version");
+        assert_eq!(
+            DISPLAY_LINES, 5,
+            "DISPLAY_LINES should be 5 for this Tauri version"
+        );
     }
 }

@@ -265,7 +265,10 @@ mod tests {
         // Test that the error message format is correct
         let original_error = "Access denied";
         let error = anyhow::anyhow!("Failed to open HID device: {}", original_error);
-        assert_eq!(error.to_string(), "Failed to open HID device: Access denied");
+        assert_eq!(
+            error.to_string(),
+            "Failed to open HID device: Access denied"
+        );
     }
 
     // ==========================================================================
@@ -298,7 +301,9 @@ mod tests {
     fn test_gamesense_game_name_is_valid() {
         // Game name should be uppercase alphanumeric, no spaces
         let game_name = "HWINFO";
-        assert!(game_name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+        assert!(game_name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
         assert!(!game_name.contains(' '));
     }
 
@@ -319,7 +324,8 @@ mod tests {
         // Verify the functions exist by taking references to them
         // This will cause a compile error if signatures change
         let _hwinfo_fn: fn(&Term) -> Result<Hwinfo, anyhow::Error> = connect_hwinfo;
-        let _steelseries_fn: fn(&Term) -> Result<GameSenseClient, anyhow::Error> = connect_steelseries;
+        let _steelseries_fn: fn(&Term) -> Result<GameSenseClient, anyhow::Error> =
+            connect_steelseries;
         let _hid_fn: fn(&Term, &HidApi, &str) -> Result<HidDevice, anyhow::Error> = connect_hid;
     }
 
@@ -501,7 +507,9 @@ mod tests {
 
     #[test]
     fn test_find_hid_device_no_devices_returns_err() {
-        let Some(api) = try_hid_api_for_connect() else { return };
+        let Some(api) = try_hid_api_for_connect() else {
+            return;
+        };
         // Filter on HID_VENDOR_ID+usage page is unlikely to match a generic test box.
         if !list_oled_devices(&api).is_empty() {
             // SteelSeries device present — find should succeed.
@@ -518,7 +526,9 @@ mod tests {
 
     #[test]
     fn test_find_hid_device_with_serial_no_devices_returns_err() {
-        let Some(api) = try_hid_api_for_connect() else { return };
+        let Some(api) = try_hid_api_for_connect() else {
+            return;
+        };
         if !list_oled_devices(&api).is_empty() {
             return;
         }
@@ -555,7 +565,9 @@ mod tests {
 
     #[test]
     fn test_connect_hid_bounded_propagates_err_when_no_devices() {
-        let Some(api) = try_hid_api_for_connect() else { return };
+        let Some(api) = try_hid_api_for_connect() else {
+            return;
+        };
         if !list_oled_devices(&api).is_empty() {
             return; // SteelSeries device present, skip negative test
         }
@@ -568,7 +580,9 @@ mod tests {
 
     #[test]
     fn test_is_oled_capable_via_list_oled_devices() {
-        let Some(api) = try_hid_api_for_connect() else { return };
+        let Some(api) = try_hid_api_for_connect() else {
+            return;
+        };
         // is_oled_capable is exercised via list_oled_devices.
         let _ = list_oled_devices(&api);
     }

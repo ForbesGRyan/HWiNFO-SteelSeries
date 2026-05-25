@@ -164,7 +164,10 @@ mod tests {
 
     #[test]
     fn test_sensor_value_serializes() {
-        let v = SensorValue { label: "L".into(), value: "V".into() };
+        let v = SensorValue {
+            label: "L".into(),
+            value: "V".into(),
+        };
         let s = serde_json::to_string(&v).unwrap();
         assert_eq!(s, r#"{"label":"L","value":"V"}"#);
     }

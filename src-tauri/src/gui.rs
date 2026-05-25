@@ -288,11 +288,7 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
             }
         };
 
-        let page_sensors = config
-            .custom_sensors
-            .get(page)
-            .cloned()
-            .unwrap_or_default();
+        let page_sensors = config.custom_sensors.get(page).cloned().unwrap_or_default();
         let props = build_preview_props(&page_sensors);
 
         let mut labels = vec![""; CUSTOM_SENSORS];
@@ -325,7 +321,11 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
 }
 
 #[command]
-pub fn preview_config(state: State<Shared>, config: AppConfig, page: usize) -> Result<Vec<u8>, String> {
+pub fn preview_config(
+    state: State<Shared>,
+    config: AppConfig,
+    page: usize,
+) -> Result<Vec<u8>, String> {
     preview_config_impl(&state, config, page)
 }
 
@@ -616,9 +616,12 @@ mod tests {
     #[test]
     fn test_apply_pages_sections_deletes_stale_pages() {
         let mut ini = Ini::new();
-        ini.with_section(Some("PAGE5.Sensors")).set("sensor_0", "OLD");
-        ini.with_section(Some("PAGE6.Sensors")).set("sensor_0", "OLD");
-        ini.with_section(Some("UnrelatedSection")).set("key", "keep");
+        ini.with_section(Some("PAGE5.Sensors"))
+            .set("sensor_0", "OLD");
+        ini.with_section(Some("PAGE6.Sensors"))
+            .set("sensor_0", "OLD");
+        ini.with_section(Some("UnrelatedSection"))
+            .set("key", "keep");
 
         let mut c = base_config();
         c.is_summary = false;
@@ -659,8 +662,12 @@ mod tests {
         apply_pages_sections(&mut ini, &c);
         let sec = ini.section(Some("PAGE1.Sensors")).unwrap();
         // sensor_0..sensor_8 set, sensor_9 NOT set
-        assert!(sec.get(format!("sensor_{}", CUSTOM_SENSORS - 1).as_str()).is_some());
-        assert!(sec.get(format!("sensor_{}", CUSTOM_SENSORS).as_str()).is_none());
+        assert!(sec
+            .get(format!("sensor_{}", CUSTOM_SENSORS - 1).as_str())
+            .is_some());
+        assert!(sec
+            .get(format!("sensor_{}", CUSTOM_SENSORS).as_str())
+            .is_none());
     }
 
     #[test]
@@ -674,9 +681,18 @@ mod tests {
             vec![sensor("C;3")],
         ];
         apply_pages_sections(&mut ini, &c);
-        assert_eq!(ini.section(Some("PAGE1.Sensors")).unwrap().get("sensor_0"), Some("A;1"));
-        assert_eq!(ini.section(Some("PAGE2.Sensors")).unwrap().get("sensor_0"), Some("B;2"));
-        assert_eq!(ini.section(Some("PAGE3.Sensors")).unwrap().get("sensor_0"), Some("C;3"));
+        assert_eq!(
+            ini.section(Some("PAGE1.Sensors")).unwrap().get("sensor_0"),
+            Some("A;1")
+        );
+        assert_eq!(
+            ini.section(Some("PAGE2.Sensors")).unwrap().get("sensor_0"),
+            Some("B;2")
+        );
+        assert_eq!(
+            ini.section(Some("PAGE3.Sensors")).unwrap().get("sensor_0"),
+            Some("C;3")
+        );
     }
 
     // ==================== buffer_to_pixels ====================
@@ -717,11 +733,20 @@ mod tests {
     fn test_set_sleep_command_writes_state() {
         let shared = mock_shared(base_config());
         set_sleep_command(&shared, SleepCommand::Sleep).unwrap();
-        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::Sleep));
+        assert_eq!(
+            shared.lock().unwrap().sleep_requested,
+            Some(SleepCommand::Sleep)
+        );
         set_sleep_command(&shared, SleepCommand::Wake).unwrap();
-        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::Wake));
+        assert_eq!(
+            shared.lock().unwrap().sleep_requested,
+            Some(SleepCommand::Wake)
+        );
         set_sleep_command(&shared, SleepCommand::White).unwrap();
-        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::White));
+        assert_eq!(
+            shared.lock().unwrap().sleep_requested,
+            Some(SleepCommand::White)
+        );
     }
 
     #[test]
@@ -741,12 +766,15 @@ mod tests {
         }
         let opts = list_sensors_impl(&shared).unwrap();
         assert_eq!(opts.len(), SPECIAL_SENSORS.len() + 1);
-        assert!(opts.iter().any(|o| !o.is_special && o.full_id == "CPU;Temp"));
+        assert!(opts
+            .iter()
+            .any(|o| !o.is_special && o.full_id == "CPU;Temp"));
     }
 
     #[test]
     fn test_save_config_impl_writes_file_and_updates_state() {
-        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_gui_save_{}.ini", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("hwinfo_ss_gui_save_{}.ini", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
 
         let shared = mock_shared(base_config());
@@ -791,7 +819,8 @@ mod tests {
         // save_config writes to conf.ini in cwd. Run it in a temp cwd so it doesn't pollute
         // the test workspace (a stale conf.ini lets a parallel daemon test reach connect_all
         // and loop on HWiNFO retry).
-        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_save_cfg_test_{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("hwinfo_ss_save_cfg_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let prev_cwd = std::env::current_dir().unwrap();
         let _ = std::env::set_current_dir(&tmp);
@@ -811,7 +840,10 @@ mod tests {
 
     #[test]
     fn test_save_config_impl_custom_writes_pages() {
-        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_gui_save_custom_{}.ini", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "hwinfo_ss_gui_save_custom_{}.ini",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&tmp);
 
         let shared = mock_shared(base_config());

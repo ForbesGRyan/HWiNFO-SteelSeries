@@ -2,9 +2,9 @@ use chrono::Local;
 use log::{debug, error};
 use serde_json::{json, Value};
 
-use hwinfo_steelseries_oled::Hwinfo;
 use crate::media::{MediaField, MediaReader};
 use crate::mouse_battery::MouseBatteryReader;
+use hwinfo_steelseries_oled::Hwinfo;
 
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
 
@@ -193,17 +193,24 @@ mod tests {
 
     #[test]
     fn test_run_sensors_blank_skips_value() {
-        let props = make_props(&[
-            ("sensor_0", "BLANK"),
-            ("label_0", "spacer"),
-            ("unit_0", ""),
-        ]);
+        let props = make_props(&[("sensor_0", "BLANK"), ("label_0", "spacer"), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "spacer");
         assert_eq!(units[0], "");
@@ -212,17 +219,24 @@ mod tests {
 
     #[test]
     fn test_run_sensors_clock_formats_time() {
-        let props = make_props(&[
-            ("sensor_0", "CLOCK"),
-            ("label_0", "T"),
-            ("unit_0", ""),
-        ]);
+        let props = make_props(&[("sensor_0", "CLOCK"), ("label_0", "T"), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "T");
         // HH:MM:SS am/pm
@@ -245,7 +259,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "MB");
         assert_eq!(units[0], "%");
@@ -272,7 +297,18 @@ mod tests {
         let mut media = MediaReader::with_cached_info(info);
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "T:");
         assert_eq!(units[0], "!");
@@ -282,16 +318,24 @@ mod tests {
     #[test]
     fn test_run_sensors_unknown_conversion_ignored() {
         // Unknown convert_ value hits the _ arm — leaves value unchanged.
-        let props = make_props(&[
-            ("sensor_0", "S;R"),
-            ("convert_0", "unknown-unit"),
-        ]);
+        let props = make_props(&[("sensor_0", "S;R"), ("convert_0", "unknown-unit")]);
         let hwinfo = build_hwinfo(&[("S", "R", 42.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(values[0], "42");
     }
@@ -309,7 +353,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "");
         assert_eq!(units[0], "");
@@ -328,7 +383,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "CPU");
         assert_eq!(units[0], "°C");
@@ -337,17 +403,24 @@ mod tests {
 
     #[test]
     fn test_run_sensors_decimal_format() {
-        let props = make_props(&[
-            ("sensor_0", "CPU;Temp"),
-            ("label_0", ""),
-            ("unit_0", ""),
-        ]);
+        let props = make_props(&[("sensor_0", "CPU;Temp"), ("label_0", ""), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 42.75)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, true, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            true,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(values[0], "42.8"); // {:.1}
     }
@@ -360,23 +433,42 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(values[0], "07"); // {:02.0}
     }
 
     #[test]
     fn test_run_sensors_mb_gb_conversion() {
-        let props = make_props(&[
-            ("sensor_0", "MEM;Used"),
-            ("convert_0", "MB/GB"),
-        ]);
+        let props = make_props(&[("sensor_0", "MEM;Used"), ("convert_0", "MB/GB")]);
         let hwinfo = build_hwinfo(&[("MEM", "Used", 8192.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, true, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            true,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(values[0], "8.0"); // 8192 / 1024 = 8.0
     }
@@ -390,7 +482,18 @@ mod tests {
             let mut media = MediaReader::new();
             let (mut labels, mut units, mut values) = empty_buffers();
 
-            run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, true, &mut mouse, &mut media, None).unwrap();
+            run_sensors(
+                &props,
+                &mut labels,
+                &mut units,
+                &mut values,
+                &hwinfo,
+                true,
+                &mut mouse,
+                &mut media,
+                None,
+            )
+            .unwrap();
 
             assert_eq!(values[0], "2.0", "convert={}", convert);
         }
@@ -404,7 +507,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(values[0], "50");
     }
@@ -417,7 +531,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "");
         assert_eq!(values[0], "");
@@ -431,7 +556,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert!(values.iter().all(|v| v.is_empty()));
     }
@@ -445,7 +581,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "");
         assert_eq!(values[0], "");
@@ -459,7 +606,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        let err = run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap_err();
+        let err = run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap_err();
         assert!(format!("{}", err).contains("Sensor not found"));
     }
 
@@ -471,7 +629,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(labels[0], "");
         assert_eq!(units[0], "");
@@ -491,7 +660,18 @@ mod tests {
         let mut media = MediaReader::new();
         let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(values[0], "40");
         assert_eq!(values[1], ""); // untouched

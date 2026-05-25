@@ -178,10 +178,7 @@ mod tests {
 
         for (i, line) in frame_data.lines.iter().enumerate() {
             let accessor = line.data_accessor_data.as_ref().unwrap();
-            assert_eq!(
-                accessor.context_frame_key,
-                Some(format!("line{}", i + 1))
-            );
+            assert_eq!(accessor.context_frame_key, Some(format!("line{}", i + 1)));
         }
     }
 

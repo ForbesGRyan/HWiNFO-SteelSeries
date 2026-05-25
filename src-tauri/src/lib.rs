@@ -406,12 +406,7 @@ impl Hwinfo {
 
 impl HwinfoSensorsReadingElement {
     /// Creates a mock reading element for testing purposes.
-    pub fn new_mock(
-        sensor_index: u32,
-        reading_id: u32,
-        label: &str,
-        value: f64,
-    ) -> Self {
+    pub fn new_mock(sensor_index: u32, reading_id: u32, label: &str, value: f64) -> Self {
         let mut label_user = [0u8; HWINFO_SENSORS_STRING_LEN2];
         label.as_bytes().iter().enumerate().for_each(|(i, &b)| {
             if i < HWINFO_SENSORS_STRING_LEN2 {
@@ -705,11 +700,26 @@ mod tests {
     #[test]
     fn test_sensor_reading_type_from_repr() {
         // FromRepr covers all variants
-        assert!(matches!(SensorReadingType::from_repr(0), Some(SensorReadingType::SensorTypeNone)));
-        assert!(matches!(SensorReadingType::from_repr(1), Some(SensorReadingType::SensorTypeTemp)));
-        assert!(matches!(SensorReadingType::from_repr(2), Some(SensorReadingType::SensorTypeVolt)));
-        assert!(matches!(SensorReadingType::from_repr(7), Some(SensorReadingType::SensorTypeUsage)));
-        assert!(matches!(SensorReadingType::from_repr(8), Some(SensorReadingType::SensorTypeOther)));
+        assert!(matches!(
+            SensorReadingType::from_repr(0),
+            Some(SensorReadingType::SensorTypeNone)
+        ));
+        assert!(matches!(
+            SensorReadingType::from_repr(1),
+            Some(SensorReadingType::SensorTypeTemp)
+        ));
+        assert!(matches!(
+            SensorReadingType::from_repr(2),
+            Some(SensorReadingType::SensorTypeVolt)
+        ));
+        assert!(matches!(
+            SensorReadingType::from_repr(7),
+            Some(SensorReadingType::SensorTypeUsage)
+        ));
+        assert!(matches!(
+            SensorReadingType::from_repr(8),
+            Some(SensorReadingType::SensorTypeOther)
+        ));
         assert!(SensorReadingType::from_repr(99).is_none());
     }
 
@@ -719,7 +729,9 @@ mod tests {
         let result = Hwinfo::new();
         assert!(result.is_err());
         if let Err(e) = result {
-            assert!(e.to_string().contains("Failed to open shared memory object"));
+            assert!(e
+                .to_string()
+                .contains("Failed to open shared memory object"));
         }
     }
 
@@ -733,7 +745,10 @@ mod tests {
             .collect();
         let r = hwinfo.pull();
         assert!(r.is_err());
-        assert!(r.unwrap_err().to_string().contains("Failed to open shared memory object"));
+        assert!(r
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to open shared memory object"));
     }
 
     #[test]
@@ -750,7 +765,10 @@ mod tests {
         let _ = hwinfo.pull();
         // pull() clears reading_names before opening shared memory → still cleared after err
         for sensor in hwinfo.sensors.values() {
-            assert!(sensor.reading_names.is_empty(), "pull should clear reading_names");
+            assert!(
+                sensor.reading_names.is_empty(),
+                "pull should clear reading_names"
+            );
         }
     }
 
@@ -778,7 +796,12 @@ mod tests {
         assert_eq!(value, 50.0);
         assert_eq!(value_min, 40.0);
         assert_eq!(value_max, 60.0);
-        let label_bytes: Vec<u8> = r.utf_label_user.iter().take_while(|b| **b != 0).copied().collect();
+        let label_bytes: Vec<u8> = r
+            .utf_label_user
+            .iter()
+            .take_while(|b| **b != 0)
+            .copied()
+            .collect();
         assert_eq!(String::from_utf8(label_bytes).unwrap(), "Temp");
     }
 
@@ -810,10 +833,10 @@ mod tests {
     fn test_shared_memory_view_drop_with_real_mapping() {
         // Create a real, named file mapping so Drop's UnmapViewOfFile path actually runs.
         use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
         use std::iter::once;
-        use winapi::um::memoryapi::CreateFileMappingW;
+        use std::os::windows::ffi::OsStrExt;
         use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+        use winapi::um::memoryapi::CreateFileMappingW;
         use winapi::um::winnt::PAGE_READWRITE;
 
         let name: Vec<u16> = OsStr::new("HwinfoSteelseriesUnitTestMapping")

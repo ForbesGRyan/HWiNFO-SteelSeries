@@ -44,7 +44,8 @@ impl MediaReader {
             .map_err(|e| anyhow::anyhow!("Failed to request media session manager: {}", e))?;
 
         // Use get() to block and wait for the async operation to complete
-        let manager = async_op.get()
+        let manager = async_op
+            .get()
             .map_err(|e| anyhow::anyhow!("Failed to get media session manager: {}", e))?;
 
         self.manager = Some(manager);
@@ -138,9 +139,18 @@ impl MediaReader {
 
         // Extract media info
         self.cached_info = MediaInfo {
-            title: properties.Title().map(|s| s.to_string()).unwrap_or_default(),
-            artist: properties.Artist().map(|s| s.to_string()).unwrap_or_default(),
-            album: properties.AlbumTitle().map(|s| s.to_string()).unwrap_or_default(),
+            title: properties
+                .Title()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            artist: properties
+                .Artist()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            album: properties
+                .AlbumTitle()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
             app_name,
             is_playing: true, // If we got here, something is playing
         };
@@ -234,10 +244,22 @@ mod tests {
 
     #[test]
     fn test_media_field_from_sensor_name() {
-        assert_eq!(MediaField::from_sensor_name("MEDIA_TITLE"), Some(MediaField::Title));
-        assert_eq!(MediaField::from_sensor_name("MEDIA_ARTIST"), Some(MediaField::Artist));
-        assert_eq!(MediaField::from_sensor_name("MEDIA_ALBUM"), Some(MediaField::Album));
-        assert_eq!(MediaField::from_sensor_name("MEDIA_APP"), Some(MediaField::App));
+        assert_eq!(
+            MediaField::from_sensor_name("MEDIA_TITLE"),
+            Some(MediaField::Title)
+        );
+        assert_eq!(
+            MediaField::from_sensor_name("MEDIA_ARTIST"),
+            Some(MediaField::Artist)
+        );
+        assert_eq!(
+            MediaField::from_sensor_name("MEDIA_ALBUM"),
+            Some(MediaField::Album)
+        );
+        assert_eq!(
+            MediaField::from_sensor_name("MEDIA_APP"),
+            Some(MediaField::App)
+        );
         assert_eq!(MediaField::from_sensor_name("INVALID"), None);
         assert_eq!(MediaField::from_sensor_name("CLOCK"), None);
         assert_eq!(MediaField::from_sensor_name("BLANK"), None);
@@ -306,7 +328,10 @@ mod tests {
     #[test]
     fn test_cached_field_returns_artist_when_playing() {
         let r = MediaReader::with_cached_info(playing("T", "Artist", "Alb", "A"));
-        assert_eq!(r.get_cached_field(MediaField::Artist), Some("Artist".into()));
+        assert_eq!(
+            r.get_cached_field(MediaField::Artist),
+            Some("Artist".into())
+        );
     }
 
     #[test]
@@ -332,7 +357,10 @@ mod tests {
     fn test_get_media_field_uses_cache_within_5s() {
         // last_read is set to "now" by with_cached_info → cache short-circuit hit
         let mut r = MediaReader::with_cached_info(playing("CachedTitle", "", "", ""));
-        assert_eq!(r.get_media_field(MediaField::Title), Some("CachedTitle".into()));
+        assert_eq!(
+            r.get_media_field(MediaField::Title),
+            Some("CachedTitle".into())
+        );
     }
 
     #[test]
@@ -411,7 +439,7 @@ mod tests {
     fn test_initialize_is_idempotent_when_already_initialized() {
         let mut r = MediaReader::new();
         r.initialized = true; // pretend init already happened
-        // Second call short-circuits at the early return → Ok(())
+                              // Second call short-circuits at the early return → Ok(())
         assert!(r.initialize().is_ok());
     }
 
