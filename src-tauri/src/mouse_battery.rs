@@ -1281,8 +1281,12 @@ mod tests {
     fn test_get_battery_percentage_clears_stale_device_cache() {
         let Some(api) = try_hid_api() else { return };
         let mut reader = MouseBatteryReader::new();
-        // Stale last_successful_read (>5min ago)
-        reader.last_successful_read = Some(Instant::now() - Duration::from_secs(600));
+        // Stale last_successful_read (>5min ago). Use checked_sub so this still runs
+        // on CI runners whose monotonic clock hasn't been alive that long yet.
+        let Some(stale) = Instant::now().checked_sub(Duration::from_secs(600)) else {
+            return;
+        };
+        reader.last_successful_read = Some(stale);
         reader.cached_device = Some(CachedMouseDevice {
             vendor_id: 0xdead,
             product_id: 0xbeef,

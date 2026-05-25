@@ -420,7 +420,10 @@ mod tests {
     fn test_get_media_field_expired_cache_triggers_refresh() {
         // Stale last_read (older than 5s) → falls through to refresh path.
         let mut r = MediaReader::with_cached_info(playing("stale", "", "", ""));
-        r.last_read = Some(Instant::now() - Duration::from_secs(10));
+        let Some(stale) = Instant::now().checked_sub(Duration::from_secs(10)) else {
+            return;
+        };
+        r.last_read = Some(stale);
         // No manager → refresh resets to default → None.
         let val = r.get_media_field(MediaField::Title);
         assert_eq!(val, None);
