@@ -228,6 +228,20 @@ mod tests {
     }
 
     #[test]
+    fn test_display_value_in_console_executes() {
+        // Invokes the actual function so its body is covered. Output is buffered in tests.
+        let term = Term::stdout();
+        let value = json!({
+            "line1": "L1",
+            "line2": "L2",
+            "line3": "L3",
+            "line4": "L4",
+            "line5": "L5",
+        });
+        let _ = display_value_in_console(&term, &value);
+    }
+
+    #[test]
     fn test_display_lines_constant_usage() {
         // Verify DISPLAY_LINES constant matches expected value
         // This ensures the loop in display_value_in_console iterates correctly

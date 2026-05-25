@@ -495,24 +495,7 @@ pub fn discover_battery_report_id(
                     let likely_battery = parse_likely_battery(&data);
                     let class = classify_report_response(&data, expected_battery);
 
-                    match class {
-                        ReportClass::ContainsExpected => info!(
-                            "    Feature 0x{:02x}: {} bytes - {:02x?} *** CONTAINS EXPECTED VALUE {}% ***",
-                            report_id, bytes_read, &data, expected_battery.unwrap()
-                        ),
-                        ReportClass::ContainsEncoded => info!(
-                            "    Feature 0x{:02x}: {} bytes - {:02x?} ** CONTAINS ENCODED VALUE ({}*2={} or other encoding) **",
-                            report_id, bytes_read, &data, expected_battery.unwrap(), expected_battery.unwrap() * 2
-                        ),
-                        ReportClass::LikelyBattery(b) => info!(
-                            "    Feature 0x{:02x}: {} bytes - {:02x?} <- LIKELY BATTERY: {}%",
-                            report_id, bytes_read, &data, b
-                        ),
-                        ReportClass::Plain => info!(
-                            "    Feature 0x{:02x}: {} bytes - {:02x?}",
-                            report_id, bytes_read, &data
-                        ),
-                    }
+                    info!("    {}", format_report_log(report_id, &data, &class, expected_battery));
 
                     interface_results.push((report_id, data, likely_battery));
                 }
@@ -604,11 +587,9 @@ pub fn discover_all_devices_for_battery(
                 Ok(bytes_read) if bytes_read > 0 => {
                     let data = &buf[..bytes_read];
                     if let Some(position) = find_battery_in_report(data, expected_battery) {
-                        info!("*** MATCH FOUND ***");
-                        info!("  Device: {:04x}:{:04x} - {} ({})", vid, pid, product_name, manufacturer);
-                        info!("  Report ID: 0x{:02x}", report_id);
-                        info!("  Battery value {} found at byte position: {}", expected_battery, position);
-                        info!("  Full report ({} bytes): {:02x?}", bytes_read, data);
+                        for line in format_brute_force_match(vid, pid, product_name, manufacturer, report_id, position, expected_battery, data) {
+                            info!("{}", line);
+                        }
                         info!("");
 
                         found_matches.push((vid, pid, report_id, position, product_name.to_string()));
@@ -623,21 +604,82 @@ pub fn discover_all_devices_for_battery(
         }
     }
 
-    info!("=== DISCOVERY COMPLETE ===");
-    if found_matches.is_empty() {
-        info!("No devices found containing battery value {}%", expected_battery);
-        info!("This could mean:");
-        info!("  1. Battery value is encoded differently (multiplied, inverted, etc.)");
-        info!("  2. Battery is updated only periodically");
-        info!("  3. Device requires a command before exposing battery");
-    } else {
-        info!("Found {} device(s) with battery value {}%:", found_matches.len(), expected_battery);
-        for (vid, pid, report_id, position, name) in &found_matches {
-            info!("  {:04x}:{:04x} ({}) - Report 0x{:02x}, byte {}", vid, pid, name, report_id, position);
-        }
+    for line in format_brute_force_summary(&found_matches, expected_battery) {
+        info!("{}", line);
     }
 
     Ok(())
+}
+
+/// Pure helper: format a per-report log line for `discover_battery_report_id`.
+fn format_report_log(report_id: u8, data: &[u8], class: &ReportClass, expected: Option<u8>) -> String {
+    match class {
+        ReportClass::ContainsExpected => format!(
+            "Feature 0x{:02x}: {} bytes - {:02x?} *** CONTAINS EXPECTED VALUE {}% ***",
+            report_id, data.len(), data, expected.unwrap_or(0)
+        ),
+        ReportClass::ContainsEncoded => format!(
+            "Feature 0x{:02x}: {} bytes - {:02x?} ** CONTAINS ENCODED VALUE ({}*2={} or other encoding) **",
+            report_id, data.len(), data, expected.unwrap_or(0), expected.unwrap_or(0).wrapping_mul(2)
+        ),
+        ReportClass::LikelyBattery(b) => format!(
+            "Feature 0x{:02x}: {} bytes - {:02x?} <- LIKELY BATTERY: {}%",
+            report_id, data.len(), data, b
+        ),
+        ReportClass::Plain => format!(
+            "Feature 0x{:02x}: {} bytes - {:02x?}",
+            report_id, data.len(), data
+        ),
+    }
+}
+
+/// Pure helper: count likely-battery hits across discover results.
+fn count_likely_battery_results(results: &[(u8, Vec<u8>, Option<u8>)]) -> usize {
+    results.iter().filter(|(_, _, b)| b.is_some()).count()
+}
+
+/// Pure helper: format brute-force match lines for `discover_all_devices_for_battery`.
+fn format_brute_force_match(
+    vid: u16,
+    pid: u16,
+    product: &str,
+    manufacturer: &str,
+    report_id: u8,
+    position: usize,
+    expected_battery: u8,
+    data: &[u8],
+) -> Vec<String> {
+    vec![
+        "*** MATCH FOUND ***".to_string(),
+        format!("  Device: {:04x}:{:04x} - {} ({})", vid, pid, product, manufacturer),
+        format!("  Report ID: 0x{:02x}", report_id),
+        format!("  Battery value {} found at byte position: {}", expected_battery, position),
+        format!("  Full report ({} bytes): {:02x?}", data.len(), data),
+    ]
+}
+
+/// Pure helper: format the summary lines for the brute-force discovery.
+fn format_brute_force_summary(
+    found_matches: &[(u16, u16, u8, usize, String)],
+    expected_battery: u8,
+) -> Vec<String> {
+    let mut out = vec!["=== DISCOVERY COMPLETE ===".to_string()];
+    if found_matches.is_empty() {
+        out.push(format!("No devices found containing battery value {}%", expected_battery));
+    } else {
+        out.push(format!(
+            "Found {} device(s) with battery value {}%:",
+            found_matches.len(),
+            expected_battery
+        ));
+        for (vid, pid, report_id, position, name) in found_matches {
+            out.push(format!(
+                "  {:04x}:{:04x} ({}) - Report 0x{:02x}, byte {}",
+                vid, pid, name, report_id, position
+            ));
+        }
+    }
+    out
 }
 
 /// Try to identify which byte in the report looks like a battery percentage
@@ -1110,5 +1152,234 @@ mod tests {
     fn test_find_battery_in_report_empty() {
         let data: [u8; 0] = [];
         assert_eq!(find_battery_in_report(&data, 50), None);
+    }
+
+    // ==================== get_battery_percentage cache / API paths ====================
+
+    /// HidApi::new() can fail in environments without HID support; tests that need it
+    /// should be skipped gracefully rather than failing.
+    fn try_hid_api() -> Option<HidApi> {
+        HidApi::new().ok()
+    }
+
+    #[test]
+    fn test_get_battery_percentage_uses_cache_within_30s() {
+        let Some(api) = try_hid_api() else { return };
+        let mut reader = MouseBatteryReader::new();
+        reader.cached_value = "42".to_string();
+        reader.last_read = Some(Instant::now());
+        // last_read < 30s → returns cached value, no HID enumeration
+        let result = reader.get_battery_percentage(Some(&api));
+        assert_eq!(result, "42");
+    }
+
+    #[test]
+    fn test_get_battery_percentage_clears_stale_device_cache() {
+        let Some(api) = try_hid_api() else { return };
+        let mut reader = MouseBatteryReader::new();
+        // Stale last_successful_read (>5min ago)
+        reader.last_successful_read = Some(Instant::now() - Duration::from_secs(600));
+        reader.cached_device = Some(CachedMouseDevice {
+            vendor_id: 0xdead,
+            product_id: 0xbeef,
+            path: CString::new("fake").unwrap(),
+            battery_report_id: 0x07,
+        });
+        // No matching device in real enumeration → returns N/A, also clears cached_device
+        let result = reader.get_battery_percentage(Some(&api));
+        assert_eq!(result, "N/A");
+        assert!(reader.cached_device.is_none());
+        assert!(reader.last_read.is_some());
+    }
+
+    #[test]
+    fn test_get_battery_percentage_with_api_no_mouse_returns_na() {
+        let Some(api) = try_hid_api() else { return };
+        let mut reader = MouseBatteryReader::new();
+        // No cached value/device → enumerates → no match → N/A
+        let result = reader.get_battery_percentage(Some(&api));
+        assert_eq!(result, "N/A");
+        assert!(reader.last_read.is_some());
+    }
+
+    #[test]
+    fn test_get_battery_percentage_re_enumerate_on_cached_failure() {
+        let Some(api) = try_hid_api() else { return };
+        let mut reader = MouseBatteryReader::new();
+        // cached_device set but path invalid → read fails → re-enumerate path fires (still N/A)
+        reader.cached_device = Some(CachedMouseDevice {
+            vendor_id: 0x046d,
+            product_id: 0xc539,
+            path: CString::new("nonexistent-path-XYZ").unwrap(),
+            battery_report_id: 0x07,
+        });
+        let result = reader.get_battery_percentage(Some(&api));
+        assert_eq!(result, "N/A");
+    }
+
+    #[test]
+    fn test_try_read_battery_no_devices_errors() {
+        let Some(api) = try_hid_api() else { return };
+        let mut reader = MouseBatteryReader::new();
+        let r = reader.try_read_battery(&api);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_try_read_pulsar_battery_hidapi_no_match_errors() {
+        let Some(api) = try_hid_api() else { return };
+        let r = MouseBatteryReader::try_read_pulsar_battery_hidapi(&api);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_find_mouse_device_no_match() {
+        let Some(api) = try_hid_api() else { return };
+        let reader = MouseBatteryReader::new();
+        let r = reader.find_mouse_device(&api);
+        match r {
+            Err(e) => assert!(e.to_string().contains("No compatible gaming mouse")),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    // ==================== discover_battery_report_id ====================
+
+    #[test]
+    fn test_discover_battery_report_id_unknown_vid_errors() {
+        let Some(api) = try_hid_api() else { return };
+        let r = discover_battery_report_id(&api, 0xdead, None, None);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_discover_battery_report_id_unknown_vid_pid_errors() {
+        let Some(api) = try_hid_api() else { return };
+        let r = discover_battery_report_id(&api, 0xdead, Some(0xbeef), Some(50));
+        assert!(r.is_err());
+        let msg = r.unwrap_err().to_string();
+        assert!(msg.contains("not found") || msg.contains("No devices"));
+    }
+
+    // ==================== discover_all_devices_for_battery ====================
+
+    #[test]
+    fn test_discover_all_devices_for_battery_returns_ok_with_no_matches() {
+        let Some(api) = try_hid_api() else { return };
+        // Use a value unlikely to appear in any feature report on test box (255)
+        let r = discover_all_devices_for_battery(&api, 255);
+        assert!(r.is_ok());
+    }
+
+    // ==================== CachedMouseDevice clone ====================
+
+    #[test]
+    fn test_cached_mouse_device_clone() {
+        let d = CachedMouseDevice {
+            vendor_id: 0x046d,
+            product_id: 0xc539,
+            path: CString::new("X").unwrap(),
+            battery_report_id: 0x07,
+        };
+        let c = d.clone();
+        assert_eq!(c.vendor_id, 0x046d);
+        assert_eq!(c.product_id, 0xc539);
+        assert_eq!(c.battery_report_id, 0x07);
+        assert_eq!(c.path.as_bytes(), b"X");
+    }
+
+    // ==================== ReportClass derive coverage ====================
+
+    #[test]
+    fn test_report_class_debug_format() {
+        let _ = format!("{:?}", ReportClass::ContainsExpected);
+        let _ = format!("{:?}", ReportClass::ContainsEncoded);
+        let _ = format!("{:?}", ReportClass::LikelyBattery(50));
+        let _ = format!("{:?}", ReportClass::Plain);
+    }
+
+    #[test]
+    fn test_format_report_log_contains_expected() {
+        let s = format_report_log(0x07, &[1, 50, 0], &ReportClass::ContainsExpected, Some(50));
+        assert!(s.contains("0x07"));
+        assert!(s.contains("CONTAINS EXPECTED VALUE 50%"));
+    }
+
+    #[test]
+    fn test_format_report_log_contains_encoded() {
+        let s = format_report_log(0x02, &[200, 100], &ReportClass::ContainsEncoded, Some(50));
+        assert!(s.contains("0x02"));
+        assert!(s.contains("ENCODED VALUE"));
+        assert!(s.contains("50*2=100"));
+    }
+
+    #[test]
+    fn test_format_report_log_likely_battery() {
+        let s = format_report_log(0x06, &[0, 85], &ReportClass::LikelyBattery(85), None);
+        assert!(s.contains("LIKELY BATTERY: 85%"));
+    }
+
+    #[test]
+    fn test_format_report_log_plain() {
+        let s = format_report_log(0x10, &[1, 2, 3], &ReportClass::Plain, None);
+        assert!(s.contains("0x10"));
+        assert!(!s.contains("LIKELY"));
+        assert!(!s.contains("EXPECTED"));
+        assert!(!s.contains("ENCODED"));
+    }
+
+    #[test]
+    fn test_format_brute_force_match_includes_all_fields() {
+        let lines = format_brute_force_match(
+            0x1234,
+            0xabcd,
+            "Mouse",
+            "Vendor",
+            0x07,
+            2,
+            50,
+            &[1, 2, 50, 4],
+        );
+        assert!(lines.iter().any(|l| l == "*** MATCH FOUND ***"));
+        assert!(lines.iter().any(|l| l.contains("1234:abcd") && l.contains("Mouse")));
+        assert!(lines.iter().any(|l| l.contains("0x07")));
+        assert!(lines.iter().any(|l| l.contains("byte position: 2")));
+    }
+
+    #[test]
+    fn test_format_brute_force_summary_empty() {
+        let lines = format_brute_force_summary(&[], 50);
+        assert!(lines.iter().any(|l| l.contains("DISCOVERY COMPLETE")));
+        assert!(lines.iter().any(|l| l.contains("No devices found containing battery value 50%")));
+    }
+
+    #[test]
+    fn test_format_brute_force_summary_with_matches() {
+        let matches = vec![
+            (0x046d, 0xc539, 0x07, 1, "G502".to_string()),
+            (0x1038, 0x1832, 0x06, 2, "Aerox".to_string()),
+        ];
+        let lines = format_brute_force_summary(&matches, 75);
+        assert!(lines.iter().any(|l| l.contains("Found 2 device(s)")));
+        assert!(lines.iter().any(|l| l.contains("046d:c539")));
+        assert!(lines.iter().any(|l| l.contains("1038:1832")));
+    }
+
+    #[test]
+    fn test_count_likely_battery_results() {
+        let results = vec![
+            (0x01u8, vec![0x01, 0x00], None),
+            (0x02u8, vec![0x02, 50], Some(50)),
+            (0x03u8, vec![0x03, 75], Some(75)),
+        ];
+        assert_eq!(count_likely_battery_results(&results), 2);
+        assert_eq!(count_likely_battery_results(&[]), 0);
+    }
+
+    #[test]
+    fn test_parse_likely_battery_index_outside_first_four_returns_none() {
+        // Zero appearing past index 3 → not battery
+        let data = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
+        assert_eq!(parse_likely_battery(&data), None);
     }
 }

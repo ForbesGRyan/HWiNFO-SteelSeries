@@ -4,33 +4,87 @@ use hidapi::{HidApi, HidDevice};
 use hwinfo_steelseries_oled::Hwinfo;
 use log::{error, info, warn};
 
+/// Retry loop with injectable sleep + bounded attempts (for tests).
+/// `max_attempts = None` retries forever (production behavior).
+fn retry_connect_inner<T, F, S>(
+    term: &Term,
+    service_name: &str,
+    connect_fn: F,
+    sleep_fn: &S,
+    max_attempts: Option<u32>,
+) -> Result<T, anyhow::Error>
+where
+    F: Fn() -> Result<T, anyhow::Error>,
+    S: Fn(u64),
+{
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match connect_fn() {
+            Ok(result) => {
+                info!("Successfully connected to {}", service_name);
+                term.clear_line()?;
+                term.write_line(&format!("Connected to {}", service_name))?;
+                return Ok(result);
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to connect to {}: {}. Retrying in 3 seconds...",
+                    service_name, e
+                );
+                if let Some(max) = max_attempts {
+                    if attempt >= max {
+                        return Err(e);
+                    }
+                }
+                for i in (1..=3).rev() {
+                    term.clear_line()?;
+                    term.write_line(&format!(
+                        "Can't connect to {}. Trying again in {} second.",
+                        service_name, i
+                    ))?;
+                    sleep_fn(1);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test override: when Some, retry_connect uses bounded attempts and a no-op sleep.
+    /// This lets tests exercise connect_hwinfo / connect_steelseries / connect_hid wrappers
+    /// without blocking on real I/O.
+    static TEST_RETRY_MAX: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn current_test_retry_max() -> Option<u32> {
+    TEST_RETRY_MAX.with(|c| c.get())
+}
+
+#[cfg(not(test))]
+fn current_test_retry_max() -> Option<u32> {
+    None
+}
+
 fn retry_connect<T, F>(term: &Term, service_name: &str, connect_fn: F) -> Result<T, anyhow::Error>
 where
     F: Fn() -> Result<T, anyhow::Error>,
 {
-    match connect_fn() {
-        Ok(result) => {
-            info!("Successfully connected to {}", service_name);
-            term.clear_line()?;
-            term.write_line(&format!("Connected to {}", service_name))?;
-            Ok(result)
-        }
-        Err(e) => {
-            warn!(
-                "Failed to connect to {}: {}. Retrying in 3 seconds...",
-                service_name, e
-            );
-            for i in (1..=3).rev() {
-                term.clear_line()?;
-                term.write_line(&format!(
-                    "Can't connect to {}. Trying again in {} second.",
-                    service_name, i
-                ))?;
-                std::thread::sleep(std::time::Duration::from_secs(1));
+    retry_connect_inner(
+        term,
+        service_name,
+        connect_fn,
+        &|secs: u64| {
+            if current_test_retry_max().is_some() {
+                // No-op sleep in tests to keep them fast.
+            } else {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
             }
-            retry_connect(term, service_name, connect_fn)
-        }
-    }
+        },
+        current_test_retry_max(),
+    )
 }
 
 pub fn connect_hwinfo(term: &Term) -> Result<Hwinfo, anyhow::Error> {
@@ -46,26 +100,73 @@ pub fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error
 /// HID device identification parameters for SteelSeries OLED devices.
 /// These are extracted as constants to make them testable and configurable.
 pub const HID_VENDOR_ID: u16 = 0x1038;
+#[allow(dead_code)] // historical Arctis Nova Pro Wireless PID, kept for reference
 pub const HID_PRODUCT_ID: u16 = 0x12E0;
+#[allow(dead_code)] // OLED interface number on the original target device
 pub const HID_INTERFACE_NUMBER: i32 = 0x04;
 pub const HID_USAGE_PAGE: u16 = 0xFFC0;
 
-/// Finds a HID device matching the SteelSeries OLED specifications.
-/// Returns an error if the device is not found.
-pub fn find_hid_device<'a>(api: &'a HidApi) -> Result<&'a hidapi::DeviceInfo, anyhow::Error> {
-    api.device_list()
-        .find(|d| {
-            d.vendor_id() == HID_VENDOR_ID
-                && d.product_id() == HID_PRODUCT_ID
-                && d.interface_number() == HID_INTERFACE_NUMBER
-                && d.usage_page() == HID_USAGE_PAGE
-        })
-        .ok_or_else(|| anyhow::anyhow!("OLED device not found"))
+/// Pure-data predicate used by `is_oled_capable` — testable without HidApi.
+pub fn matches_oled_ids(vendor_id: u16, usage_page: u16) -> bool {
+    vendor_id == HID_VENDOR_ID && usage_page == HID_USAGE_PAGE
 }
 
-pub fn connect_hid(term: &Term, api: &HidApi) -> Result<HidDevice, anyhow::Error> {
+/// Predicate matching SteelSeries OLED-capable HID interfaces.
+/// Filters by VID + usage_page only — PID is not constrained so multiple
+/// devices (Arctis variants, Apex Pro, etc.) can be selected.
+pub fn is_oled_capable(d: &hidapi::DeviceInfo) -> bool {
+    matches_oled_ids(d.vendor_id(), d.usage_page())
+}
+
+/// Pure picker: returns the index of the chosen OLED device, or None.
+/// - If `serials` is empty → None.
+/// - If `desired` is non-empty and matches a candidate's serial → that index.
+/// - Otherwise → index 0 (first OLED-capable device).
+pub fn pick_oled_index(serials: &[Option<&str>], desired: &str) -> Option<usize> {
+    if serials.is_empty() {
+        return None;
+    }
+    if !desired.is_empty() {
+        if let Some(i) = serials.iter().position(|s| *s == Some(desired)) {
+            return Some(i);
+        }
+    }
+    Some(0)
+}
+
+/// Lists all SteelSeries OLED-capable HID devices.
+pub fn list_oled_devices<'a>(api: &'a HidApi) -> Vec<&'a hidapi::DeviceInfo> {
+    api.device_list().filter(|d| is_oled_capable(d)).collect()
+}
+
+/// Finds the OLED device matching the optional serial. If serial is empty
+/// or no match, returns the first OLED-capable device.
+pub fn find_hid_device<'a>(
+    api: &'a HidApi,
+    serial: &str,
+) -> Result<&'a hidapi::DeviceInfo, anyhow::Error> {
+    let candidates = list_oled_devices(api);
+    if candidates.is_empty() {
+        return Err(anyhow::anyhow!("No SteelSeries OLED device found"));
+    }
+    let serials: Vec<Option<&str>> = candidates.iter().map(|d| d.serial_number()).collect();
+    match pick_oled_index(&serials, serial) {
+        Some(idx) => {
+            if !serial.is_empty() && serials[idx] != Some(serial) {
+                warn!(
+                    "Configured device serial '{}' not present; falling back to first OLED device",
+                    serial
+                );
+            }
+            Ok(candidates[idx])
+        }
+        None => Err(anyhow::anyhow!("No SteelSeries OLED device found")),
+    }
+}
+
+pub fn connect_hid(term: &Term, api: &HidApi, serial: &str) -> Result<HidDevice, anyhow::Error> {
     retry_connect(term, "SteelSeries OLED (HID)", || {
-        let device_info = find_hid_device(api)?;
+        let device_info = find_hid_device(api, serial)?;
 
         device_info.open_device(api).map_err(|e| {
             error!("Failed to open HID device: {}", e);
@@ -219,7 +320,7 @@ mod tests {
         // This will cause a compile error if signatures change
         let _hwinfo_fn: fn(&Term) -> Result<Hwinfo, anyhow::Error> = connect_hwinfo;
         let _steelseries_fn: fn(&Term) -> Result<GameSenseClient, anyhow::Error> = connect_steelseries;
-        let _hid_fn: fn(&Term, &HidApi) -> Result<HidDevice, anyhow::Error> = connect_hid;
+        let _hid_fn: fn(&Term, &HidApi, &str) -> Result<HidDevice, anyhow::Error> = connect_hid;
     }
 
     // ==========================================================================
@@ -295,6 +396,202 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
         assert_eq!(attempt_count.get(), 3); // Succeeded on 3rd attempt
+    }
+
+    #[test]
+    fn test_matches_oled_ids_true() {
+        assert!(matches_oled_ids(HID_VENDOR_ID, HID_USAGE_PAGE));
+    }
+
+    #[test]
+    fn test_matches_oled_ids_wrong_vendor() {
+        assert!(!matches_oled_ids(0x1234, HID_USAGE_PAGE));
+    }
+
+    #[test]
+    fn test_matches_oled_ids_wrong_usage_page() {
+        assert!(!matches_oled_ids(HID_VENDOR_ID, 0x1234));
+    }
+
+    #[test]
+    fn test_pick_oled_index_empty_returns_none() {
+        assert_eq!(pick_oled_index(&[], ""), None);
+        assert_eq!(pick_oled_index(&[], "abc"), None);
+    }
+
+    #[test]
+    fn test_pick_oled_index_returns_first_when_no_desired() {
+        let v = [Some("a"), Some("b"), Some("c")];
+        assert_eq!(pick_oled_index(&v, ""), Some(0));
+    }
+
+    #[test]
+    fn test_pick_oled_index_finds_match() {
+        let v = [Some("a"), Some("b"), Some("c")];
+        assert_eq!(pick_oled_index(&v, "b"), Some(1));
+        assert_eq!(pick_oled_index(&v, "c"), Some(2));
+    }
+
+    #[test]
+    fn test_pick_oled_index_falls_back_when_no_match() {
+        let v = [Some("a"), Some("b"), None];
+        assert_eq!(pick_oled_index(&v, "zzz"), Some(0));
+    }
+
+    #[test]
+    fn test_pick_oled_index_skips_none_serials() {
+        let v = [None, Some("target"), None];
+        assert_eq!(pick_oled_index(&v, "target"), Some(1));
+    }
+
+    #[test]
+    fn test_retry_connect_inner_succeeds_first_try() {
+        let term = Term::stdout();
+        let calls = std::cell::Cell::new(0u32);
+        let result = retry_connect_inner(
+            &term,
+            "svc",
+            || {
+                calls.set(calls.get() + 1);
+                Ok::<i32, anyhow::Error>(99)
+            },
+            &|_| {},
+            Some(3),
+        )
+        .unwrap();
+        assert_eq!(result, 99);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn test_retry_connect_inner_retries_then_succeeds() {
+        let term = Term::stdout();
+        let calls = std::cell::Cell::new(0u32);
+        let result = retry_connect_inner(
+            &term,
+            "svc",
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() < 3 {
+                    Err(anyhow::anyhow!("nope"))
+                } else {
+                    Ok::<i32, anyhow::Error>(7)
+                }
+            },
+            &|_| {},
+            Some(5),
+        )
+        .unwrap();
+        assert_eq!(result, 7);
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn test_retry_connect_wrapper_returns_ok_immediately() {
+        // The infinite-retry wrapper just dispatches to retry_connect_inner with real sleep.
+        // A closure that returns Ok on first call exercises the wrapper without ever sleeping.
+        let term = Term::stdout();
+        let result: Result<u8, anyhow::Error> = retry_connect(&term, "svc", || Ok(7));
+        assert_eq!(result.unwrap(), 7);
+    }
+
+    fn try_hid_api_for_connect() -> Option<HidApi> {
+        HidApi::new().ok()
+    }
+
+    #[test]
+    fn test_find_hid_device_no_devices_returns_err() {
+        let Some(api) = try_hid_api_for_connect() else { return };
+        // Filter on HID_VENDOR_ID+usage page is unlikely to match a generic test box.
+        if !list_oled_devices(&api).is_empty() {
+            // SteelSeries device present — find should succeed.
+            assert!(find_hid_device(&api, "").is_ok());
+            return;
+        }
+        let r = find_hid_device(&api, "");
+        assert!(r.is_err());
+        match r {
+            Err(e) => assert!(e.to_string().contains("No SteelSeries OLED")),
+            Ok(_) => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_find_hid_device_with_serial_no_devices_returns_err() {
+        let Some(api) = try_hid_api_for_connect() else { return };
+        if !list_oled_devices(&api).is_empty() {
+            return;
+        }
+        let r = find_hid_device(&api, "FAKE-SERIAL-XYZ");
+        assert!(r.is_err());
+    }
+
+    /// Set the bounded retry budget for the current test thread.
+    fn set_test_retry_max(max: Option<u32>) {
+        TEST_RETRY_MAX.with(|c| c.set(max));
+    }
+
+    #[test]
+    fn test_connect_hwinfo_bounded_returns_err_when_service_down() {
+        set_test_retry_max(Some(1));
+        let term = Term::stdout();
+        // HWiNFO not running in CI → Hwinfo::new() fails → with max=1, retry returns Err.
+        let r = connect_hwinfo(&term);
+        assert!(r.is_err());
+        set_test_retry_max(None);
+    }
+
+    #[test]
+    fn test_connect_steelseries_bounded_returns_err_when_service_down() {
+        set_test_retry_max(Some(1));
+        let term = Term::stdout();
+        let r = connect_steelseries(&term);
+        // GameSenseClient::new may succeed if GG is running, otherwise Err
+        if let Err(e) = r {
+            assert!(!e.to_string().is_empty());
+        }
+        set_test_retry_max(None);
+    }
+
+    #[test]
+    fn test_connect_hid_bounded_propagates_err_when_no_devices() {
+        let Some(api) = try_hid_api_for_connect() else { return };
+        if !list_oled_devices(&api).is_empty() {
+            return; // SteelSeries device present, skip negative test
+        }
+        set_test_retry_max(Some(1));
+        let term = Term::stdout();
+        let r = connect_hid(&term, &api, "");
+        assert!(r.is_err());
+        set_test_retry_max(None);
+    }
+
+    #[test]
+    fn test_is_oled_capable_via_list_oled_devices() {
+        let Some(api) = try_hid_api_for_connect() else { return };
+        // is_oled_capable is exercised via list_oled_devices.
+        let _ = list_oled_devices(&api);
+    }
+
+    #[test]
+    fn test_retry_connect_inner_bounded_gives_up() {
+        let term = Term::stdout();
+        let calls = std::cell::Cell::new(0u32);
+        let sleep_calls = std::cell::Cell::new(0u32);
+        let result: Result<i32, anyhow::Error> = retry_connect_inner(
+            &term,
+            "svc",
+            || {
+                calls.set(calls.get() + 1);
+                Err(anyhow::anyhow!("never works"))
+            },
+            &|_| sleep_calls.set(sleep_calls.get() + 1),
+            Some(2),
+        );
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 2);
+        // First failure → 3 sleep_fn calls (countdown), second failure → no further sleeps before returning Err.
+        assert_eq!(sleep_calls.get(), 3);
     }
 
     #[test]

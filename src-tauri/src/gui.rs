@@ -185,55 +185,59 @@ pub struct SensorOption {
     pub description: Option<String>,
 }
 
-#[command]
-pub fn get_status(state: State<Shared>) -> Result<StatusPayload, String> {
-    let g = state.lock().map_err(|e| e.to_string())?;
+fn get_status_impl(shared: &Shared) -> Result<StatusPayload, String> {
+    let g = shared.lock().map_err(|e| e.to_string())?;
     Ok(g.status_payload())
 }
 
-#[command]
-pub fn get_config(state: State<Shared>) -> Result<AppConfig, String> {
-    let g = state.lock().map_err(|e| e.to_string())?;
+fn get_config_impl(shared: &Shared) -> Result<AppConfig, String> {
+    let g = shared.lock().map_err(|e| e.to_string())?;
     Ok(g.config.clone())
 }
 
-#[command]
-pub fn save_config(state: State<Shared>, config: AppConfig) -> Result<(), String> {
-    let mut ini = Ini::load_from_file("conf.ini").unwrap_or_else(|_| Ini::new());
+fn save_config_impl(path: &str, shared: &Shared, config: AppConfig) -> Result<(), String> {
+    let mut ini = Ini::load_from_file(path).unwrap_or_else(|_| Ini::new());
     apply_main_section(&mut ini, &config);
     if !config.is_summary {
         apply_pages_sections(&mut ini, &config);
     }
 
-    ini.write_to_file("conf.ini").map_err(|e| {
-        error!("Failed to write conf.ini: {}", e);
+    ini.write_to_file(path).map_err(|e| {
+        error!("Failed to write {}: {}", path, e);
         e.to_string()
     })?;
-    info!("Config saved to conf.ini");
+    info!("Config saved to {}", path);
 
-    let mut g = state.lock().map_err(|e| e.to_string())?;
+    let mut g = shared.lock().map_err(|e| e.to_string())?;
     g.config = config;
     g.reload_requested = true;
     g.sleep_requested = Some(SleepCommand::Wake);
     Ok(())
 }
 
+fn get_live_preview_impl(shared: &Shared) -> Result<Vec<u8>, String> {
+    let g = shared.lock().map_err(|e| e.to_string())?;
+    Ok(buffer_to_pixels(&g.oled_buffer))
+}
+
+#[command]
+pub fn get_status(state: State<Shared>) -> Result<StatusPayload, String> {
+    get_status_impl(&state)
+}
+
+#[command]
+pub fn get_config(state: State<Shared>) -> Result<AppConfig, String> {
+    get_config_impl(&state)
+}
+
+#[command]
+pub fn save_config(state: State<Shared>, config: AppConfig) -> Result<(), String> {
+    save_config_impl("conf.ini", &state, config)
+}
+
 #[command]
 pub fn get_live_preview(state: State<Shared>) -> Result<Vec<u8>, String> {
-    let g = state.lock().map_err(|e| e.to_string())?;
-    let buf = &g.oled_buffer;
-    let mut pixels = Vec::with_capacity(128 * 64);
-    for y in 0..64u32 {
-        for x in 0..128u32 {
-            let col = x as usize;
-            let byte_row = (y / 8) as usize;
-            let bit = (y % 8) as u8;
-            let idx = col * 8 + byte_row;
-            let on = (buf.data[idx] & (1 << bit)) != 0;
-            pixels.push(if on { 255 } else { 0 });
-        }
-    }
-    Ok(pixels)
+    get_live_preview_impl(&state)
 }
 
 #[command]
@@ -253,9 +257,8 @@ pub fn list_hid_devices() -> Result<Vec<HidDeviceInfo>, String> {
         .collect())
 }
 
-#[command]
-pub fn list_sensors(state: State<Shared>) -> Result<Vec<SensorOption>, String> {
-    let g = state.lock().map_err(|e| e.to_string())?;
+fn list_sensors_impl(shared: &Shared) -> Result<Vec<SensorOption>, String> {
+    let g = shared.lock().map_err(|e| e.to_string())?;
     let mut out = special_sensor_options();
     if let Some(hw) = g.hwinfo_snapshot.as_ref() {
         out.extend(sensors_from_hwinfo(hw));
@@ -264,9 +267,13 @@ pub fn list_sensors(state: State<Shared>) -> Result<Vec<SensorOption>, String> {
 }
 
 #[command]
-pub fn preview_config(state: State<Shared>, config: AppConfig, page: usize) -> Result<Vec<u8>, String> {
+pub fn list_sensors(state: State<Shared>) -> Result<Vec<SensorOption>, String> {
+    list_sensors_impl(&state)
+}
+
+fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Result<Vec<u8>, String> {
     let hwinfo_opt = {
-        let g = state.lock().map_err(|e| e.to_string())?;
+        let g = shared.lock().map_err(|e| e.to_string())?;
         g.hwinfo_snapshot.clone()
     };
 
@@ -317,6 +324,11 @@ pub fn preview_config(state: State<Shared>, config: AppConfig, page: usize) -> R
     Ok(buffer_to_pixels(&buf))
 }
 
+#[command]
+pub fn preview_config(state: State<Shared>, config: AppConfig, page: usize) -> Result<Vec<u8>, String> {
+    preview_config_impl(&state, config, page)
+}
+
 fn buffer_to_pixels(buf: &crate::render::OledBuffer) -> Vec<u8> {
     let mut pixels = Vec::with_capacity(128 * 64);
     for y in 0..64u32 {
@@ -332,25 +344,25 @@ fn buffer_to_pixels(buf: &crate::render::OledBuffer) -> Vec<u8> {
     pixels
 }
 
+fn set_sleep_command(shared: &Shared, cmd: SleepCommand) -> Result<(), String> {
+    let mut g = shared.lock().map_err(|e| e.to_string())?;
+    g.sleep_requested = Some(cmd);
+    Ok(())
+}
+
 #[command]
 pub fn request_sleep(state: State<Shared>) -> Result<(), String> {
-    let mut g = state.lock().map_err(|e| e.to_string())?;
-    g.sleep_requested = Some(SleepCommand::Sleep);
-    Ok(())
+    set_sleep_command(&state, SleepCommand::Sleep)
 }
 
 #[command]
 pub fn request_wake(state: State<Shared>) -> Result<(), String> {
-    let mut g = state.lock().map_err(|e| e.to_string())?;
-    g.sleep_requested = Some(SleepCommand::Wake);
-    Ok(())
+    set_sleep_command(&state, SleepCommand::Wake)
 }
 
 #[command]
 pub fn request_white_screen(state: State<Shared>) -> Result<(), String> {
-    let mut g = state.lock().map_err(|e| e.to_string())?;
-    g.sleep_requested = Some(SleepCommand::White);
-    Ok(())
+    set_sleep_command(&state, SleepCommand::White)
 }
 
 #[cfg(test)]
@@ -635,6 +647,23 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_pages_sections_break_when_page_exceeds_custom_sensors_limit() {
+        let mut ini = Ini::new();
+        let mut c = base_config();
+        c.is_summary = false;
+        // CUSTOM_SENSORS is 9; create more to exercise the break path.
+        let page: Vec<CustomSensor> = (0..(CUSTOM_SENSORS + 3))
+            .map(|i| sensor(&format!("S{};R{}", i, i)))
+            .collect();
+        c.custom_sensors = vec![page];
+        apply_pages_sections(&mut ini, &c);
+        let sec = ini.section(Some("PAGE1.Sensors")).unwrap();
+        // sensor_0..sensor_8 set, sensor_9 NOT set
+        assert!(sec.get(format!("sensor_{}", CUSTOM_SENSORS - 1).as_str()).is_some());
+        assert!(sec.get(format!("sensor_{}", CUSTOM_SENSORS).as_str()).is_none());
+    }
+
+    #[test]
     fn test_apply_pages_sections_creates_one_section_per_page() {
         let mut ini = Ini::new();
         let mut c = base_config();
@@ -651,6 +680,215 @@ mod tests {
     }
 
     // ==================== buffer_to_pixels ====================
+
+    use crate::state::{ActiveMode, SharedState};
+    use std::sync::{Arc, Mutex};
+
+    fn mock_shared(cfg: AppConfig) -> Shared {
+        Arc::new(Mutex::new(SharedState::new(cfg)))
+    }
+
+    #[test]
+    fn test_get_status_impl_returns_payload() {
+        let shared = mock_shared(base_config());
+        let r = get_status_impl(&shared).unwrap();
+        assert!(!r.hwinfo_connected);
+        assert_eq!(r.active_mode, ActiveMode::Disconnected);
+    }
+
+    #[test]
+    fn test_get_config_impl_returns_clone() {
+        let shared = mock_shared(base_config());
+        let r = get_config_impl(&shared).unwrap();
+        assert!(r.is_summary);
+        assert_eq!(r.gpu, "GPU [#0]");
+    }
+
+    #[test]
+    fn test_get_live_preview_impl_returns_pixels() {
+        let shared = mock_shared(base_config());
+        let pixels = get_live_preview_impl(&shared).unwrap();
+        assert_eq!(pixels.len(), 128 * 64);
+        // Empty buffer → all zero
+        assert!(pixels.iter().all(|p| *p == 0));
+    }
+
+    #[test]
+    fn test_set_sleep_command_writes_state() {
+        let shared = mock_shared(base_config());
+        set_sleep_command(&shared, SleepCommand::Sleep).unwrap();
+        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::Sleep));
+        set_sleep_command(&shared, SleepCommand::Wake).unwrap();
+        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::Wake));
+        set_sleep_command(&shared, SleepCommand::White).unwrap();
+        assert_eq!(shared.lock().unwrap().sleep_requested, Some(SleepCommand::White));
+    }
+
+    #[test]
+    fn test_list_sensors_impl_without_hwinfo_returns_specials_only() {
+        let shared = mock_shared(base_config());
+        let opts = list_sensors_impl(&shared).unwrap();
+        assert_eq!(opts.len(), SPECIAL_SENSORS.len());
+        assert!(opts.iter().all(|o| o.is_special));
+    }
+
+    #[test]
+    fn test_list_sensors_impl_with_hwinfo_extends_specials() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")]));
+        }
+        let opts = list_sensors_impl(&shared).unwrap();
+        assert_eq!(opts.len(), SPECIAL_SENSORS.len() + 1);
+        assert!(opts.iter().any(|o| !o.is_special && o.full_id == "CPU;Temp"));
+    }
+
+    #[test]
+    fn test_save_config_impl_writes_file_and_updates_state() {
+        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_gui_save_{}.ini", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let shared = mock_shared(base_config());
+        let mut new_cfg = base_config();
+        new_cfg.decimal = true;
+        new_cfg.gpu = "GPU [#1]".to_string();
+
+        save_config_impl(tmp.to_str().unwrap(), &shared, new_cfg).unwrap();
+
+        // File exists and contains key
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert!(contents.contains("decimal=true"));
+        assert!(contents.contains("gpu=GPU [#1]"));
+
+        // State updated
+        let g = shared.lock().unwrap();
+        assert!(g.config.decimal);
+        assert!(g.reload_requested);
+        assert_eq!(g.sleep_requested, Some(SleepCommand::Wake));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_command_wrappers_via_tauri_state() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        let shared = mock_shared(base_config());
+        app.manage(shared.clone());
+
+        // Each #[command] wrapper delegates to its `_impl` fn. Call them directly via app.state().
+        let state: tauri::State<Shared> = app.state();
+        assert!(get_status(state.clone()).is_ok());
+        assert!(get_config(state.clone()).is_ok());
+        assert!(get_live_preview(state.clone()).is_ok());
+        assert!(list_sensors(state.clone()).is_ok());
+        assert!(request_sleep(state.clone()).is_ok());
+        assert!(request_wake(state.clone()).is_ok());
+        assert!(request_white_screen(state.clone()).is_ok());
+        // preview_config calls render — works without HWiNFO snapshot
+        assert!(preview_config(state.clone(), base_config(), 0).is_ok());
+        // save_config writes to conf.ini in cwd. Run it in a temp cwd so it doesn't pollute
+        // the test workspace (a stale conf.ini lets a parallel daemon test reach connect_all
+        // and loop on HWiNFO retry).
+        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_save_cfg_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let prev_cwd = std::env::current_dir().unwrap();
+        let _ = std::env::set_current_dir(&tmp);
+        let _ = save_config(state.clone(), base_config());
+        let _ = std::fs::remove_file(tmp.join("conf.ini"));
+        let _ = std::env::set_current_dir(&prev_cwd);
+    }
+
+    #[test]
+    fn test_save_config_impl_errors_on_unwritable_path() {
+        let shared = mock_shared(base_config());
+        // Path inside a non-existent directory → write_to_file fails
+        let bad_path = "C:\\nope-this-dir-does-not-exist-xyz\\config.ini";
+        let r = save_config_impl(bad_path, &shared, base_config());
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_save_config_impl_custom_writes_pages() {
+        let tmp = std::env::temp_dir().join(format!("hwinfo_ss_gui_save_custom_{}.ini", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let shared = mock_shared(base_config());
+        let mut new_cfg = base_config();
+        new_cfg.is_summary = false;
+        new_cfg.custom_sensors = vec![vec![sensor("CPU;Temp")]];
+
+        save_config_impl(tmp.to_str().unwrap(), &shared, new_cfg).unwrap();
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert!(contents.contains("[PAGE1.Sensors]"));
+        assert!(contents.contains("CPU;Temp"));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_preview_config_impl_summary_renders_pixels() {
+        let shared = mock_shared(base_config());
+        let cfg = base_config();
+        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        assert_eq!(pixels.len(), 128 * 64);
+        // Summary preview text "CPU GPU MEM" should light some pixels.
+        assert!(pixels.iter().any(|p| *p != 0));
+    }
+
+    #[test]
+    fn test_preview_config_impl_custom_no_hwinfo_returns_error_text() {
+        let shared = mock_shared(base_config());
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![vec![sensor("CPU;Temp")]];
+
+        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        // "HWiNFO not connected" rendered → some pixels lit
+        assert_eq!(pixels.len(), 128 * 64);
+        assert!(pixels.iter().any(|p| *p != 0));
+    }
+
+    #[test]
+    fn test_preview_config_impl_custom_with_hwinfo_blank_page() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")]));
+        }
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        // No custom_sensors for page 0 → empty page → renders blank text
+        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        assert_eq!(pixels.len(), 128 * 64);
+    }
+
+    #[test]
+    fn test_preview_config_impl_custom_run_sensors_error_path() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")])); // doesn't have requested sensor
+        }
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![vec![sensor("Nonexistent;Sensor")]];
+
+        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        // Preview error rendered to pixels
+        assert!(pixels.iter().any(|p| *p != 0));
+    }
+
+    #[test]
+    fn test_list_hid_devices_returns_vec() {
+        // Real HidApi enumeration — may be empty in CI, but should not error
+        if let Ok(v) = list_hid_devices() {
+            for d in &v {
+                assert_eq!(d.vendor_id, crate::connect::HID_VENDOR_ID);
+            }
+        }
+    }
 
     #[test]
     fn test_buffer_to_pixels_size_and_mapping() {

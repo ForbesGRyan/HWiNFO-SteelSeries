@@ -681,6 +681,229 @@ mod tests {
     }
 
     #[test]
+    fn test_appconfig_loads_custom_sensors_from_pages() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", "Custom")
+            .set("pages", "2")
+            .set("sensors_per_line", "2");
+        conf.with_section(Some("PAGE1.Sensors"))
+            .set("sensor_0", "CPU [#0];Temperature")
+            .set("label_0", "CPU")
+            .set("unit_0", "°C")
+            .set("convert_0", "")
+            .set("sensor_1", "GPU [#0];Temperature")
+            .set("label_1", "GPU")
+            .set("unit_1", "°C");
+        conf.with_section(Some("PAGE2.Sensors"))
+            .set("sensor_0", "MEM;Used")
+            .set("label_0", "RAM")
+            .set("unit_0", "GB")
+            .set("convert_0", "MB/GB");
+
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        assert_eq!(config.custom_sensors.len(), 2);
+        assert_eq!(config.custom_sensors[0].len(), 2);
+        assert_eq!(config.custom_sensors[0][0].sensor, "CPU [#0];Temperature");
+        assert_eq!(config.custom_sensors[0][0].label, "CPU");
+        assert_eq!(config.custom_sensors[0][0].unit, "°C");
+        assert_eq!(config.custom_sensors[0][1].sensor, "GPU [#0];Temperature");
+
+        assert_eq!(config.custom_sensors[1].len(), 1);
+        assert_eq!(config.custom_sensors[1][0].sensor, "MEM;Used");
+        assert_eq!(config.custom_sensors[1][0].convert, "MB/GB");
+    }
+
+    #[test]
+    fn test_appconfig_missing_page_section_yields_empty_page() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", "Custom")
+            .set("pages", "3"); // pages claimed but no PAGE sections
+
+        let config = AppConfig::from_ini(&conf).unwrap();
+        assert_eq!(config.custom_sensors.len(), 3);
+        for page in &config.custom_sensors {
+            assert!(page.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_appconfig_custom_sensor_missing_label_unit_defaults_to_empty() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", "Custom")
+            .set("pages", "1");
+        conf.with_section(Some("PAGE1.Sensors"))
+            .set("sensor_0", "CPU;Temp"); // no label_0 / unit_0 / convert_0
+
+        let config = AppConfig::from_ini(&conf).unwrap();
+        let sensor = &config.custom_sensors[0][0];
+        assert_eq!(sensor.sensor, "CPU;Temp");
+        assert_eq!(sensor.label, "");
+        assert_eq!(sensor.unit, "");
+        assert_eq!(sensor.convert, "");
+    }
+
+    #[test]
+    fn test_appconfig_direct_usb_serial_loaded() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", "Custom")
+            .set("direct_usb", "true")
+            .set("direct_usb_serial", "ABCD1234")
+            .set("pages", "1");
+        let config = AppConfig::from_ini(&conf).unwrap();
+        assert!(config.direct_usb);
+        assert_eq!(config.direct_usb_serial, "ABCD1234");
+    }
+
+    #[test]
+    fn test_appconfig_invalid_numeric_fields_fall_back_to_defaults() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", "Custom")
+            .set("pages", "not-a-number")
+            .set("page_time", "not-a-number")
+            .set("sensors_per_line", "abc")
+            .set("decimal", "maybe")
+            .set("direct_usb", "tru-ish");
+        let config = AppConfig::from_ini(&conf).unwrap();
+        assert_eq!(config.pages, 1);
+        assert_eq!(config.page_time, 5);
+        assert_eq!(config.sensors_per_line, 1);
+        assert!(!config.decimal);
+        assert!(!config.direct_usb);
+    }
+
+    #[test]
+    fn test_appconfig_summary_zeroes_sensors_per_line() {
+        // is_summary=true → sensors_per_line is forced to 1 regardless of ini value
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", "Vertical")
+            .set("sensors_per_line", "3");
+        let config = AppConfig::from_ini(&conf).unwrap();
+        assert!(config.is_summary);
+        assert_eq!(config.sensors_per_line, 1);
+    }
+
+    fn build_hwinfo_with_gpus(num_gpus: usize) -> Hwinfo {
+        use hwinfo_steelseries_oled::{HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor};
+        use std::collections::HashMap;
+        let mut sensors = HashMap::new();
+        let mut sensor_names = Vec::new();
+        for i in 0..num_gpus {
+            let key = format!("GPU [#{}]", i);
+            sensor_names.push(key.clone());
+            let mut readings = HashMap::new();
+            readings.insert(
+                "GPU Temperature".to_string(),
+                HwinfoSensorsReadingElement::new_mock(i as u32, 0, "GPU Temperature", 50.0),
+            );
+            sensors.insert(
+                key.clone(),
+                Sensor {
+                    info: HwinfoSensorsSensorElement::new_mock(i as u32, &key),
+                    readings,
+                    reading_names: vec!["GPU Temperature".to_string()],
+                },
+            );
+        }
+        Hwinfo::new_mock(sensors, sensor_names)
+    }
+
+    #[test]
+    fn test_configure_gpu_selection_single_gpu_returns_ok_without_prompt() {
+        let term = Term::stdout();
+        let hwinfo = build_hwinfo_with_gpus(1);
+        let mut conf = Ini::new();
+        configure_gpu_selection(&term, &hwinfo, &mut conf).unwrap();
+        // No "gpu" key written, since single-GPU path skips selection.
+        assert!(conf.section(Some("Main")).and_then(|s| s.get("gpu")).is_none());
+    }
+
+    #[test]
+    fn test_configure_gpu_selection_multi_gpu_errors_on_stdin_eof() {
+        // Two GPUs → triggers the prompt + Input::interact_text() which fails in tests → Err.
+        let term = Term::stdout();
+        let hwinfo = build_hwinfo_with_gpus(2);
+        let mut conf = Ini::new();
+        let r = configure_gpu_selection(&term, &hwinfo, &mut conf);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_configure_custom_sensors_errors_when_category_out_of_range() {
+        // Empty hwinfo → category=0 has no valid sensor → validate_category_selection fails,
+        // exercising the inspect_err branch.
+        let hwinfo = Hwinfo::new_mock(std::collections::HashMap::new(), vec![]);
+        let mut conf = Ini::new();
+        let r = configure_custom_sensors(&hwinfo, &mut conf, 1, 1);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_configure_custom_sensors_errors_when_sensor_missing_from_hashmap() {
+        // sensor_names points to "Phantom" but sensors map has no key for it → Err
+        let hwinfo = Hwinfo::new_mock(std::collections::HashMap::new(), vec!["Phantom".to_string()]);
+        let mut conf = Ini::new();
+        let r = configure_custom_sensors(&hwinfo, &mut conf, 1, 1);
+        match r {
+            Err(e) => assert!(format!("{}", e).contains("not found")),
+            Ok(_) => panic!("expected err"),
+        }
+    }
+
+    #[test]
+    fn test_configure_custom_sensors_errors_on_stdin_eof() {
+        // Even a single sensor configuration requires Input::interact_text() which fails in tests.
+        use hwinfo_steelseries_oled::{HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor};
+        use std::collections::HashMap;
+        let mut sensors = HashMap::new();
+        let mut readings = HashMap::new();
+        readings.insert(
+            "Temperature".to_string(),
+            HwinfoSensorsReadingElement::new_mock(0, 0, "Temperature", 50.0),
+        );
+        sensors.insert(
+            "CPU".to_string(),
+            Sensor {
+                info: HwinfoSensorsSensorElement::new_mock(0, "CPU"),
+                readings,
+                reading_names: vec!["Temperature".to_string()],
+            },
+        );
+        let hwinfo = Hwinfo::new_mock(sensors, vec!["CPU".to_string()]);
+        let mut conf = Ini::new();
+        let r = configure_custom_sensors(&hwinfo, &mut conf, 1, 1);
+        // Either fails on Input or validates index → either way uncovered branches run.
+        // In cargo test the Input::interact_text returns Err so unwrap_or(0) gives 0 → validate ok → next Input fails → Err.
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_settings_create_config_errors_when_stdin_eof() {
+        // In `cargo test`, dialoguer::Input has no real terminal — the first interact_text
+        // call returns Err, which settings_create_config converts into anyhow::Error.
+        // This test only confirms the preamble + error-mapping code runs.
+        let term = Term::stdout();
+        let hwinfo = build_hwinfo_with_gpus(1);
+        let result = settings_create_config(&term, &hwinfo);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_configure_gpu_selection_no_gpu_returns_err() {
+        let term = Term::stdout();
+        let hwinfo = build_hwinfo_with_gpus(0);
+        let mut conf = Ini::new();
+        let result = configure_gpu_selection(&term, &hwinfo, &mut conf);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_appconfig_missing_style() {
         let mut conf = Ini::new();
         conf.with_section(Some("Main")).set("pages", "1");

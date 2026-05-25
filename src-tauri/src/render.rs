@@ -547,6 +547,83 @@ mod tests {
         }
     }
 
+    fn write_test_image(path: &std::path::Path, w: u32, h: u32, brightness: u8) {
+        let mut img = image::GrayImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                img.put_pixel(x, y, image::Luma([brightness]));
+            }
+        }
+        img.save(path).unwrap();
+    }
+
+    #[test]
+    fn test_load_image_to_buffer_lights_pixels_when_bright() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("hwinfo_ss_render_bright.png");
+        write_test_image(&path, 4, 4, 255);
+
+        let mut buffer = OledBuffer::new();
+        load_image_to_buffer(&path.to_string_lossy(), &mut buffer, 0, 0).unwrap();
+
+        // Pixels (0,0)..(3,3) should be on
+        let any_lit = buffer.data.iter().any(|b| *b != 0);
+        assert!(any_lit, "Bright pixels should light the buffer");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_image_to_buffer_dark_pixels_left_blank() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("hwinfo_ss_render_dark.png");
+        write_test_image(&path, 4, 4, 50);
+
+        let mut buffer = OledBuffer::new();
+        load_image_to_buffer(&path.to_string_lossy(), &mut buffer, 0, 0).unwrap();
+
+        assert!(buffer.data.iter().all(|b| *b == 0));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_image_to_buffer_clips_to_bounds() {
+        // 200x100 image at offset 0,0 — must clip to 128x64 without OOB writes
+        let dir = std::env::temp_dir();
+        let path = dir.join("hwinfo_ss_render_clip.png");
+        write_test_image(&path, 200, 100, 255);
+
+        let mut buffer = OledBuffer::new();
+        load_image_to_buffer(&path.to_string_lossy(), &mut buffer, 0, 0).unwrap();
+
+        // Buffer length unchanged (no panic from clipping)
+        assert_eq!(buffer.data.len(), 128 * 8);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_image_to_buffer_missing_file_returns_err() {
+        let mut buffer = OledBuffer::new();
+        let r = load_image_to_buffer("/no/such/path/xyz.png", &mut buffer, 0, 0);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_render_text_img_directive_invokes_loader() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("hwinfo_ss_render_img.png");
+        write_test_image(&path, 4, 4, 255);
+
+        let text = format!("IMG:{}", path.to_string_lossy());
+        let buffer = render_text_to_oled(&text, 0);
+        let any_lit = buffer.data.iter().any(|b| *b != 0);
+        assert!(any_lit);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn test_draw_target_ignores_out_of_bounds() {
         let mut buffer = OledBuffer::new();

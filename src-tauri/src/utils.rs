@@ -253,6 +253,50 @@ mod tests {
     }
 
     #[test]
+    fn test_run_sensors_media_returns_cached_value() {
+        // MediaReader with is_playing=true and a populated title returns Some → labels/units/values set.
+        let props = make_props(&[
+            ("sensor_0", "MEDIA_TITLE"),
+            ("label_0", "T:"),
+            ("unit_0", "!"),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let info = crate::media::MediaInfo {
+            title: "Song Name".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            app_name: "Spotify".to_string(),
+            is_playing: true,
+        };
+        let mut media = MediaReader::with_cached_info(info);
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(labels[0], "T:");
+        assert_eq!(units[0], "!");
+        assert_eq!(values[0], "Song Name");
+    }
+
+    #[test]
+    fn test_run_sensors_unknown_conversion_ignored() {
+        // Unknown convert_ value hits the _ arm — leaves value unchanged.
+        let props = make_props(&[
+            ("sensor_0", "S;R"),
+            ("convert_0", "unknown-unit"),
+        ]);
+        let hwinfo = build_hwinfo(&[("S", "R", 42.0)]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(&props, &mut labels, &mut units, &mut values, &hwinfo, false, &mut mouse, &mut media, None).unwrap();
+
+        assert_eq!(values[0], "42");
+    }
+
+    #[test]
     fn test_run_sensors_media_hides_when_nothing_playing() {
         // MediaReader::new() has no manager and is_playing=false → field is None → hide sensor.
         let props = make_props(&[

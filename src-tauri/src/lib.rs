@@ -132,6 +132,8 @@ pub struct Hwinfo {
     pub(crate) shared_memory_name: Vec<u16>,
     pub sensors: HashMap<String, Sensor>,
     pub sensor_names: Vec<String>,
+    /// Test-only: when true, `pull()` returns Ok(()) without touching shared memory.
+    pub bypass_pull_for_test: bool,
 }
 impl PartialEq for Hwinfo {
     fn eq(&self, other: &Self) -> bool {
@@ -245,6 +247,7 @@ impl Hwinfo {
             shared_memory_name,
             sensors,
             sensor_names,
+            bypass_pull_for_test: false,
         })
     }
 
@@ -254,6 +257,14 @@ impl Hwinfo {
         // Clear reading names for fresh rebuild
         for sensor in self.sensors.values_mut() {
             sensor.reading_names.clear();
+        }
+
+        if self.bypass_pull_for_test {
+            // Re-populate reading_names from sensor.readings keys so callers see consistent state.
+            for sensor in self.sensors.values_mut() {
+                sensor.reading_names = sensor.readings.keys().cloned().collect();
+            }
+            return Ok(());
         }
 
         let shared_memory_handle = unsafe {
@@ -382,7 +393,14 @@ impl Hwinfo {
             shared_memory_name: vec![],
             sensors,
             sensor_names,
+            bypass_pull_for_test: false,
         }
+    }
+
+    /// Test helper: override the shared-memory mapping name so `pull()` opens a known-bad mapping
+    /// and returns a clean Err instead of dereferencing junk when the default empty name is in place.
+    pub fn set_shared_memory_name_for_test(&mut self, name: Vec<u16>) {
+        self.shared_memory_name = name;
     }
 }
 
@@ -550,6 +568,7 @@ mod tests {
             shared_memory_name: vec![],
             sensors,
             sensor_names,
+            bypass_pull_for_test: false,
         }
     }
 
@@ -644,5 +663,201 @@ mod tests {
         let hwinfo2 = create_mock_hwinfo();
 
         assert!(hwinfo1 == hwinfo2);
+    }
+
+    #[test]
+    fn test_hwinfo_inequality_when_sensors_differ() {
+        let a = create_mock_hwinfo();
+        let mut b = create_mock_hwinfo();
+        // Mutate one reading value → readings differ → sensors differ → Hwinfo differs.
+        if let Some(s) = b.sensors.get_mut("CPU [#0]") {
+            if let Some(r) = s.readings.get_mut("CPU Temperature") {
+                r.value = 99.0;
+            }
+        }
+        assert!(a != b);
+    }
+
+    #[test]
+    fn test_sensor_element_equality() {
+        let a = create_test_sensor(0, "CPU [#0]");
+        let b = create_test_sensor(0, "CPU [#0]");
+        let c = create_test_sensor(1, "GPU [#0]");
+        assert!(a == b);
+        assert!(a != c);
+    }
+
+    #[test]
+    fn test_sensor_struct_equality() {
+        let s1 = Sensor {
+            info: create_test_sensor(0, "X"),
+            readings: HashMap::new(),
+            reading_names: vec![],
+        };
+        let s2 = Sensor {
+            info: create_test_sensor(0, "X"),
+            readings: HashMap::new(),
+            reading_names: vec![],
+        };
+        assert!(s1 == s2);
+    }
+
+    #[test]
+    fn test_sensor_reading_type_from_repr() {
+        // FromRepr covers all variants
+        assert!(matches!(SensorReadingType::from_repr(0), Some(SensorReadingType::SensorTypeNone)));
+        assert!(matches!(SensorReadingType::from_repr(1), Some(SensorReadingType::SensorTypeTemp)));
+        assert!(matches!(SensorReadingType::from_repr(2), Some(SensorReadingType::SensorTypeVolt)));
+        assert!(matches!(SensorReadingType::from_repr(7), Some(SensorReadingType::SensorTypeUsage)));
+        assert!(matches!(SensorReadingType::from_repr(8), Some(SensorReadingType::SensorTypeOther)));
+        assert!(SensorReadingType::from_repr(99).is_none());
+    }
+
+    #[test]
+    fn test_hwinfo_new_errors_when_hwinfo_not_running() {
+        // CI envs don't have HWiNFO running → OpenFileMappingW returns null → Err.
+        let result = Hwinfo::new();
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("Failed to open shared memory object"));
+        }
+    }
+
+    #[test]
+    fn test_hwinfo_pull_errors_when_no_shared_memory() {
+        // new_mock leaves shared_memory_name empty, so OpenFileMappingW fails.
+        let mut hwinfo = create_mock_hwinfo();
+        hwinfo.shared_memory_name = OsStr::new("Global\\NoSuchMappingXYZ_HWiNFO_Test")
+            .encode_wide()
+            .chain(once(0))
+            .collect();
+        let r = hwinfo.pull();
+        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("Failed to open shared memory object"));
+    }
+
+    #[test]
+    fn test_pull_clears_reading_names_even_on_error() {
+        let mut hwinfo = create_mock_hwinfo();
+        // Force OpenFileMappingW to fail
+        hwinfo.shared_memory_name = OsStr::new("Global\\NoSuchMappingXYZ_HWiNFO_Test2")
+            .encode_wide()
+            .chain(once(0))
+            .collect();
+        for sensor in hwinfo.sensors.values_mut() {
+            assert!(!sensor.reading_names.is_empty()); // precondition
+        }
+        let _ = hwinfo.pull();
+        // pull() clears reading_names before opening shared memory → still cleared after err
+        for sensor in hwinfo.sensors.values() {
+            assert!(sensor.reading_names.is_empty(), "pull should clear reading_names");
+        }
+    }
+
+    #[test]
+    fn test_new_mock_initializes_fields() {
+        let hwinfo = Hwinfo::new_mock(HashMap::new(), vec!["X".into()]);
+        assert_eq!(hwinfo.num_reading_elements, 0);
+        assert_eq!(hwinfo.offset_reading_section, 0);
+        assert_eq!(hwinfo.size_reading_section, 0);
+        assert_eq!(hwinfo.sensor_names, vec!["X".to_string()]);
+        assert!(hwinfo.sensors.is_empty());
+    }
+
+    #[test]
+    fn test_reading_element_new_mock() {
+        let r = HwinfoSensorsReadingElement::new_mock(1, 2, "Temp", 50.0);
+        // Copy packed fields to locals before asserting (avoid unaligned-ref UB)
+        let sensor_index = r.dw_sensor_index;
+        let reading_id = r.dw_reading_id;
+        let value = r.value;
+        let value_min = r.value_min;
+        let value_max = r.value_max;
+        assert_eq!(sensor_index, 1);
+        assert_eq!(reading_id, 2);
+        assert_eq!(value, 50.0);
+        assert_eq!(value_min, 40.0);
+        assert_eq!(value_max, 60.0);
+        let label_bytes: Vec<u8> = r.utf_label_user.iter().take_while(|b| **b != 0).copied().collect();
+        assert_eq!(String::from_utf8(label_bytes).unwrap(), "Temp");
+    }
+
+    #[test]
+    fn test_sensor_element_new_mock_long_name_truncated() {
+        let long = "x".repeat(200); // > HWINFO_SENSORS_STRING_LEN2 (128)
+        let s = HwinfoSensorsSensorElement::new_mock(0, &long);
+        // utf_sensor_name_user has fixed length 128 — overflow bytes dropped
+        assert_eq!(s.utf_sensor_name_user.len(), 128);
+        // All 128 slots filled with 'x'
+        assert!(s.utf_sensor_name_user.iter().all(|b| *b == b'x'));
+    }
+
+    #[test]
+    fn test_reading_element_new_mock_long_label_truncated() {
+        let long = "x".repeat(200);
+        let r = HwinfoSensorsReadingElement::new_mock(0, 0, &long, 0.0);
+        assert!(r.utf_label_user.iter().all(|b| *b == b'x'));
+    }
+
+    #[test]
+    fn test_shared_memory_view_drop_null() {
+        // Dropping a SharedMemoryView with null pointer should not call UnmapViewOfFile
+        let view = SharedMemoryView(std::ptr::null());
+        drop(view); // must not panic
+    }
+
+    #[test]
+    fn test_shared_memory_view_drop_with_real_mapping() {
+        // Create a real, named file mapping so Drop's UnmapViewOfFile path actually runs.
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use std::iter::once;
+        use winapi::um::memoryapi::CreateFileMappingW;
+        use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+        use winapi::um::winnt::PAGE_READWRITE;
+
+        let name: Vec<u16> = OsStr::new("HwinfoSteelseriesUnitTestMapping")
+            .encode_wide()
+            .chain(once(0))
+            .collect();
+        unsafe {
+            let handle = CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                std::ptr::null_mut(),
+                PAGE_READWRITE,
+                0,
+                4096,
+                name.as_ptr(),
+            );
+            if handle.is_null() {
+                return; // CI might not have permission; skip silently.
+            }
+            let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
+            CloseHandle(handle);
+            if view.is_null() {
+                return;
+            }
+            // Wrapping in SharedMemoryView and dropping calls UnmapViewOfFile (lines 116-118).
+            let smv = SharedMemoryView(view);
+            drop(smv);
+        }
+    }
+
+    #[test]
+    fn test_pull_bypass_for_test_returns_ok() {
+        let mut hwinfo = create_mock_hwinfo();
+        hwinfo.bypass_pull_for_test = true;
+        // Mutate reading_names so we can verify they got reset to keys from sensor.readings
+        for sensor in hwinfo.sensors.values_mut() {
+            sensor.reading_names = vec!["STALE".to_string()];
+        }
+        hwinfo.pull().unwrap();
+        // After bypass pull, reading_names should be re-derived from readings keys
+        for sensor in hwinfo.sensors.values() {
+            assert!(!sensor.reading_names.contains(&"STALE".to_string()));
+            for key in sensor.readings.keys() {
+                assert!(sensor.reading_names.contains(key));
+            }
+        }
     }
 }

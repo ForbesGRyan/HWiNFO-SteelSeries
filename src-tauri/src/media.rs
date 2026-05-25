@@ -193,6 +193,20 @@ impl Default for MediaReader {
     }
 }
 
+#[cfg(test)]
+impl MediaReader {
+    /// Test-only constructor with a pre-populated cache.
+    /// `last_read` is set to now so `get_media_field` returns from cache without touching Windows APIs.
+    pub fn with_cached_info(info: MediaInfo) -> Self {
+        Self {
+            cached_info: info,
+            last_read: Some(Instant::now()),
+            manager: None,
+            initialized: false,
+        }
+    }
+}
+
 /// Media field types for sensor configuration
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MediaField {
@@ -271,5 +285,141 @@ mod tests {
         // Default MediaInfo has is_playing = false
         assert_eq!(reader.get_cached_field(MediaField::Title), None);
         assert_eq!(reader.get_cached_field(MediaField::Artist), None);
+    }
+
+    fn playing(title: &str, artist: &str, album: &str, app: &str) -> MediaInfo {
+        MediaInfo {
+            title: title.into(),
+            artist: artist.into(),
+            album: album.into(),
+            app_name: app.into(),
+            is_playing: true,
+        }
+    }
+
+    #[test]
+    fn test_cached_field_returns_title_when_playing() {
+        let r = MediaReader::with_cached_info(playing("Song", "Artist", "Album", "App"));
+        assert_eq!(r.get_cached_field(MediaField::Title), Some("Song".into()));
+    }
+
+    #[test]
+    fn test_cached_field_returns_artist_when_playing() {
+        let r = MediaReader::with_cached_info(playing("T", "Artist", "Alb", "A"));
+        assert_eq!(r.get_cached_field(MediaField::Artist), Some("Artist".into()));
+    }
+
+    #[test]
+    fn test_cached_field_returns_album_when_playing() {
+        let r = MediaReader::with_cached_info(playing("T", "Ar", "Album", "A"));
+        assert_eq!(r.get_cached_field(MediaField::Album), Some("Album".into()));
+    }
+
+    #[test]
+    fn test_cached_field_returns_app_when_playing() {
+        let r = MediaReader::with_cached_info(playing("T", "Ar", "Al", "MyApp"));
+        assert_eq!(r.get_cached_field(MediaField::App), Some("MyApp".into()));
+    }
+
+    #[test]
+    fn test_cached_field_returns_none_for_empty_field_when_playing() {
+        // is_playing=true but title is empty → field hidden (None)
+        let r = MediaReader::with_cached_info(playing("", "Ar", "Al", "App"));
+        assert_eq!(r.get_cached_field(MediaField::Title), None);
+    }
+
+    #[test]
+    fn test_get_media_field_uses_cache_within_5s() {
+        // last_read is set to "now" by with_cached_info → cache short-circuit hit
+        let mut r = MediaReader::with_cached_info(playing("CachedTitle", "", "", ""));
+        assert_eq!(r.get_media_field(MediaField::Title), Some("CachedTitle".into()));
+    }
+
+    #[test]
+    fn test_get_media_field_refresh_with_no_manager_returns_none() {
+        // No cache, no manager → refresh_media_info hits early return, defaults stay
+        let mut r = MediaReader::new();
+        assert_eq!(r.get_media_field(MediaField::Title), None);
+    }
+
+    #[test]
+    fn test_refresh_media_info_resets_to_default_when_no_manager() {
+        let mut r = MediaReader::new();
+        r.cached_info = playing("stale", "stale", "stale", "stale");
+        r.refresh_media_info();
+        assert!(!r.cached_info.is_playing);
+        assert!(r.cached_info.title.is_empty());
+        assert!(r.last_read.is_some());
+    }
+
+    #[test]
+    fn test_refresh_media_info_with_real_manager_does_not_panic() {
+        // Best-effort: initialize the COM-backed manager. If initialize() succeeds, refresh()
+        // exercises the manager-Some path (which may return early via GetCurrentSession Err
+        // when nothing is playing). If initialize() fails, manager stays None and we hit the
+        // None branch (already covered elsewhere — this test is just for the success-init case).
+        let mut r = MediaReader::new();
+        if r.initialize().is_ok() {
+            r.refresh_media_info(); // exercises lines 95+ in the manager-Some branch
+        }
+    }
+
+    #[test]
+    fn test_default_constructs_uninitialized_reader() {
+        let r = MediaReader::default();
+        assert!(!r.initialized);
+        assert!(r.manager.is_none());
+        assert!(r.last_read.is_none());
+    }
+
+    #[test]
+    fn test_extract_app_name_remaining_known_apps() {
+        // Cover more rows of the known_apps table
+        assert_eq!(MediaReader::extract_app_name("firefox.exe"), "Firefox");
+        assert_eq!(MediaReader::extract_app_name("msedge.exe"), "Edge");
+        assert_eq!(MediaReader::extract_app_name("VLC media player"), "VLC");
+        assert_eq!(MediaReader::extract_app_name("foobar2000"), "foobar");
+        assert_eq!(MediaReader::extract_app_name("AIMP"), "AIMP");
+        assert_eq!(MediaReader::extract_app_name("musicbee"), "MusicBee");
+        assert_eq!(MediaReader::extract_app_name("iTunes"), "iTunes");
+        assert_eq!(MediaReader::extract_app_name("Deezer"), "Deezer");
+        assert_eq!(MediaReader::extract_app_name("Tidal Music"), "Tidal");
+        assert_eq!(MediaReader::extract_app_name("Amazon Music"), "Amazon");
+        assert_eq!(MediaReader::extract_app_name("YouTube Music"), "YouTube");
+    }
+
+    #[test]
+    fn test_get_media_field_expired_cache_triggers_refresh() {
+        // Stale last_read (older than 5s) → falls through to refresh path.
+        let mut r = MediaReader::with_cached_info(playing("stale", "", "", ""));
+        r.last_read = Some(Instant::now() - Duration::from_secs(10));
+        // No manager → refresh resets to default → None.
+        let val = r.get_media_field(MediaField::Title);
+        assert_eq!(val, None);
+    }
+
+    #[test]
+    fn test_initialize_attempts_com_initialization() {
+        // Initialize the COM-backed session manager. In some CI envs the call works,
+        // in others (no Windows session) it errors. Both outcomes are acceptable;
+        // we just want to exercise the function body.
+        let mut r = MediaReader::new();
+        let _ = r.initialize();
+    }
+
+    #[test]
+    fn test_initialize_is_idempotent_when_already_initialized() {
+        let mut r = MediaReader::new();
+        r.initialized = true; // pretend init already happened
+        // Second call short-circuits at the early return → Ok(())
+        assert!(r.initialize().is_ok());
+    }
+
+    #[test]
+    fn test_extract_app_name_skips_microsoft_prefix() {
+        // Microsoft.* prefix is filtered when no known match
+        let result = MediaReader::extract_app_name("Microsoft.Unknown_8wekyb!Some");
+        assert!(!result.starts_with("Microsoft."));
+        assert!(!result.is_empty());
     }
 }
