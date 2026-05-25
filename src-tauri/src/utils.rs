@@ -34,7 +34,9 @@ pub fn run_sensors<'a>(
         }
 
         let sensor: Vec<&str> = sensor_str.split(";").collect();
-        let label = pages_sensors.get(format!("label_{}", k)).unwrap_or_default();
+        let label = pages_sensors
+            .get(format!("label_{}", k))
+            .unwrap_or_default();
         let unit = pages_sensors.get(format!("unit_{}", k)).unwrap_or_default();
         if sensor[0] == "BLANK" {
             labels[k] = label;
@@ -86,11 +88,13 @@ pub fn run_sensors<'a>(
             }
         }
         .value;
-        if let Some(convert) = pages_sensors.get(format!("convert_{}", k)) { match convert {
-            "MB/GB" => value /= 1024.0,
-            "kb/mb" | "KB/MB" => value /= 1024.0,
-            _ => {}
-        } };
+        if let Some(convert) = pages_sensors.get(format!("convert_{}", k)) {
+            match convert {
+                "MB/GB" => value /= 1024.0,
+                "kb/mb" | "KB/MB" => value /= 1024.0,
+                _ => {}
+            }
+        };
         let value_string: String = if decimal {
             format!("{:.1}", &value)
         } else {
@@ -676,11 +680,13 @@ mod tests {
         for (i, l) in labels.iter().enumerate() {
             all_labels[i] = l;
         }
-        let values = ["1".to_string(),
+        let values = [
+            "1".to_string(),
             "2".to_string(),
             "3".to_string(),
             "4".to_string(),
-            "5".to_string()];
+            "5".to_string(),
+        ];
         let mut all_values = vec![String::new(); 15];
         for (i, v) in values.iter().enumerate() {
             all_values[i] = v.clone();

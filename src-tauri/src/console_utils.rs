@@ -10,7 +10,6 @@ pub enum Console {
 }
 
 pub fn console_window(action: Console) {
-    
     use winapi::um::wincon::GetConsoleWindow;
     use winapi::um::winuser::{ShowWindow, SW_HIDE, SW_SHOW};
     let window = unsafe { GetConsoleWindow() };

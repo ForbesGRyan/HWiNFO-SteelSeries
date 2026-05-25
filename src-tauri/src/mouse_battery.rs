@@ -365,7 +365,10 @@ impl MouseBatteryReader {
         }
 
         // Second pass: accept 0 if that's all we have (battery depleted)
-        percentage_candidates.iter().find(|&&candidate| candidate <= 100).copied()
+        percentage_candidates
+            .iter()
+            .find(|&&candidate| candidate <= 100)
+            .copied()
     }
 }
 
