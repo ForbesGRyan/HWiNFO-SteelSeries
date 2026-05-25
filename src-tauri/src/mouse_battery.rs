@@ -754,12 +754,15 @@ fn parse_likely_battery(data: &[u8]) -> Option<u8> {
         }
     }
 
-    // If no non-zero value, check if we have a 0 (could be depleted battery)
-    for &byte in &data[1..] {
+    // If no non-zero value, check if we have a 0 (could be depleted battery).
+    // The current byte's absolute index in `data` is `i + 1` because we skipped
+    // the report-ID echo at `data[0]`. Earlier code searched for the first zero
+    // anywhere in `data` via `position()`, which usually returned 0 when the
+    // report-ID echo itself was 0x00 — falsely reporting "depleted battery" for
+    // any device whose payload contained a stray zero past index 3.
+    for (i, &byte) in data[1..].iter().enumerate() {
         if byte == 0 {
-            // Could be battery at 0%, but also could be padding
-            // Only return if it's one of the first few bytes
-            let index = data.iter().position(|&b| b == byte).unwrap();
+            let index = i + 1;
             if index <= 3 {
                 return Some(0);
             }
@@ -1492,6 +1495,16 @@ mod tests {
     fn test_parse_likely_battery_index_outside_first_four_returns_none() {
         // Zero appearing past index 3 → not battery
         let data = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
+        assert_eq!(parse_likely_battery(&data), None);
+    }
+
+    #[test]
+    fn test_parse_likely_battery_zero_report_id_with_late_zero_returns_none() {
+        // Regression: when data[0] is 0x00 (the report-ID echo), the previous
+        // implementation used `data.iter().position(|&b| b == 0)` to locate the
+        // current zero, which found position 0 and falsely returned Some(0)
+        // even when the only real zero was past index 3.
+        let data = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
         assert_eq!(parse_likely_battery(&data), None);
     }
 }
