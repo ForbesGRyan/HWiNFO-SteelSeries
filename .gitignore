@@ -52,6 +52,7 @@ x64/
 # OS generated files #
 .DS_Store*
 Icon?
+!src-tauri/icons/
 
 # Visual C++ cache files
 ipch/

@@ -1,0 +1,30 @@
+{
+    "productName": "HWiNFO-SteelSeries",
+    "version": "0.1.6",
+    "identifier": "com.forbesg.hwinfo-steelseries",
+    "build": {
+        "beforeDevCommand": "",
+        "beforeBuildCommand": "",
+        "frontendDist": "ui"
+    },
+    "app": {
+        "withGlobalTauri": true,
+        "windows": [
+            {
+                "label": "main",
+                "title": "HWiNFO-SteelSeries Settings",
+                "width": 600,
+                "height": 800,
+                "resizable": true,
+                "fullscreen": false,
+                "visible": false
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": false
+    }
+}

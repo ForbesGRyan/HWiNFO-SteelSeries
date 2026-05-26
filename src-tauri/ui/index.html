@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HWiNFO-SteelSeries Settings</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --text-color: #c9d1d9;
+            --accent-color: #58a6ff;
+            --secondary-bg: #161b22;
+            --tertiary-bg: #1c2026;
+            --border-color: #30363d;
+            --hover-color: #1f6feb;
+            --green: #3fb950;
+            --red: #f85149;
+            --muted: #6e7681;
+            --yellow: #d29922;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        h1 {
+            color: var(--accent-color);
+            font-size: 1.4rem;
+            margin: 0;
+        }
+
+        .section {
+            background-color: var(--secondary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 14px;
+        }
+
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: block;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 5px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 10px;
+            align-items: center;
+        }
+
+        label {
+            font-size: 0.9rem;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select {
+            background-color: var(--bg-color);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            padding: 5px;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        input[type="checkbox"] {
+            width: auto;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 6px 18px;
+            font-size: 0.9rem;
+        }
+
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pill {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .pill.on { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+        .pill.off { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+        .pill.muted { background: rgba(110, 118, 129, 0.2); color: var(--muted); }
+
+        .preview-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            background-color: #000;
+            padding: 14px;
+            border-radius: 8px;
+            border: 2px solid var(--border-color);
+        }
+
+        #oled-preview {
+            width: 384px;
+            height: 192px;
+            image-rendering: pixelated;
+            background-color: #111;
+        }
+
+        .preview-caption {
+            font-size: 0.75rem;
+            color: var(--muted);
+        }
+
+        .live-sensors {
+            font-family: 'Cascadia Mono', Consolas, monospace;
+            font-size: 0.85rem;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px 10px;
+            border-radius: 4px;
+            white-space: pre;
+            min-height: 1.2em;
+        }
+
+        .error-banner {
+            background: rgba(248, 81, 73, 0.12);
+            color: var(--red);
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid rgba(248, 81, 73, 0.3);
+            font-size: 0.9rem;
+            display: none;
+        }
+
+        .error-banner.visible { display: block; }
+
+        .button-group {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        button {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.2s;
+            font-family: inherit;
+        }
+
+        .btn-primary { background-color: var(--hover-color); color: white; }
+        .btn-primary:hover { background-color: var(--accent-color); }
+        .btn-secondary { background-color: var(--secondary-bg); color: var(--text-color); border: 1px solid var(--border-color); }
+        .btn-secondary:hover { background-color: var(--border-color); }
+        .btn-small { padding: 4px 10px; font-size: 0.85rem; font-weight: normal; }
+        .btn-danger { background-color: transparent; color: var(--muted); border: none; padding: 2px 6px; cursor: pointer; }
+        .btn-danger:hover { color: var(--red); }
+
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            padding: 4px 12px;
+            cursor: pointer;
+            border-radius: 4px 4px 0 0;
+            border: 1px solid var(--border-color);
+            background-color: var(--secondary-bg);
+            font-size: 0.85rem;
+            user-select: none;
+        }
+
+        .tab.active {
+            background-color: var(--hover-color);
+            border-color: var(--hover-color);
+            color: white;
+        }
+
+        /* Line card layout */
+        .lines-container { display: flex; flex-direction: column; gap: 10px; }
+        .line-card {
+            background-color: var(--tertiary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px 12px;
+        }
+        .line-header {
+            font-size: 0.8rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .slot-row { display: flex; gap: 8px; }
+        .slot {
+            flex: 1;
+            min-height: 38px;
+            background-color: var(--bg-color);
+            border: 1px dashed var(--border-color);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--muted);
+            font-size: 0.85rem;
+            padding: 4px 8px;
+        }
+        .slot:hover { border-color: var(--accent-color); color: var(--accent-color); }
+        .slot.filled {
+            border-style: solid;
+            border-color: var(--border-color);
+            cursor: default;
+            justify-content: space-between;
+            color: var(--text-color);
+            text-align: left;
+        }
+        .slot-content { flex: 1; min-width: 0; overflow: hidden; }
+        .slot-label { font-weight: bold; font-size: 0.85rem; }
+        .slot-meta { font-size: 0.7rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .slot-actions { display: flex; gap: 4px; }
+
+        /* Inline form */
+        .slot-form {
+            background-color: var(--bg-color);
+            border: 1px solid var(--accent-color);
+            border-radius: 4px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex: 1;
+        }
+        .slot-form-row { display: grid; grid-template-columns: 100px 1fr; align-items: center; gap: 12px; font-size: 0.85rem; }
+        .slot-form-row input[type="text"], .slot-form-row select, .slot-form-row .dropdown-wrapper { width: 100%; }
+        .slot-form-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+        /* Searchable dropdown */
+        .dropdown-wrapper { position: relative; }
+        .dropdown-input { width: 100%; }
+        .dropdown-list {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            min-width: 100%;
+            max-width: 600px;
+            max-height: 420px;
+            overflow-y: auto;
+            background-color: var(--secondary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            margin-top: 2px;
+            z-index: 50;
+            display: none;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+        }
+        .dropdown-list.visible { display: block; }
+        .dropdown-group {
+            padding: 6px 10px;
+            font-size: 0.7rem;
+            color: var(--accent-color);
+            background-color: #11161e;
+            border-bottom: 1px solid var(--border-color);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .dropdown-item {
+            padding: 5px 12px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .dropdown-item:hover, .dropdown-item.focused { background-color: var(--hover-color); color: white; }
+        .dropdown-item .desc { font-size: 0.7rem; color: var(--muted); display: block; }
+        .dropdown-item:hover .desc, .dropdown-item.focused .desc { color: rgba(255,255,255,0.7); }
+
+        .unit-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+        .unit-chip {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            background-color: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .unit-chip:hover { border-color: var(--accent-color); color: var(--accent-color); }
+    </style>
+</head>
+
+<body>
+    <h1>HWiNFO-SteelSeries</h1>
+
+    <div class="error-banner" id="error-banner"></div>
+
+    <div class="section">
+        <span class="section-title">Status</span>
+        <div class="status-grid">
+            <div class="status-row"><span>HWiNFO shared memory</span><span id="st-hwinfo" class="pill off">disconnected</span></div>
+            <div class="status-row"><span>SteelSeries GG</span><span id="st-gg" class="pill off">disconnected</span></div>
+            <div class="status-row"><span>Direct USB (HID)</span><span id="st-usb" class="pill off">disconnected</span></div>
+            <div class="status-row"><span>Active mode</span><span id="st-mode" class="pill muted">—</span></div>
+        </div>
+    </div>
+
+    <div class="section">
+        <span class="section-title">Live Preview</span>
+        <div class="preview-container">
+            <canvas id="oled-preview" width="128" height="64"></canvas>
+            <span class="preview-caption" id="preview-caption">What is currently on the OLED (128×64)</span>
+        </div>
+        <div style="margin-top: 10px;">
+            <div class="live-sensors" id="live-sensors">(waiting for data)</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <span class="section-title">Main Settings</span>
+        <div class="grid">
+            <label for="direct-usb">Direct USB (HID) Mode</label>
+            <input type="checkbox" id="direct-usb">
+
+            <label for="decimal">Show Decimals</label>
+            <input type="checkbox" id="decimal">
+
+            <label for="style">Display Style</label>
+            <select id="style">
+                <option value="Horizontal">Summary (Horizontal)</option>
+                <option value="Vertical">Summary (Vertical)</option>
+                <option value="Custom">Custom Sensors</option>
+            </select>
+
+            <label for="gpu-name" id="gpu-name-label">GPU Name Pattern</label>
+            <input type="text" id="gpu-name" placeholder="Leave empty for auto">
+        </div>
+    </div>
+
+    <div id="custom-sensors-section" class="section" style="display: none;">
+        <span class="section-title">Custom Sensors</span>
+        <div class="grid" style="margin-bottom: 10px;">
+            <label for="pages">Number of Pages</label>
+            <input type="number" id="pages" min="1" max="10">
+
+            <label for="page-time">Page Display Time (s)</label>
+            <input type="number" id="page-time" min="1" max="60">
+
+            <label for="sensors-per-line">Sensors per Line</label>
+            <input type="number" id="sensors-per-line" min="1" max="3">
+        </div>
+
+        <div class="tabs" id="page-tabs"></div>
+
+        <div class="lines-container" id="lines-container"></div>
+    </div>
+
+    <div class="button-group">
+        <button class="btn-secondary" id="btn-reload">Reload from File</button>
+        <button class="btn-primary" id="btn-save">Save Configuration</button>
+    </div>
+
+    <script>
+        const { invoke } = window.__TAURI__.core;
+        const { listen } = window.__TAURI__.event;
+
+        let config = {};
+        let activePage = 0;
+        let sensorCatalog = [];           // full list from list_sensors
+        let editingSlot = null;            // {line, slot} when form open
+        let editingDraft = null;           // {sensor, label, unit, convert}
+
+        const UNIT_SUGGESTIONS = ['°', '°C', '%', 'G', 'GB', 'MB', 'W', 'RPM', 'V', 'MHz', 'rpm'];
+
+        const previewCanvas = document.getElementById('oled-preview');
+        const previewCtx = previewCanvas.getContext('2d');
+
+        // --- Preview rendering ---
+        function renderFrame(pixels) {
+            if (!pixels || pixels.length !== 128 * 64) return;
+            const imgData = previewCtx.createImageData(128, 64);
+            for (let i = 0; i < pixels.length; i++) {
+                const v = pixels[i];
+                imgData.data[i * 4] = v;
+                imgData.data[i * 4 + 1] = v;
+                imgData.data[i * 4 + 2] = v;
+                imgData.data[i * 4 + 3] = 255;
+            }
+            previewCtx.putImageData(imgData, 0, 0);
+        }
+
+        // --- Status ---
+        function setPill(id, on, label) {
+            const el = document.getElementById(id);
+            el.textContent = label;
+            el.className = 'pill ' + (on ? 'on' : 'off');
+        }
+
+        function renderStatus(s) {
+            setPill('st-hwinfo', s.hwinfo_connected, s.hwinfo_connected ? 'connected' : 'disconnected');
+            setPill('st-gg', s.gg_connected, s.gg_connected ? 'connected' : 'disconnected');
+            setPill('st-usb', s.usb_connected, s.usb_connected ? 'connected' : 'disconnected');
+
+            const modeEl = document.getElementById('st-mode');
+            if (s.active_mode === 'game_sense') { modeEl.textContent = 'GameSense'; modeEl.className = 'pill on'; }
+            else if (s.active_mode === 'direct_usb') { modeEl.textContent = 'Direct USB'; modeEl.className = 'pill on'; }
+            else { modeEl.textContent = 'Disconnected'; modeEl.className = 'pill off'; }
+
+            const banner = document.getElementById('error-banner');
+            if (s.last_error) { banner.textContent = s.last_error; banner.classList.add('visible'); }
+            else { banner.classList.remove('visible'); }
+
+            const liveEl = document.getElementById('live-sensors');
+            if (s.sensor_values && s.sensor_values.length > 0) {
+                liveEl.textContent = s.sensor_values.map(v => v.value).join('\n');
+            } else { liveEl.textContent = '(no data)'; }
+        }
+
+        // --- Line count derivation ---
+        function maxLines() {
+            return config.direct_usb ? 5 : 3;
+        }
+
+        // --- Custom sensors flat-index mapping ---
+        // custom_sensors[page] is a flat list. line N, slot M -> index = N * sensors_per_line + M
+        function ensurePage(idx) {
+            while (!Array.isArray(config.custom_sensors) || config.custom_sensors.length <= idx) {
+                if (!Array.isArray(config.custom_sensors)) config.custom_sensors = [];
+                config.custom_sensors.push([]);
+            }
+        }
+        function getSlot(page, line, slot) {
+            ensurePage(page);
+            const idx = line * (config.sensors_per_line || 1) + slot;
+            return config.custom_sensors[page][idx] || null;
+        }
+        function setSlot(page, line, slot, value) {
+            ensurePage(page);
+            const idx = line * (config.sensors_per_line || 1) + slot;
+            while (config.custom_sensors[page].length <= idx) {
+                config.custom_sensors[page].push({ sensor: '', label: '', unit: '', convert: '' });
+            }
+            config.custom_sensors[page][idx] = value;
+        }
+        function clearSlot(page, line, slot) {
+            ensurePage(page);
+            const idx = line * (config.sensors_per_line || 1) + slot;
+            if (config.custom_sensors[page][idx]) {
+                config.custom_sensors[page][idx] = { sensor: '', label: '', unit: '', convert: '' };
+            }
+        }
+
+        // --- Render lines ---
+        function renderLines() {
+            const container = document.getElementById('lines-container');
+            container.replaceChildren();
+
+            const lines = maxLines();
+            const slotsPerLine = parseInt(document.getElementById('sensors-per-line').value) || 1;
+
+            for (let line = 0; line < lines; line++) {
+                const card = document.createElement('div');
+                card.className = 'line-card';
+
+                const header = document.createElement('div');
+                header.className = 'line-header';
+                const editingHere = editingSlot && editingSlot.line === line;
+                header.textContent = editingHere
+                    ? `Line ${line + 1} — Editing slot ${editingSlot.slot + 1}`
+                    : `Line ${line + 1}`;
+                card.appendChild(header);
+
+                if (editingHere) {
+                    // Full-width form occupies the entire line card
+                    card.appendChild(buildSlotForm(line, editingSlot.slot));
+                } else {
+                    const slotRow = document.createElement('div');
+                    slotRow.className = 'slot-row';
+                    for (let slot = 0; slot < slotsPerLine; slot++) {
+                        slotRow.appendChild(buildSlotView(line, slot));
+                    }
+                    card.appendChild(slotRow);
+                }
+
+                container.appendChild(card);
+            }
+
+            schedulePreview();
+        }
+
+        function buildSlotView(line, slot) {
+            const data = getSlot(activePage, line, slot);
+            const el = document.createElement('div');
+            el.className = 'slot' + (data && data.sensor ? ' filled' : '');
+
+            if (data && data.sensor) {
+                const content = document.createElement('div');
+                content.className = 'slot-content';
+                const lbl = document.createElement('div');
+                lbl.className = 'slot-label';
+                lbl.textContent = data.label || data.sensor.split(';')[0];
+                content.appendChild(lbl);
+                const meta = document.createElement('div');
+                meta.className = 'slot-meta';
+                const isSpecial = !data.sensor.includes(';');
+                meta.textContent = isSpecial ? data.sensor : data.sensor.split(';').slice(1).join(';');
+                content.appendChild(meta);
+                el.appendChild(content);
+
+                const actions = document.createElement('div');
+                actions.className = 'slot-actions';
+                const edit = document.createElement('button');
+                edit.className = 'btn-secondary btn-small';
+                edit.textContent = 'Edit';
+                edit.onclick = (e) => { e.stopPropagation(); openSlotForm(line, slot); };
+                actions.appendChild(edit);
+                const del = document.createElement('button');
+                del.className = 'btn-danger';
+                del.textContent = '✕';
+                del.title = 'Remove';
+                del.onclick = (e) => { e.stopPropagation(); clearSlot(activePage, line, slot); renderLines(); };
+                actions.appendChild(del);
+                el.appendChild(actions);
+            } else {
+                el.textContent = '+ Add sensor';
+                el.onclick = () => openSlotForm(line, slot);
+            }
+            return el;
+        }
+
+        async function openSlotForm(line, slot) {
+            const existing = getSlot(activePage, line, slot);
+            editingDraft = existing
+                ? { sensor: existing.sensor, label: existing.label, unit: existing.unit, convert: existing.convert }
+                : { sensor: '', label: '', unit: '', convert: '' };
+            editingSlot = { line, slot };
+            // Always refresh catalog when opening form
+            await loadSensorCatalog();
+            renderLines();
+        }
+
+        function closeSlotForm() {
+            editingSlot = null;
+            editingDraft = null;
+            renderLines();
+        }
+
+        function buildSlotForm(line, slot) {
+            const form = document.createElement('div');
+            form.className = 'slot-form';
+
+            // Sensor row with dropdown
+            const sensorRow = document.createElement('div');
+            sensorRow.className = 'slot-form-row';
+            const sLabel = document.createElement('label');
+            sLabel.textContent = 'Sensor';
+            sensorRow.appendChild(sLabel);
+            sensorRow.appendChild(buildSensorDropdown());
+            form.appendChild(sensorRow);
+
+            // Label
+            const labelRow = document.createElement('div');
+            labelRow.className = 'slot-form-row';
+            const lLabel = document.createElement('label');
+            lLabel.textContent = 'Label';
+            labelRow.appendChild(lLabel);
+            const lInput = document.createElement('input');
+            lInput.type = 'text';
+            lInput.value = editingDraft.label || '';
+            lInput.placeholder = 'Display label (optional)';
+            lInput.oninput = (e) => { editingDraft.label = e.target.value; };
+            labelRow.appendChild(lInput);
+            form.appendChild(labelRow);
+
+            // Unit
+            const unitRow = document.createElement('div');
+            unitRow.className = 'slot-form-row';
+            const uLabel = document.createElement('label');
+            uLabel.textContent = 'Unit';
+            unitRow.appendChild(uLabel);
+
+            const unitWrap = document.createElement('div');
+            unitWrap.style.display = 'flex';
+            unitWrap.style.flexDirection = 'column';
+            unitWrap.style.gap = '4px';
+            const uInput = document.createElement('input');
+            uInput.type = 'text';
+            uInput.value = editingDraft.unit || '';
+            uInput.placeholder = 'e.g. °C, %, GB';
+            uInput.oninput = (e) => { editingDraft.unit = e.target.value; };
+            unitWrap.appendChild(uInput);
+
+            const chips = document.createElement('div');
+            chips.className = 'unit-chips';
+            UNIT_SUGGESTIONS.forEach(u => {
+                const c = document.createElement('span');
+                c.className = 'unit-chip';
+                c.textContent = u;
+                c.onclick = () => { uInput.value = u; editingDraft.unit = u; };
+                chips.appendChild(c);
+            });
+            unitWrap.appendChild(chips);
+            unitRow.appendChild(unitWrap);
+            form.appendChild(unitRow);
+
+            // Conv
+            const convRow = document.createElement('div');
+            convRow.className = 'slot-form-row';
+            const cLabel = document.createElement('label');
+            cLabel.textContent = 'Convert';
+            convRow.appendChild(cLabel);
+            const cSelect = document.createElement('select');
+            [['', 'None'], ['MB/GB', 'MB → GB']].forEach(([val, lab]) => {
+                const opt = document.createElement('option');
+                opt.value = val;
+                opt.textContent = lab;
+                if ((editingDraft.convert || '') === val) opt.selected = true;
+                cSelect.appendChild(opt);
+            });
+            cSelect.onchange = (e) => { editingDraft.convert = e.target.value; };
+            convRow.appendChild(cSelect);
+            form.appendChild(convRow);
+
+            // Actions
+            const actions = document.createElement('div');
+            actions.className = 'slot-form-actions';
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn-secondary btn-small';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = closeSlotForm;
+            actions.appendChild(cancelBtn);
+            const applyBtn = document.createElement('button');
+            applyBtn.className = 'btn-primary btn-small';
+            applyBtn.textContent = 'Apply';
+            applyBtn.onclick = () => {
+                if (!editingDraft.sensor) {
+                    alert('Pick a sensor first.');
+                    return;
+                }
+                setSlot(activePage, line, slot, { ...editingDraft });
+                closeSlotForm();
+            };
+            actions.appendChild(applyBtn);
+            form.appendChild(actions);
+
+            return form;
+        }
+
+        function buildSensorDropdown() {
+            const wrap = document.createElement('div');
+            wrap.className = 'dropdown-wrapper';
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'dropdown-input';
+            input.placeholder = 'Search sensors…';
+            input.value = editingDraft.sensor || '';
+
+            const list = document.createElement('div');
+            list.className = 'dropdown-list';
+
+            let focusedIndex = -1;
+            let filtered = [];
+
+            function rebuild(filter) {
+                list.replaceChildren();
+                const q = (filter || '').toLowerCase();
+                filtered = sensorCatalog.filter(s => {
+                    if (!q) return true;
+                    return s.category.toLowerCase().includes(q)
+                        || s.reading.toLowerCase().includes(q)
+                        || s.full_id.toLowerCase().includes(q);
+                });
+
+                let lastCat = null;
+                filtered.forEach((s, i) => {
+                    if (s.category !== lastCat) {
+                        const grp = document.createElement('div');
+                        grp.className = 'dropdown-group';
+                        grp.textContent = s.category;
+                        list.appendChild(grp);
+                        lastCat = s.category;
+                    }
+                    const it = document.createElement('div');
+                    it.className = 'dropdown-item' + (i === focusedIndex ? ' focused' : '');
+                    const top = document.createElement('div');
+                    top.textContent = s.reading;
+                    it.appendChild(top);
+                    if (s.description) {
+                        const d = document.createElement('span');
+                        d.className = 'desc';
+                        d.textContent = s.description;
+                        it.appendChild(d);
+                    }
+                    it.onmousedown = (e) => {
+                        e.preventDefault();
+                        pick(s);
+                    };
+                    list.appendChild(it);
+                });
+            }
+
+            function pick(s) {
+                editingDraft.sensor = s.full_id;
+                if (!editingDraft.label) editingDraft.label = s.reading;
+                input.value = s.full_id;
+                list.classList.remove('visible');
+                // Re-render lines? Only the slot is open; refresh form to reflect label change
+                renderLines();
+            }
+
+            input.onfocus = () => { rebuild(input.value); list.classList.add('visible'); };
+            input.onblur = () => { setTimeout(() => list.classList.remove('visible'), 150); };
+            input.oninput = () => {
+                focusedIndex = -1;
+                editingDraft.sensor = input.value;
+                rebuild(input.value);
+                list.classList.add('visible');
+            };
+            input.onkeydown = (e) => {
+                if (e.key === 'ArrowDown') { focusedIndex = Math.min(filtered.length - 1, focusedIndex + 1); rebuild(input.value); e.preventDefault(); }
+                else if (e.key === 'ArrowUp') { focusedIndex = Math.max(-1, focusedIndex - 1); rebuild(input.value); e.preventDefault(); }
+                else if (e.key === 'Enter') {
+                    if (focusedIndex >= 0 && filtered[focusedIndex]) { pick(filtered[focusedIndex]); e.preventDefault(); }
+                }
+                else if (e.key === 'Escape') { list.classList.remove('visible'); }
+            };
+
+            rebuild('');
+            wrap.appendChild(input);
+            wrap.appendChild(list);
+            return wrap;
+        }
+
+        // --- Page tabs ---
+        function renderTabs() {
+            const tabs = document.getElementById('page-tabs');
+            tabs.replaceChildren();
+            const numPages = parseInt(document.getElementById('pages').value) || 1;
+            for (let i = 0; i < numPages; i++) {
+                const tab = document.createElement('div');
+                tab.className = `tab ${activePage === i ? 'active' : ''}`;
+                tab.textContent = `Page ${i + 1}`;
+                tab.onclick = () => {
+                    if (editingSlot) closeSlotForm();
+                    activePage = i;
+                    renderTabs();
+                    renderLines();
+                };
+                tabs.appendChild(tab);
+            }
+            if (activePage >= numPages) activePage = 0;
+        }
+
+        // --- Config load/save ---
+        async function loadConfig() {
+            try {
+                config = await invoke('get_config');
+                updateUI();
+            } catch (e) {
+                showError('Failed to load config: ' + e);
+            }
+        }
+
+        async function loadSensorCatalog() {
+            try {
+                sensorCatalog = await invoke('list_sensors');
+            } catch (e) {
+                console.warn('list_sensors failed', e);
+                sensorCatalog = [];
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('direct-usb').checked = !!config.direct_usb;
+            document.getElementById('decimal').checked = !!config.decimal;
+
+            let style = 'Horizontal';
+            if (!config.is_summary) style = 'Custom';
+            else if (config.is_vertical) style = 'Vertical';
+            document.getElementById('style').value = style;
+            document.getElementById('gpu-name').value = config.gpu || '';
+
+            const isCustom = style === 'Custom';
+            document.getElementById('custom-sensors-section').style.display = isCustom ? 'block' : 'none';
+            document.getElementById('gpu-name-label').style.display = isCustom ? 'none' : 'block';
+            document.getElementById('gpu-name').style.display = isCustom ? 'none' : 'block';
+
+            if (isCustom) {
+                document.getElementById('pages').value = config.pages || 1;
+                document.getElementById('page-time').value = config.page_time || 5;
+                document.getElementById('sensors-per-line').value = config.sensors_per_line || 1;
+                if (!Array.isArray(config.custom_sensors)) config.custom_sensors = [[]];
+                renderTabs();
+                renderLines();
+            }
+        }
+
+        document.getElementById('style').addEventListener('change', () => {
+            const style = document.getElementById('style').value;
+            config.is_summary = style !== 'Custom';
+            config.is_vertical = style === 'Vertical';
+            updateUI();
+        });
+
+        document.getElementById('direct-usb').addEventListener('change', (e) => {
+            config.direct_usb = e.target.checked;
+            renderLines();
+        });
+
+        document.getElementById('pages').addEventListener('change', () => {
+            const n = parseInt(document.getElementById('pages').value) || 1;
+            config.pages = n;
+            ensurePage(n - 1);
+            renderTabs();
+            renderLines();
+        });
+
+        document.getElementById('sensors-per-line').addEventListener('change', () => {
+            config.sensors_per_line = parseInt(document.getElementById('sensors-per-line').value) || 1;
+            renderLines();
+        });
+
+        document.getElementById('page-time').addEventListener('change', () => {
+            config.page_time = parseInt(document.getElementById('page-time').value) || 5;
+        });
+
+        document.getElementById('decimal').addEventListener('change', (e) => {
+            config.decimal = e.target.checked;
+            schedulePreview();
+        });
+
+        document.getElementById('btn-save').onclick = async () => {
+            const style = document.getElementById('style').value;
+            config.direct_usb = document.getElementById('direct-usb').checked;
+            config.decimal = document.getElementById('decimal').checked;
+            config.gpu = document.getElementById('gpu-name').value;
+
+            if (style === 'Custom') {
+                config.is_summary = false;
+                config.is_vertical = false;
+                config.pages = parseInt(document.getElementById('pages').value) || 1;
+                config.page_time = parseInt(document.getElementById('page-time').value) || 5;
+                config.sensors_per_line = parseInt(document.getElementById('sensors-per-line').value) || 1;
+            } else {
+                config.is_summary = true;
+                config.is_vertical = style === 'Vertical';
+            }
+
+            try {
+                await invoke('save_config', { config });
+            } catch (e) {
+                showError('Save failed: ' + e);
+            }
+        };
+
+        document.getElementById('btn-reload').onclick = async () => {
+            await loadConfig();
+            await loadSensorCatalog();
+        };
+
+        // --- Live preview ---
+        let previewTimer = null;
+        function schedulePreview() {
+            if (previewTimer) clearTimeout(previewTimer);
+            previewTimer = setTimeout(refreshPreview, 200);
+        }
+
+        async function refreshPreview() {
+            const style = document.getElementById('style').value;
+            if (style !== 'Custom') {
+                document.getElementById('preview-caption').textContent = 'Live OLED output (daemon)';
+                return;
+            }
+            document.getElementById('preview-caption').textContent = 'Editing preview (page ' + (activePage + 1) + ')';
+            try {
+                const previewCfg = JSON.parse(JSON.stringify(config));
+                previewCfg.direct_usb = document.getElementById('direct-usb').checked;
+                previewCfg.decimal = document.getElementById('decimal').checked;
+                previewCfg.sensors_per_line = parseInt(document.getElementById('sensors-per-line').value) || 1;
+                previewCfg.is_summary = false;
+                previewCfg.is_vertical = false;
+                const pixels = await invoke('preview_config', { config: previewCfg, page: activePage });
+                renderFrame(pixels);
+            } catch (e) {
+                console.warn('preview_config failed', e);
+            }
+        }
+
+        function showError(msg) {
+            const banner = document.getElementById('error-banner');
+            banner.textContent = msg;
+            banner.classList.add('visible');
+            console.error(msg);
+        }
+
+        async function init() {
+            if (!window.__TAURI__) { showError('__TAURI__ global missing'); return; }
+            if (!window.__TAURI__.event) { showError('__TAURI__.event missing'); return; }
+
+            try { await loadConfig(); } catch (e) { showError('loadConfig: ' + e); }
+            try { await loadSensorCatalog(); } catch (e) { console.warn('catalog:', e); }
+
+            try {
+                const status = await invoke('get_status');
+                renderStatus(status);
+            } catch (e) { showError('get_status: ' + e); }
+
+            try {
+                const preview = await invoke('get_live_preview');
+                renderFrame(preview);
+            } catch (e) { showError('get_live_preview: ' + e); }
+
+            try {
+                await listen('status', (event) => {
+                    renderStatus(event.payload);
+                    // Backfill catalog once HWiNFO comes online
+                    if (event.payload.hwinfo_connected && sensorCatalog.length <= 7) {
+                        loadSensorCatalog();
+                    }
+                });
+                await listen('frame', (event) => {
+                    // Only forward live frames if we're not in custom mode editing
+                    const style = document.getElementById('style').value;
+                    if (style !== 'Custom') renderFrame(event.payload);
+                });
+            } catch (e) { showError('listen(): ' + e); }
+        }
+
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+
+</html>

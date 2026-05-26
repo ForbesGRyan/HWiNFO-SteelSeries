@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
-      - 'Cargo.toml'
+      - 'src-tauri/src/**'
+      - 'src-tauri/Cargo.toml'
       - 'Cargo.lock'
 
 env:
@@ -33,49 +33,51 @@ jobs:
           winget install --id GitHub.cli --silent --accept-source-agreements
         continue-on-error: true
 
-      - name: Determine next version
+      - name: Determine version
         id: version
         shell: bash
         run: |
-          # Get latest release tag
-          LATEST=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "v0.1.0")
-          echo "Latest release: $LATEST"
+          # Read version from src-tauri/Cargo.toml. Bumping the manifest version
+          # is what publishes a new release; pushes that don't bump it skip.
+          CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CARGO_VERSION" ]; then
+            echo "Could not parse version from src-tauri/Cargo.toml"
+            exit 1
+          fi
+          NEW_VERSION="v${CARGO_VERSION}"
+          echo "Manifest version: $NEW_VERSION"
 
-          # Parse version (v0.1.6 -> 0 1 6)
-          VERSION=${LATEST#v}
-          IFS='.' read -ra PARTS <<< "$VERSION"
-
-          # Increment patch version
-          MAJOR=${PARTS[0]:-0}
-          MINOR=${PARTS[1]:-1}
-          PATCH=${PARTS[2]:-0}
-          NEW_PATCH=$((PATCH + 1))
-
-          NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
-          echo "New version: $NEW_VERSION"
+          PREVIOUS=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+          echo "Previous release: ${PREVIOUS:-<none>}"
 
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "previous=$LATEST" >> $GITHUB_OUTPUT
+          echo "previous=$PREVIOUS" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Check if version already exists
+      - name: Skip if version already released
+        id: gate
         shell: bash
         run: |
           if gh release view ${{ steps.version.outputs.version }} &>/dev/null; then
-            echo "Release ${{ steps.version.outputs.version }} already exists!"
-            exit 1
+            echo "Release ${{ steps.version.outputs.version }} already exists; nothing to do."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
           fi
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Build release binary
+        if: steps.gate.outputs.skip != 'true'
         run: cargo build --release --verbose
 
       - name: Run tests
+        if: steps.gate.outputs.skip != 'true'
         run: cargo test --release --verbose
 
       - name: Prepare release artifacts
+        if: steps.gate.outputs.skip != 'true'
         shell: bash
         run: |
           mkdir -p release
@@ -88,13 +90,15 @@ jobs:
           7z a ../hwinfo-steelseries-oled-${{ steps.version.outputs.version }}-windows-x64.zip *
 
       - name: Generate release notes
+        if: steps.gate.outputs.skip != 'true'
         id: notes
         shell: bash
         run: |
           PREV="${{ steps.version.outputs.previous }}"
 
-          # Generate commit log since last release
-          if [ "$PREV" != "v0.1.0" ]; then
+          # Generate commit log since last release. If there is no previous
+          # release (first run) fall back to the last 10 commits.
+          if [ -n "$PREV" ]; then
             NOTES=$(git log --pretty=format:"- %s (%h)" ${PREV}..HEAD)
           else
             NOTES=$(git log --pretty=format:"- %s (%h)" HEAD~10..HEAD)
@@ -129,6 +133,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
+        if: steps.gate.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
@@ -145,9 +150,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update release summary
+        if: steps.gate.outputs.skip != 'true'
         shell: bash
         run: |
-          echo "### 🎉 Release ${{ steps.version.outputs.version }} Created!" >> $GITHUB_STEP_SUMMARY
+          echo "### Release ${{ steps.version.outputs.version }} Created" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Previous version:** ${{ steps.version.outputs.previous }}" >> $GITHUB_STEP_SUMMARY
           echo "**New version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
