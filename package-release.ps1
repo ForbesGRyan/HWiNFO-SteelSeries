@@ -11,8 +11,8 @@ Write-Host "HWiNFO-SteelSeries Release Packager" -ForegroundColor Cyan
 Write-Host "===================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Get version from Cargo.toml
-$cargoToml = Get-Content "Cargo.toml" -Raw
+# Get version from src-tauri/Cargo.toml (root Cargo.toml is the workspace, no [package])
+$cargoToml = Get-Content "src-tauri\Cargo.toml" -Raw
 if ($cargoToml -match 'version\s*=\s*"([^"]+)"') {
     $version = $matches[1]
 } else {
