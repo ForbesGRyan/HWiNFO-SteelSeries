@@ -2,7 +2,7 @@
 
 Display real-time hardware monitoring data from HWiNFO on your SteelSeries OLED screens. Lightweight, customizable, and easy to configure.
 
-![HWiNFO-SteelSeries OLED Screenshot](/assets/hwinfo-steelseries-oled.png)
+![HWiNFO-SteelSeries OLED Screenshot](src-tauri/assets/hwinfo-steelseries-oled.png)
 
 ## Features
 
@@ -54,12 +54,12 @@ See [Building from Source](#building-from-source) section below.
 
 1. Launch HWiNFO and click **Start with Sensors** checked
 
-   ![HWiNFO Sensors](/assets/hwinfo-sensors.png)
+   ![HWiNFO Sensors](src-tauri/assets/hwinfo-sensors.png)
 
 2. Open HWiNFO Settings (click the gear icon in the Sensors window)
 3. Enable **Shared Memory Support** under the "General" section
 
-   ![HWiNFO Shared Memory](/assets/hwinfo-shared-memory.png)
+   ![HWiNFO Shared Memory](src-tauri/assets/hwinfo-shared-memory.png)
 
 4. Keep HWiNFO running in the background
 
