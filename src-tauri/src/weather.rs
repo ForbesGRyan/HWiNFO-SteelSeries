@@ -228,6 +228,31 @@ pub fn parse(json: &str, units: Units) -> Result<WeatherInfo, anyhow::Error> {
     info.sunrise = astronomy.map(|a| a.sunrise.clone());
     info.sunset = astronomy.map(|a| a.sunset.clone());
 
+    // Forecast days: D1 = weather[0], D2 = weather[1], D3 = weather[2].
+    for (slot, day_index) in (0..=2usize).enumerate() {
+        if let Some(day) = raw.weather.get(day_index) {
+            let condition = day
+                .hourly
+                .get(4)
+                .and_then(|h| h.weather_desc.first())
+                .map(|d| d.value.clone());
+            let precip_chance = day
+                .hourly
+                .iter()
+                .filter_map(|h| h.chanceofrain.parse::<f64>().ok())
+                .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
+                .map(|v| format!("{:.0}", v));
+
+            info.days[slot] = Some(DayForecast {
+                hi: Some(pick(units, &day.maxtemp_c, &day.maxtemp_f).clone()),
+                lo: Some(pick(units, &day.mintemp_c, &day.mintemp_f).clone()),
+                condition_short: condition.as_deref().map(abbreviate_condition),
+                condition,
+                precip_chance,
+            });
+        }
+    }
+
     Ok(info)
 }
 
@@ -655,5 +680,61 @@ mod tests {
     fn parse_returns_error_for_garbage_json() {
         let err = parse("not json at all", Units::Imperial).unwrap_err();
         assert!(format!("{}", err).contains("parse"));
+    }
+
+    #[test]
+    fn parse_populates_three_forecast_days_imperial() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Imperial).unwrap();
+        let d1 = info.days[0].as_ref().expect("D1 missing");
+        let d2 = info.days[1].as_ref().expect("D2 missing");
+        let d3 = info.days[2].as_ref().expect("D3 missing");
+        assert_eq!(d1.hi, Some("78".into()));
+        assert_eq!(d2.hi, Some("75".into()));
+        assert_eq!(d3.hi, Some("73".into()));
+        assert_eq!(d1.lo, Some("61".into()));
+        assert_eq!(d3.lo, Some("57".into()));
+    }
+
+    #[test]
+    fn parse_populates_forecast_condition_and_abbrev() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Imperial).unwrap();
+        let d1 = info.days[0].as_ref().unwrap();
+        let d2 = info.days[1].as_ref().unwrap();
+        let d3 = info.days[2].as_ref().unwrap();
+        // Pulled from hourly[4].weatherDesc[0].value
+        assert_eq!(d1.condition, Some("Partly cloudy".into()));
+        assert_eq!(d1.condition_short, Some("P.Cloudy".into()));
+        assert_eq!(d2.condition, Some("Sunny".into()));
+        assert_eq!(d2.condition_short, Some("Sunny".into()));
+        assert_eq!(d3.condition, Some("Heavy rain".into()));
+        assert_eq!(d3.condition_short, Some("H.Rain".into()));
+    }
+
+    #[test]
+    fn parse_populates_forecast_precip_chance_max() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Imperial).unwrap();
+        let d1 = info.days[0].as_ref().unwrap();
+        let d2 = info.days[1].as_ref().unwrap();
+        let d3 = info.days[2].as_ref().unwrap();
+        assert_eq!(d1.precip_chance, Some("30".into())); // max of 5,10,20,30,25,15,5,0
+        assert_eq!(d2.precip_chance, Some("10".into()));
+        assert_eq!(d3.precip_chance, Some("80".into()));
+    }
+
+    #[test]
+    fn parse_handles_missing_forecast_days() {
+        // Strip out everything past weather[0] (one-day response).
+        let mut value: serde_json::Value = serde_json::from_str(&load_fixture()).unwrap();
+        let arr = value["weather"].as_array_mut().unwrap();
+        arr.truncate(1);
+        let trimmed = serde_json::to_string(&value).unwrap();
+
+        let info = parse(&trimmed, Units::Imperial).unwrap();
+        assert!(info.days[0].is_some());
+        assert!(info.days[1].is_none());
+        assert!(info.days[2].is_none());
     }
 }
