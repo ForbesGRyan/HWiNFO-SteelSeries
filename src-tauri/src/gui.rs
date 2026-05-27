@@ -297,6 +297,7 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
 
         let mut mb = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
 
         if let Err(e) = run_sensors(
             &props,
@@ -307,6 +308,7 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
             config.decimal,
             &mut mb,
             &mut media,
+            &weather,
             None,
         ) {
             let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0);

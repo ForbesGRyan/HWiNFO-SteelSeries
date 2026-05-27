@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use crate::media::{MediaField, MediaReader};
 use crate::mouse_battery::MouseBatteryReader;
+use crate::weather::WeatherReader;
 use hwinfo_steelseries_oled::Hwinfo;
 
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
@@ -17,6 +18,7 @@ pub fn run_sensors<'a>(
     decimal: bool,
     mouse_battery_reader: &mut MouseBatteryReader,
     media_reader: &mut MediaReader,
+    weather_reader: &WeatherReader,
     hid_api: Option<&hidapi::HidApi>,
 ) -> Result<(), anyhow::Error> {
     for k in 0..CUSTOM_SENSORS {
@@ -191,6 +193,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -202,6 +205,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -217,6 +221,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -228,6 +233,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -251,6 +257,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -262,6 +269,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -289,6 +297,7 @@ mod tests {
             is_playing: true,
         };
         let mut media = MediaReader::with_cached_info(info);
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -300,6 +309,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -316,6 +326,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("S", "R", 42.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -327,6 +338,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -345,6 +357,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -356,6 +369,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -375,6 +389,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("CPU [#0]", "Temperature", 42.7)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -386,6 +401,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -401,6 +417,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 42.75)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -412,6 +429,7 @@ mod tests {
             true,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -425,6 +443,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("S", "R", 7.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -436,6 +455,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -449,6 +469,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("MEM", "Used", 8192.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -460,6 +481,7 @@ mod tests {
             true,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -474,6 +496,7 @@ mod tests {
             let hwinfo = build_hwinfo(&[("S", "R", 2048.0)]);
             let mut mouse = MouseBatteryReader::new();
             let mut media = MediaReader::new();
+            let weather = crate::weather::WeatherReader::disabled();
             let (mut labels, mut units, mut values) = empty_buffers();
 
             run_sensors(
@@ -485,6 +508,7 @@ mod tests {
                 true,
                 &mut mouse,
                 &mut media,
+                &weather,
                 None,
             )
             .unwrap();
@@ -499,6 +523,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 50.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -510,6 +535,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -523,6 +549,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -534,6 +561,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -548,6 +576,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -559,6 +588,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -573,6 +603,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("NoSeparator", "X", 1.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -584,6 +615,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -598,6 +630,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 1.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         let err = run_sensors(
@@ -609,6 +642,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap_err();
@@ -621,6 +655,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("S", "R", 10.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -632,6 +667,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -652,6 +688,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 40.0), ("GPU", "Temp", 60.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -663,6 +700,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
