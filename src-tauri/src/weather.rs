@@ -154,6 +154,46 @@ impl WeatherInfo {
     }
 }
 
+/// Map a wttr.in condition string to an ≤8-char abbreviation for the OLED.
+/// Matching is case-insensitive and uses substring contains for "rain"/"snow"/"thunder"
+/// families so wttr.in's variants ("Patchy rain nearby", "Thundery outbreaks possible") map cleanly.
+pub fn abbreviate_condition(condition: &str) -> String {
+    let lower = condition.to_lowercase();
+    let mapped: &str = if lower == "sunny" {
+        "Sunny"
+    } else if lower == "clear" {
+        "Clear"
+    } else if lower == "partly cloudy" {
+        "P.Cloudy"
+    } else if lower == "cloudy" {
+        "Cloudy"
+    } else if lower == "overcast" {
+        "Overcast"
+    } else if lower == "mist" {
+        "Mist"
+    } else if lower == "fog" {
+        "Fog"
+    } else if lower.contains("thunder") {
+        "T.Storm"
+    } else if lower.contains("heavy") && lower.contains("rain") {
+        "H.Rain"
+    } else if lower.contains("moderate") && lower.contains("rain") {
+        "M.Rain"
+    } else if lower.contains("rain") {
+        "L.Rain"
+    } else if lower.contains("heavy") && lower.contains("snow") {
+        "H.Snow"
+    } else if lower.contains("moderate") && lower.contains("snow") {
+        "M.Snow"
+    } else if lower.contains("snow") {
+        "L.Snow"
+    } else {
+        // Unknown — truncate to 8 chars at a char boundary.
+        return condition.chars().take(8).collect();
+    };
+    mapped.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +380,41 @@ mod tests {
         let info = sample_info();
         assert_eq!(info.get(WeatherField::HiD(0)), None);
         assert_eq!(info.get(WeatherField::HiD(4)), None);
+    }
+
+    #[test]
+    fn abbreviate_condition_known_terms() {
+        assert_eq!(abbreviate_condition("Sunny"), "Sunny");
+        assert_eq!(abbreviate_condition("Clear"), "Clear");
+        assert_eq!(abbreviate_condition("Partly cloudy"), "P.Cloudy");
+        assert_eq!(abbreviate_condition("Cloudy"), "Cloudy");
+        assert_eq!(abbreviate_condition("Overcast"), "Overcast");
+        assert_eq!(abbreviate_condition("Mist"), "Mist");
+        assert_eq!(abbreviate_condition("Fog"), "Fog");
+        assert_eq!(abbreviate_condition("Light rain"), "L.Rain");
+        assert_eq!(abbreviate_condition("Patchy rain nearby"), "L.Rain");
+        assert_eq!(abbreviate_condition("Moderate rain"), "M.Rain");
+        assert_eq!(abbreviate_condition("Heavy rain"), "H.Rain");
+        assert_eq!(abbreviate_condition("Light snow"), "L.Snow");
+        assert_eq!(abbreviate_condition("Moderate snow"), "M.Snow");
+        assert_eq!(abbreviate_condition("Heavy snow"), "H.Snow");
+        assert_eq!(abbreviate_condition("Thunderstorm"), "T.Storm");
+        assert_eq!(
+            abbreviate_condition("Thundery outbreaks possible"),
+            "T.Storm"
+        );
+    }
+
+    #[test]
+    fn abbreviate_condition_unknown_truncates_to_8() {
+        assert_eq!(abbreviate_condition("Hail"), "Hail");
+        assert_eq!(abbreviate_condition("Freezing drizzle"), "Freezing");
+        // Exactly 8 chars passes through:
+        assert_eq!(abbreviate_condition("AbcdEfgh"), "AbcdEfgh");
+    }
+
+    #[test]
+    fn abbreviate_condition_empty_returns_empty() {
+        assert_eq!(abbreviate_condition(""), "");
     }
 }
