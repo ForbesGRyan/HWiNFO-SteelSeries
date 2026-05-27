@@ -174,6 +174,9 @@ pub struct HidDeviceInfo {
     pub vendor_id: u16,
     pub product_id: u16,
     pub interface_number: i32,
+    /// Platform HID device path. Stable identifier used to target a
+    /// specific device interface when no USB serial is exposed.
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -253,6 +256,7 @@ pub fn list_hid_devices() -> Result<Vec<HidDeviceInfo>, String> {
             vendor_id: d.vendor_id(),
             product_id: d.product_id(),
             interface_number: d.interface_number(),
+            path: d.path().to_string_lossy().into_owned(),
         })
         .collect())
 }

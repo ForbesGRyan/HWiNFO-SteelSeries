@@ -891,11 +891,22 @@
 
             for (const d of devices) {
                 const opt = document.createElement('option');
-                opt.value = d.serial || '';
+                // Prefer USB serial as the stable identifier; fall back to the
+                // platform HID path (prefixed so the backend can tell them apart)
+                // when the device does not expose a serial.
+                opt.value = d.serial ? d.serial : (d.path ? `path:${d.path}` : '');
                 const label = d.product || `Unknown device ${d.product_id.toString(16)}`;
-                const serialPart = d.serial ? ` — ${d.serial.slice(0, 12)}` : ' — (no serial)';
-                opt.textContent = `${label} [PID 0x${d.product_id.toString(16).padStart(4, '0')}, if ${d.interface_number}]${serialPart}`;
-                if (!d.serial) opt.disabled = true;
+                let tail;
+                if (d.serial) {
+                    tail = ` — ${d.serial.slice(0, 12)}`;
+                } else if (d.path) {
+                    const pathTail = d.path.length > 16 ? `…${d.path.slice(-16)}` : d.path;
+                    tail = ` — (no serial, ${pathTail})`;
+                } else {
+                    tail = ' — (no serial)';
+                }
+                opt.textContent = `${label} [PID 0x${d.product_id.toString(16).padStart(4, '0')}, if ${d.interface_number}]${tail}`;
+                if (!d.serial && !d.path) opt.disabled = true;
                 select.appendChild(opt);
             }
 

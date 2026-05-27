@@ -139,23 +139,38 @@ pub fn list_oled_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
     api.device_list().filter(|d| is_oled_capable(d)).collect()
 }
 
-/// Finds the OLED device matching the optional serial. If serial is empty
-/// or no match, returns the first OLED-capable device.
+/// Finds the OLED device matching the optional selector. Empty selector or
+/// no match returns the first OLED-capable device. A selector prefixed with
+/// `path:` matches against the platform HID device path (used when the
+/// device exposes no USB serial number); otherwise it is matched as a serial.
 pub fn find_hid_device<'a>(
     api: &'a HidApi,
-    serial: &str,
+    selector: &str,
 ) -> Result<&'a hidapi::DeviceInfo, anyhow::Error> {
     let candidates = list_oled_devices(api);
     if candidates.is_empty() {
         return Err(anyhow::anyhow!("No SteelSeries OLED device found"));
     }
+    if let Some(wanted_path) = selector.strip_prefix("path:") {
+        if let Some(d) = candidates
+            .iter()
+            .find(|d| d.path().to_string_lossy() == wanted_path)
+        {
+            return Ok(*d);
+        }
+        warn!(
+            "Configured device path '{}' not present; falling back to first OLED device",
+            wanted_path
+        );
+        return Ok(candidates[0]);
+    }
     let serials: Vec<Option<&str>> = candidates.iter().map(|d| d.serial_number()).collect();
-    match pick_oled_index(&serials, serial) {
+    match pick_oled_index(&serials, selector) {
         Some(idx) => {
-            if !serial.is_empty() && serials[idx] != Some(serial) {
+            if !selector.is_empty() && serials[idx] != Some(selector) {
                 warn!(
                     "Configured device serial '{}' not present; falling back to first OLED device",
-                    serial
+                    selector
                 );
             }
             Ok(candidates[idx])
@@ -534,6 +549,38 @@ mod tests {
         }
         let r = find_hid_device(&api, "FAKE-SERIAL-XYZ");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_find_hid_device_path_selector_matches_when_present() {
+        let Some(api) = try_hid_api_for_connect() else {
+            return;
+        };
+        let candidates = list_oled_devices(&api);
+        let Some(first) = candidates.first() else {
+            // No OLED device present — just verify the path selector still
+            // surfaces the "no device" error rather than panicking.
+            let r = find_hid_device(&api, "path:nonexistent");
+            assert!(r.is_err());
+            return;
+        };
+        let path = first.path().to_string_lossy().into_owned();
+        let r = find_hid_device(&api, &format!("path:{}", path));
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap().path().to_string_lossy(), path);
+    }
+
+    #[test]
+    fn test_find_hid_device_path_selector_falls_back_when_missing() {
+        let Some(api) = try_hid_api_for_connect() else {
+            return;
+        };
+        if list_oled_devices(&api).is_empty() {
+            return;
+        }
+        // Bogus path → fallback to first OLED device, not an error.
+        let r = find_hid_device(&api, "path:does-not-exist");
+        assert!(r.is_ok());
     }
 
     /// Set the bounded retry budget for the current test thread.
