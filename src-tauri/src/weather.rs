@@ -1,6 +1,25 @@
 //! Weather sensor reader. Fetches wttr.in JSON in a background thread,
 //! parses it into a flat WeatherInfo, and serves field lookups via Arc<RwLock>.
 
+/// Unit system selection. Controls which wttr.in field (temp_C vs temp_F, etc.) is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Units {
+    Metric,
+    #[default]
+    Imperial,
+}
+
+impl Units {
+    /// Map a `conf.ini` `units=` string to a `Units`. Unknown values fall back to Imperial.
+    pub fn from_config_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "metric" => Units::Metric,
+            "imperial" => Units::Imperial,
+            _ => Units::default(),
+        }
+    }
+}
+
 /// Identifier for one weather field that can appear in `conf.ini` as a sensor name.
 ///
 /// Current-conditions fields are unit-variants. Forecast fields carry a day index
@@ -416,5 +435,14 @@ mod tests {
     #[test]
     fn abbreviate_condition_empty_returns_empty() {
         assert_eq!(abbreviate_condition(""), "");
+    }
+
+    #[test]
+    fn units_enum_from_str_imperial_default() {
+        assert_eq!(Units::from_config_str("metric"), Units::Metric);
+        assert_eq!(Units::from_config_str("imperial"), Units::Imperial);
+        assert_eq!(Units::from_config_str("METRIC"), Units::Metric);
+        assert_eq!(Units::from_config_str(""), Units::Imperial); // default
+        assert_eq!(Units::from_config_str("bogus"), Units::Imperial); // default
     }
 }

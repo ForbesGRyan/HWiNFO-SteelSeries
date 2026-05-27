@@ -1,0 +1,66 @@
+{
+  "current_condition": [
+    {
+      "FeelsLikeC": "22",
+      "FeelsLikeF": "72",
+      "cloudcover": "25",
+      "humidity": "54",
+      "precipMM": "0.5",
+      "pressure": "1013",
+      "pressureInches": "30",
+      "temp_C": "20",
+      "temp_F": "68",
+      "uvIndex": "6",
+      "visibility": "16",
+      "visibilityMiles": "10",
+      "weatherDesc": [{"value": "Partly cloudy"}],
+      "winddir16Point": "NW",
+      "winddirDegree": "300",
+      "windspeedKmph": "13",
+      "windspeedMiles": "8"
+    }
+  ],
+  "weather": [
+    {
+      "astronomy": [{"sunrise": "06:42 AM", "sunset": "08:14 PM"}],
+      "maxtempC": "26",
+      "maxtempF": "78",
+      "mintempC": "16",
+      "mintempF": "61",
+      "hourly": [
+        {"chanceofrain": "5",  "WindGustKmph": "10", "WindGustMiles": "6"},
+        {"chanceofrain": "10", "WindGustKmph": "12", "WindGustMiles": "7"},
+        {"chanceofrain": "20", "WindGustKmph": "15", "WindGustMiles": "9"},
+        {"chanceofrain": "30", "WindGustKmph": "18", "WindGustMiles": "11"},
+        {"chanceofrain": "25", "WindGustKmph": "24", "WindGustMiles": "15", "weatherDesc": [{"value": "Partly cloudy"}]},
+        {"chanceofrain": "15", "WindGustKmph": "20", "WindGustMiles": "12"},
+        {"chanceofrain": "5",  "WindGustKmph": "16", "WindGustMiles": "10"},
+        {"chanceofrain": "0",  "WindGustKmph": "12", "WindGustMiles": "7"}
+      ]
+    },
+    {
+      "astronomy": [{"sunrise": "06:43 AM", "sunset": "08:13 PM"}],
+      "maxtempC": "24",
+      "maxtempF": "75",
+      "mintempC": "15",
+      "mintempF": "60",
+      "hourly": [
+        {"chanceofrain": "0"}, {"chanceofrain": "0"}, {"chanceofrain": "0"}, {"chanceofrain": "10"},
+        {"chanceofrain": "10", "weatherDesc": [{"value": "Sunny"}]},
+        {"chanceofrain": "5"}, {"chanceofrain": "0"}, {"chanceofrain": "0"}
+      ]
+    },
+    {
+      "astronomy": [{"sunrise": "06:44 AM", "sunset": "08:12 PM"}],
+      "maxtempC": "23",
+      "maxtempF": "73",
+      "mintempC": "14",
+      "mintempF": "57",
+      "hourly": [
+        {"chanceofrain": "40"}, {"chanceofrain": "50"}, {"chanceofrain": "60"}, {"chanceofrain": "70"},
+        {"chanceofrain": "80", "weatherDesc": [{"value": "Heavy rain"}]},
+        {"chanceofrain": "70"}, {"chanceofrain": "50"}, {"chanceofrain": "30"}
+      ]
+    }
+  ]
+}
