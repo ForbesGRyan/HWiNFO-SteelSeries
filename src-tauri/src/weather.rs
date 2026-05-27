@@ -97,8 +97,11 @@ fn parse_day_suffix(name: &str) -> Option<WeatherField> {
     }
 }
 
+use log::{debug, info, warn};
 use serde::Deserialize;
 use std::sync::{Arc, RwLock};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct WttrResponse {
@@ -403,11 +406,81 @@ impl WeatherReader {
         }
     }
 
+    /// Construct a reader for the given config. If `cfg.enabled` is false, returns a disabled
+    /// reader. Otherwise spawns a background thread that refreshes `WeatherInfo` on `cfg.refresh_minutes`.
+    pub fn spawn(cfg: &crate::settings::WeatherConfig) -> Self {
+        if !cfg.enabled {
+            info!("Weather disabled (no [Weather].location in config)");
+            return Self::disabled();
+        }
+        let shared = Arc::new(RwLock::new(None));
+        let url = build_request_url(&cfg.location);
+        let units = cfg.units;
+        let refresh = Duration::from_secs(cfg.refresh_minutes.saturating_mul(60));
+        let shared_clone = Arc::clone(&shared);
+
+        thread::Builder::new()
+            .name("weather-refresh".to_string())
+            .spawn(move || refresh_loop(shared_clone, url, units, refresh))
+            .expect("spawn weather refresh thread");
+
+        Self { shared }
+    }
+
     /// Look up a field from the cached `WeatherInfo`. Returns `None` if no data
     /// has been fetched yet, or the field is unset.
     pub fn get_field(&self, field: WeatherField) -> Option<String> {
         self.shared.read().ok()?.as_ref()?.get(field)
     }
+}
+
+/// Build the wttr.in request URL. Spaces in the location are percent-encoded.
+pub(crate) fn build_request_url(location: &str) -> String {
+    let encoded: String = location
+        .chars()
+        .map(|c| {
+            if c == ' ' {
+                "%20".to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    format!("https://wttr.in/{}?format=j1", encoded)
+}
+
+fn refresh_loop(
+    shared: Arc<RwLock<Option<WeatherInfo>>>,
+    url: String,
+    units: Units,
+    refresh: Duration,
+) {
+    loop {
+        match fetch_and_parse(&url, units) {
+            Ok(info) => {
+                if let Ok(mut guard) = shared.write() {
+                    *guard = Some(info);
+                    debug!("Weather refreshed from {}", url);
+                }
+            }
+            Err(e) => {
+                let snippet = format!("{}", e);
+                let trunc: String = snippet.chars().take(200).collect();
+                warn!("Weather refresh failed: {} (keeping prior data)", trunc);
+            }
+        }
+        thread::sleep(refresh);
+    }
+}
+
+fn fetch_and_parse(url: &str, units: Units) -> Result<WeatherInfo, anyhow::Error> {
+    let body = ureq::get(url)
+        .timeout(Duration::from_secs(10))
+        .call()
+        .map_err(|e| anyhow::anyhow!("HTTP error: {}", e))?
+        .into_string()
+        .map_err(|e| anyhow::anyhow!("read body: {}", e))?;
+    parse(&body, units)
 }
 
 #[cfg(test)]
@@ -787,5 +860,27 @@ mod tests {
         let reader = WeatherReader::disabled();
         assert_eq!(reader.get_field(WeatherField::Temp), None);
         assert_eq!(reader.get_field(WeatherField::HiD(1)), None);
+    }
+
+    #[test]
+    fn reader_spawn_disabled_when_location_empty() {
+        let cfg = crate::settings::WeatherConfig::default();
+        let reader = WeatherReader::spawn(&cfg);
+        // No location → no thread started → no data ever appears.
+        assert_eq!(reader.get_field(WeatherField::Temp), None);
+    }
+
+    #[test]
+    fn build_url_includes_location_and_format() {
+        let url = build_request_url("Seattle,US");
+        assert!(url.starts_with("https://wttr.in/"));
+        assert!(url.contains("Seattle,US"));
+        assert!(url.ends_with("?format=j1"));
+    }
+
+    #[test]
+    fn build_url_percent_encodes_spaces() {
+        let url = build_request_url("New York,US");
+        assert!(url.contains("New%20York,US") || url.contains("New+York,US"));
     }
 }
