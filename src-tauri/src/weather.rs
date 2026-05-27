@@ -165,12 +165,28 @@ struct WttrAstronomy {
 struct WttrHourly {
     #[serde(default)]
     chanceofrain: String,
+    #[serde(default)]
+    chanceofsnow: String,
     #[serde(rename = "WindGustKmph", default)]
     wind_gust_kmph: String,
     #[serde(rename = "WindGustMiles", default)]
     wind_gust_miles: String,
     #[serde(rename = "weatherDesc", default)]
     weather_desc: Vec<WttrDesc>,
+}
+
+impl WttrHourly {
+    /// Combined precipitation chance: max(chanceofrain, chanceofsnow).
+    /// Either field may be empty/missing; missing values count as 0.
+    fn precip_chance(&self) -> Option<f64> {
+        let rain = self.chanceofrain.parse::<f64>().ok();
+        let snow = self.chanceofsnow.parse::<f64>().ok();
+        match (rain, snow) {
+            (Some(r), Some(s)) => Some(r.max(s)),
+            (Some(v), None) | (None, Some(v)) => Some(v),
+            (None, None) => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,7 +234,7 @@ pub fn parse(json: &str, units: Units) -> Result<WeatherInfo, anyhow::Error> {
     info.precip_chance = today
         .hourly
         .iter()
-        .filter_map(|h| h.chanceofrain.parse::<f64>().ok())
+        .filter_map(|h| h.precip_chance())
         .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
         .map(|v| format!("{:.0}", v));
     info.precip_amount = current.precip_mm.parse::<f64>().ok().map(|mm| match units {
@@ -244,7 +260,7 @@ pub fn parse(json: &str, units: Units) -> Result<WeatherInfo, anyhow::Error> {
             let precip_chance = day
                 .hourly
                 .iter()
-                .filter_map(|h| h.chanceofrain.parse::<f64>().ok())
+                .filter_map(|h| h.precip_chance())
                 .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
                 .map(|v| format!("{:.0}", v));
 
@@ -762,6 +778,25 @@ mod tests {
         assert_eq!(info.sunrise, Some("06:42 AM".into()));
         assert_eq!(info.sunset, Some("08:14 PM".into()));
         // Max chanceofrain across day 0 hourly slots:
+        assert_eq!(info.precip_chance, Some("30".into()));
+    }
+
+    #[test]
+    fn precip_chance_takes_max_of_rain_and_snow() {
+        // Inject a snow chance into one hourly slot; precip_chance should pick it up.
+        let mut value: serde_json::Value = serde_json::from_str(&load_fixture()).unwrap();
+        value["weather"][0]["hourly"][3]["chanceofsnow"] = serde_json::Value::String("75".into());
+        let json = serde_json::to_string(&value).unwrap();
+        let info = parse(&json, Units::Imperial).unwrap();
+        // Snow 75 in slot 3 beats max rain 30 → result is 75.
+        assert_eq!(info.precip_chance, Some("75".into()));
+    }
+
+    #[test]
+    fn precip_chance_falls_back_to_rain_when_snow_missing() {
+        // No snow field anywhere → behaves as before, rain max only.
+        let json = load_fixture();
+        let info = parse(&json, Units::Imperial).unwrap();
         assert_eq!(info.precip_chance, Some("30".into()));
     }
 
