@@ -191,6 +191,49 @@ Special sensors don't pull data from HWiNFO - they provide additional functional
   - Example: `03:45pm`
   - Configuration: `sensor_0="CLOCK"`
 
+- **WEATHER_***: Live weather data from [wttr.in](https://wttr.in) (no API key required)
+  - Requires a `[Weather]` section in `conf.ini`:
+    ```ini
+    [Weather]
+    location="Seattle,US"     # or "lat,lon" e.g. "47.6,-122.3"
+    units="imperial"          # metric | imperial
+    refresh_minutes=15        # default 15, minimum 1
+    ```
+  - **Current conditions:**
+    - `WEATHER_TEMP` — current temperature
+    - `WEATHER_FEELS` — feels-like temperature
+    - `WEATHER_HI` / `WEATHER_LO` — today's high / low
+    - `WEATHER_CONDITION` — text condition (e.g., `Partly cloudy`)
+    - `WEATHER_CONDITION_SHORT` — ≤ 8-char abbreviation (e.g., `P.Cloudy`)
+    - `WEATHER_HUMIDITY` — humidity %
+    - `WEATHER_WIND_SPEED` / `WEATHER_WIND_DIR` / `WEATHER_WIND_GUST` — wind info
+    - `WEATHER_PRECIP_CHANCE` — % chance of precipitation today
+    - `WEATHER_PRECIP_AMOUNT` — precipitation amount (mm metric, inches imperial)
+    - `WEATHER_UV` — UV index
+    - `WEATHER_PRESSURE` — barometric pressure (hPa metric, inHg imperial)
+    - `WEATHER_CLOUDS` — cloud cover %
+    - `WEATHER_VISIBILITY` — visibility (km metric, miles imperial)
+    - `WEATHER_SUNRISE` / `WEATHER_SUNSET` — formatted time strings (e.g., `06:42 AM`)
+  - **3-day forecast** (suffix `_D1` = tomorrow, `_D2` = day after, `_D3` = day after that):
+    - `WEATHER_HI_D{n}` / `WEATHER_LO_D{n}` — high / low for day n
+    - `WEATHER_CONDITION_D{n}` / `WEATHER_CONDITION_SHORT_D{n}` — condition text / abbreviation
+    - `WEATHER_PRECIP_CHANCE_D{n}` — % chance of precipitation for day n
+  - Configuration example:
+    ```ini
+    sensor_0="WEATHER_TEMP"
+    label_0="Out:"
+    unit_0="°F"
+
+    sensor_1="WEATHER_CONDITION_SHORT"
+    label_1=""
+    unit_1=""
+
+    sensor_2="WEATHER_HI_D1"
+    label_2="Tmrw"
+    unit_2="°"
+    ```
+  - Data refreshes in a background thread; if the network is unavailable, the last good value is kept on screen. If no `[Weather]` section is configured, all `WEATHER_*` sensor slots hide.
+
 - **BLANK**: Empty sensor slot for spacing/alignment
   - Useful for multi-sensor layouts
   - Configuration: `sensor_0="BLANK"`
