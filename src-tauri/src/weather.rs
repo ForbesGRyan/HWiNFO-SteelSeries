@@ -228,8 +228,9 @@ pub fn parse(json: &str, units: Units) -> Result<WeatherInfo, anyhow::Error> {
     info.sunrise = astronomy.map(|a| a.sunrise.clone());
     info.sunset = astronomy.map(|a| a.sunset.clone());
 
-    // Forecast days: D1 = weather[0], D2 = weather[1], D3 = weather[2].
-    for (slot, day_index) in (0..=2usize).enumerate() {
+    // Forecast days: D1 = weather[1], D2 = weather[2], D3 = weather[3]
+    // (weather[0] is today, already used for info.hi/info.lo etc).
+    for (slot, day_index) in (1..=3usize).enumerate() {
         if let Some(day) = raw.weather.get(day_index) {
             let condition = day
                 .hourly
@@ -684,16 +685,18 @@ mod tests {
 
     #[test]
     fn parse_populates_three_forecast_days_imperial() {
+        // D1 = weather[1] (tomorrow), D2 = weather[2], D3 = weather[3].
+        // weather[0] is today and feeds info.hi/info.lo, not days[].
         let json = load_fixture();
         let info = parse(&json, Units::Imperial).unwrap();
         let d1 = info.days[0].as_ref().expect("D1 missing");
         let d2 = info.days[1].as_ref().expect("D2 missing");
         let d3 = info.days[2].as_ref().expect("D3 missing");
-        assert_eq!(d1.hi, Some("78".into()));
-        assert_eq!(d2.hi, Some("75".into()));
-        assert_eq!(d3.hi, Some("73".into()));
-        assert_eq!(d1.lo, Some("61".into()));
-        assert_eq!(d3.lo, Some("57".into()));
+        assert_eq!(d1.hi, Some("75".into())); // weather[1].maxtempF
+        assert_eq!(d2.hi, Some("73".into())); // weather[2].maxtempF
+        assert_eq!(d3.hi, Some("70".into())); // weather[3].maxtempF
+        assert_eq!(d1.lo, Some("60".into()));
+        assert_eq!(d3.lo, Some("55".into()));
     }
 
     #[test]
@@ -703,13 +706,13 @@ mod tests {
         let d1 = info.days[0].as_ref().unwrap();
         let d2 = info.days[1].as_ref().unwrap();
         let d3 = info.days[2].as_ref().unwrap();
-        // Pulled from hourly[4].weatherDesc[0].value
-        assert_eq!(d1.condition, Some("Partly cloudy".into()));
-        assert_eq!(d1.condition_short, Some("P.Cloudy".into()));
-        assert_eq!(d2.condition, Some("Sunny".into()));
-        assert_eq!(d2.condition_short, Some("Sunny".into()));
-        assert_eq!(d3.condition, Some("Heavy rain".into()));
-        assert_eq!(d3.condition_short, Some("H.Rain".into()));
+        // Pulled from weather[1..=3].hourly[4].weatherDesc[0].value
+        assert_eq!(d1.condition, Some("Sunny".into()));
+        assert_eq!(d1.condition_short, Some("Sunny".into()));
+        assert_eq!(d2.condition, Some("Heavy rain".into()));
+        assert_eq!(d2.condition_short, Some("H.Rain".into()));
+        assert_eq!(d3.condition, Some("Cloudy".into()));
+        assert_eq!(d3.condition_short, Some("Cloudy".into()));
     }
 
     #[test]
@@ -719,21 +722,21 @@ mod tests {
         let d1 = info.days[0].as_ref().unwrap();
         let d2 = info.days[1].as_ref().unwrap();
         let d3 = info.days[2].as_ref().unwrap();
-        assert_eq!(d1.precip_chance, Some("30".into())); // max of 5,10,20,30,25,15,5,0
-        assert_eq!(d2.precip_chance, Some("10".into()));
-        assert_eq!(d3.precip_chance, Some("80".into()));
+        assert_eq!(d1.precip_chance, Some("10".into())); // weather[1] hourly max
+        assert_eq!(d2.precip_chance, Some("80".into())); // weather[2] hourly max
+        assert_eq!(d3.precip_chance, Some("25".into())); // weather[3] hourly max
     }
 
     #[test]
     fn parse_handles_missing_forecast_days() {
-        // Strip out everything past weather[0] (one-day response).
+        // Truncate to weather[0] only (a "today-only" response). No D1/D2/D3 data available.
         let mut value: serde_json::Value = serde_json::from_str(&load_fixture()).unwrap();
         let arr = value["weather"].as_array_mut().unwrap();
         arr.truncate(1);
         let trimmed = serde_json::to_string(&value).unwrap();
 
         let info = parse(&trimmed, Units::Imperial).unwrap();
-        assert!(info.days[0].is_some());
+        assert!(info.days[0].is_none());
         assert!(info.days[1].is_none());
         assert!(info.days[2].is_none());
     }

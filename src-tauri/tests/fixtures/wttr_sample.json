@@ -61,6 +61,18 @@
         {"chanceofrain": "80", "weatherDesc": [{"value": "Heavy rain"}]},
         {"chanceofrain": "70"}, {"chanceofrain": "50"}, {"chanceofrain": "30"}
       ]
+    },
+    {
+      "astronomy": [{"sunrise": "06:45 AM", "sunset": "08:11 PM"}],
+      "maxtempC": "21",
+      "maxtempF": "70",
+      "mintempC": "13",
+      "mintempF": "55",
+      "hourly": [
+        {"chanceofrain": "10"}, {"chanceofrain": "15"}, {"chanceofrain": "20"}, {"chanceofrain": "20"},
+        {"chanceofrain": "25", "weatherDesc": [{"value": "Cloudy"}]},
+        {"chanceofrain": "20"}, {"chanceofrain": "15"}, {"chanceofrain": "10"}
+      ]
     }
   ]
 }
