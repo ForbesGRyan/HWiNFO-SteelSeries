@@ -71,6 +71,23 @@ pub fn run_sensors<'a>(
                 }
             }
             continue;
+        } else if let Some(weather_field) =
+            crate::weather::WeatherField::from_sensor_name(sensor[0])
+        {
+            match weather_reader.get_field(weather_field) {
+                Some(value) => {
+                    labels[k] = label;
+                    units[k] = unit;
+                    values[k] = value;
+                }
+                None => {
+                    // No data yet, or field unset → hide sensor slot (matches MEDIA_* pattern).
+                    labels[k] = "";
+                    units[k] = "";
+                    values[k] = String::new();
+                }
+            }
+            continue;
         }
         if sensor.len() < 2 {
             error!("Malformed sensor entry (missing ';'): {}", sensor_str);
@@ -185,6 +202,151 @@ mod tests {
             vec![""; CUSTOM_SENSORS],
             vec![String::new(); CUSTOM_SENSORS],
         )
+    }
+
+    fn weather_with_info() -> crate::weather::WeatherReader {
+        let mut info = crate::weather::WeatherInfo::default();
+        info.temp = Some("72".into());
+        info.condition_short = Some("P.Cloudy".into());
+        info.days[0] = Some(crate::weather::DayForecast {
+            hi: Some("75".into()),
+            lo: Some("60".into()),
+            condition: Some("Sunny".into()),
+            condition_short: Some("Sunny".into()),
+            precip_chance: Some("10".into()),
+        });
+        crate::weather::WeatherReader::with_cached_info(info)
+    }
+
+    #[test]
+    fn test_run_sensors_weather_temp_returns_cached() {
+        let props = make_props(&[
+            ("sensor_0", "WEATHER_TEMP"),
+            ("label_0", "Out"),
+            ("unit_0", "°F"),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let weather = weather_with_info();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            &weather,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(labels[0], "Out");
+        assert_eq!(units[0], "°F");
+        assert_eq!(values[0], "72");
+    }
+
+    #[test]
+    fn test_run_sensors_weather_forecast_day_field() {
+        let props = make_props(&[
+            ("sensor_0", "WEATHER_HI_D1"),
+            ("label_0", "Tmrw"),
+            ("unit_0", "°"),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let weather = weather_with_info();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            &weather,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(labels[0], "Tmrw");
+        assert_eq!(units[0], "°");
+        assert_eq!(values[0], "75");
+    }
+
+    #[test]
+    fn test_run_sensors_weather_hides_when_no_data() {
+        let props = make_props(&[
+            ("sensor_0", "WEATHER_TEMP"),
+            ("label_0", "Out"),
+            ("unit_0", "°F"),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            &weather,
+            None,
+        )
+        .unwrap();
+
+        // No data → sensor hides (empty label/unit/value).
+        assert_eq!(labels[0], "");
+        assert_eq!(units[0], "");
+        assert_eq!(values[0], "");
+    }
+
+    #[test]
+    fn test_run_sensors_weather_unset_field_hides() {
+        // Reader has *some* info but temp is None → sensor hides.
+        let info = crate::weather::WeatherInfo::default(); // every field None
+        let weather = crate::weather::WeatherReader::with_cached_info(info);
+
+        let props = make_props(&[
+            ("sensor_0", "WEATHER_TEMP"),
+            ("label_0", "T"),
+            ("unit_0", "°F"),
+        ]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            &weather,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(labels[0], "");
+        assert_eq!(values[0], "");
     }
 
     #[test]
