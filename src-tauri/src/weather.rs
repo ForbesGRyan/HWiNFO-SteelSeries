@@ -98,6 +98,7 @@ fn parse_day_suffix(name: &str) -> Option<WeatherField> {
 }
 
 use serde::Deserialize;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Deserialize)]
 struct WttrResponse {
@@ -378,6 +379,35 @@ pub fn abbreviate_condition(condition: &str) -> String {
         return condition.chars().take(8).collect();
     };
     mapped.to_string()
+}
+
+/// Reads weather data for `run_sensors`. Backed by a shared cache that the
+/// refresh thread writes; this reader only reads.
+pub struct WeatherReader {
+    shared: Arc<RwLock<Option<WeatherInfo>>>,
+}
+
+impl WeatherReader {
+    /// Construct a reader with no data and no refresh thread. All field lookups return `None`.
+    /// Used when `[Weather]` is not configured.
+    pub fn disabled() -> Self {
+        Self {
+            shared: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Test-only constructor with a pre-populated cache.
+    pub fn with_cached_info(info: WeatherInfo) -> Self {
+        Self {
+            shared: Arc::new(RwLock::new(Some(info))),
+        }
+    }
+
+    /// Look up a field from the cached `WeatherInfo`. Returns `None` if no data
+    /// has been fetched yet, or the field is unset.
+    pub fn get_field(&self, field: WeatherField) -> Option<String> {
+        self.shared.read().ok()?.as_ref()?.get(field)
+    }
 }
 
 #[cfg(test)]
@@ -739,5 +769,23 @@ mod tests {
         assert!(info.days[0].is_none());
         assert!(info.days[1].is_none());
         assert!(info.days[2].is_none());
+    }
+
+    #[test]
+    fn reader_with_cached_info_returns_field() {
+        let info = sample_info();
+        let reader = WeatherReader::with_cached_info(info);
+        assert_eq!(reader.get_field(WeatherField::Temp), Some("72".into()));
+        assert_eq!(
+            reader.get_field(WeatherField::ConditionShort),
+            Some("P.Cloudy".into())
+        );
+    }
+
+    #[test]
+    fn reader_new_disabled_returns_none() {
+        let reader = WeatherReader::disabled();
+        assert_eq!(reader.get_field(WeatherField::Temp), None);
+        assert_eq!(reader.get_field(WeatherField::HiD(1)), None);
     }
 }
