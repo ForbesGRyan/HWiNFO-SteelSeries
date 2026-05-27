@@ -22,6 +22,8 @@ mod mouse_battery;
 
 mod media;
 
+mod weather;
+
 mod render;
 
 mod state;
