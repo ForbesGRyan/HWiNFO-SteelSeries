@@ -97,6 +97,147 @@ fn parse_day_suffix(name: &str) -> Option<WeatherField> {
     }
 }
 
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct WttrResponse {
+    current_condition: Vec<WttrCurrent>,
+    weather: Vec<WttrDay>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WttrCurrent {
+    #[serde(rename = "FeelsLikeC")]
+    feels_c: String,
+    #[serde(rename = "FeelsLikeF")]
+    feels_f: String,
+    cloudcover: String,
+    humidity: String,
+    #[serde(rename = "precipMM")]
+    precip_mm: String,
+    pressure: String,
+    #[serde(rename = "pressureInches")]
+    pressure_inches: String,
+    #[serde(rename = "temp_C")]
+    temp_c: String,
+    #[serde(rename = "temp_F")]
+    temp_f: String,
+    #[serde(rename = "uvIndex")]
+    uv_index: String,
+    visibility: String,
+    #[serde(rename = "visibilityMiles")]
+    visibility_miles: String,
+    #[serde(rename = "weatherDesc")]
+    weather_desc: Vec<WttrDesc>,
+    #[serde(rename = "winddir16Point")]
+    wind_dir_16: String,
+    #[serde(rename = "windspeedKmph")]
+    windspeed_kmph: String,
+    #[serde(rename = "windspeedMiles")]
+    windspeed_miles: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WttrDay {
+    astronomy: Vec<WttrAstronomy>,
+    #[serde(rename = "maxtempC")]
+    maxtemp_c: String,
+    #[serde(rename = "maxtempF")]
+    maxtemp_f: String,
+    #[serde(rename = "mintempC")]
+    mintemp_c: String,
+    #[serde(rename = "mintempF")]
+    mintemp_f: String,
+    hourly: Vec<WttrHourly>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WttrAstronomy {
+    sunrise: String,
+    sunset: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WttrHourly {
+    #[serde(default)]
+    chanceofrain: String,
+    #[serde(rename = "WindGustKmph", default)]
+    wind_gust_kmph: String,
+    #[serde(rename = "WindGustMiles", default)]
+    wind_gust_miles: String,
+    #[serde(rename = "weatherDesc", default)]
+    weather_desc: Vec<WttrDesc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WttrDesc {
+    value: String,
+}
+
+/// Parse a wttr.in `format=j1` response into a `WeatherInfo`, applying unit selection.
+/// Forecast days are populated by Task 7; this task only covers current-conditions fields.
+pub fn parse(json: &str, units: Units) -> Result<WeatherInfo, anyhow::Error> {
+    let raw: WttrResponse = serde_json::from_str(json)
+        .map_err(|e| anyhow::anyhow!("failed to parse wttr.in response: {}", e))?;
+
+    let current = raw
+        .current_condition
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("wttr.in response missing current_condition"))?;
+    let today = raw
+        .weather
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("wttr.in response missing weather[0]"))?;
+    let astronomy = today.astronomy.first();
+
+    let mut info = WeatherInfo::default();
+
+    info.temp = Some(pick(units, &current.temp_c, &current.temp_f).clone());
+    info.feels = Some(pick(units, &current.feels_c, &current.feels_f).clone());
+    info.hi = Some(pick(units, &today.maxtemp_c, &today.maxtemp_f).clone());
+    info.lo = Some(pick(units, &today.mintemp_c, &today.mintemp_f).clone());
+
+    let condition = current.weather_desc.first().map(|d| d.value.clone());
+    info.condition_short = condition.as_deref().map(abbreviate_condition);
+    info.condition = condition;
+
+    info.humidity = Some(current.humidity.clone());
+    info.wind_speed = Some(pick(units, &current.windspeed_kmph, &current.windspeed_miles).clone());
+    info.wind_dir = Some(current.wind_dir_16.clone());
+    info.wind_gust = today
+        .hourly
+        .iter()
+        .map(|h| pick(units, &h.wind_gust_kmph, &h.wind_gust_miles))
+        .filter_map(|s| s.parse::<f64>().ok())
+        .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
+        .map(|v| format!("{:.0}", v));
+    info.precip_chance = today
+        .hourly
+        .iter()
+        .filter_map(|h| h.chanceofrain.parse::<f64>().ok())
+        .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
+        .map(|v| format!("{:.0}", v));
+    info.precip_amount = current.precip_mm.parse::<f64>().ok().map(|mm| match units {
+        Units::Metric => format!("{:.1}", mm),
+        Units::Imperial => format!("{:.1}", mm / 25.4),
+    });
+    info.uv = Some(current.uv_index.clone());
+    info.pressure = Some(pick(units, &current.pressure, &current.pressure_inches).clone());
+    info.clouds = Some(current.cloudcover.clone());
+    info.visibility = Some(pick(units, &current.visibility, &current.visibility_miles).clone());
+    info.sunrise = astronomy.map(|a| a.sunrise.clone());
+    info.sunset = astronomy.map(|a| a.sunset.clone());
+
+    Ok(info)
+}
+
+fn pick<'a>(units: Units, metric: &'a String, imperial: &'a String) -> &'a String {
+    match units {
+        Units::Metric => metric,
+        Units::Imperial => imperial,
+    }
+}
+
 /// One day's forecast slice. All fields are `Option<String>` so missing data
 /// hides the sensor rather than rendering a placeholder.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -444,5 +585,75 @@ mod tests {
         assert_eq!(Units::from_config_str("METRIC"), Units::Metric);
         assert_eq!(Units::from_config_str(""), Units::Imperial); // default
         assert_eq!(Units::from_config_str("bogus"), Units::Imperial); // default
+    }
+
+    fn load_fixture() -> String {
+        std::fs::read_to_string("tests/fixtures/wttr_sample.json")
+            .expect("fixture file missing — run cargo test from src-tauri/ directory")
+    }
+
+    #[test]
+    fn parse_imperial_picks_fahrenheit_and_miles() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Imperial).unwrap();
+        assert_eq!(info.temp, Some("68".into()));
+        assert_eq!(info.feels, Some("72".into()));
+        assert_eq!(info.hi, Some("78".into()));
+        assert_eq!(info.lo, Some("61".into()));
+        assert_eq!(info.wind_speed, Some("8".into()));
+        assert_eq!(info.wind_gust, Some("15".into())); // max of day 0 hourly[*].WindGustMiles
+        assert_eq!(info.visibility, Some("10".into()));
+        assert_eq!(info.pressure, Some("30".into()));
+    }
+
+    #[test]
+    fn parse_metric_picks_celsius_and_kmph() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Metric).unwrap();
+        assert_eq!(info.temp, Some("20".into()));
+        assert_eq!(info.feels, Some("22".into()));
+        assert_eq!(info.hi, Some("26".into()));
+        assert_eq!(info.lo, Some("16".into()));
+        assert_eq!(info.wind_speed, Some("13".into()));
+        assert_eq!(info.wind_gust, Some("24".into()));
+        assert_eq!(info.visibility, Some("16".into()));
+        assert_eq!(info.pressure, Some("1013".into()));
+    }
+
+    #[test]
+    fn parse_extracts_unit_agnostic_fields() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Imperial).unwrap();
+        assert_eq!(info.humidity, Some("54".into()));
+        assert_eq!(info.wind_dir, Some("NW".into()));
+        assert_eq!(info.uv, Some("6".into()));
+        assert_eq!(info.clouds, Some("25".into()));
+        assert_eq!(info.condition, Some("Partly cloudy".into()));
+        assert_eq!(info.condition_short, Some("P.Cloudy".into()));
+        assert_eq!(info.sunrise, Some("06:42 AM".into()));
+        assert_eq!(info.sunset, Some("08:14 PM".into()));
+        // Max chanceofrain across day 0 hourly slots:
+        assert_eq!(info.precip_chance, Some("30".into()));
+    }
+
+    #[test]
+    fn parse_precip_amount_converts_to_inches_when_imperial() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Imperial).unwrap();
+        // 0.5 mm / 25.4 = 0.0196... → rounded to 1 decimal = "0.0"
+        assert_eq!(info.precip_amount, Some("0.0".into()));
+    }
+
+    #[test]
+    fn parse_precip_amount_kept_as_mm_when_metric() {
+        let json = load_fixture();
+        let info = parse(&json, Units::Metric).unwrap();
+        assert_eq!(info.precip_amount, Some("0.5".into()));
+    }
+
+    #[test]
+    fn parse_returns_error_for_garbage_json() {
+        let err = parse("not json at all", Units::Imperial).unwrap_err();
+        assert!(format!("{}", err).contains("parse"));
     }
 }
