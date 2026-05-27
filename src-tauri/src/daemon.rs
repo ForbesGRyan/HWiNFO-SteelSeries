@@ -764,7 +764,7 @@ fn _arc_assert(_: Arc<()>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::AppConfig;
+    use crate::settings::{AppConfig, WeatherConfig};
     use hwinfo_steelseries_oled::{
         HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
     };
@@ -827,6 +827,7 @@ mod tests {
             direct_usb: false,
             direct_usb_serial: String::new(),
             custom_sensors: Vec::new(),
+            weather: WeatherConfig::default(),
         }
     }
 

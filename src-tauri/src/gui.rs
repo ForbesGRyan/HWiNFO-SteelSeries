@@ -369,7 +369,7 @@ pub fn request_white_screen(state: State<Shared>) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::render::OledBuffer;
-    use crate::settings::CustomSensor;
+    use crate::settings::{CustomSensor, WeatherConfig};
     use hwinfo_steelseries_oled::{
         Hwinfo, HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
     };
@@ -387,6 +387,7 @@ mod tests {
             direct_usb: false,
             direct_usb_serial: String::new(),
             custom_sensors: Vec::new(),
+            weather: WeatherConfig::default(),
         }
     }
 
