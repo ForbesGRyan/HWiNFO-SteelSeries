@@ -84,33 +84,102 @@ mod tests {
 
     #[test]
     fn from_sensor_name_parses_each_current_field() {
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_TEMP"), Some(WeatherField::Temp));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_FEELS"), Some(WeatherField::Feels));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_HI"), Some(WeatherField::Hi));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_LO"), Some(WeatherField::Lo));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_CONDITION"), Some(WeatherField::Condition));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_CONDITION_SHORT"), Some(WeatherField::ConditionShort));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_HUMIDITY"), Some(WeatherField::Humidity));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_WIND_SPEED"), Some(WeatherField::WindSpeed));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_WIND_DIR"), Some(WeatherField::WindDir));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_WIND_GUST"), Some(WeatherField::WindGust));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_PRECIP_CHANCE"), Some(WeatherField::PrecipChance));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_PRECIP_AMOUNT"), Some(WeatherField::PrecipAmount));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_UV"), Some(WeatherField::Uv));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_PRESSURE"), Some(WeatherField::Pressure));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_CLOUDS"), Some(WeatherField::Clouds));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_VISIBILITY"), Some(WeatherField::Visibility));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_SUNRISE"), Some(WeatherField::Sunrise));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_SUNSET"), Some(WeatherField::Sunset));
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_TEMP"),
+            Some(WeatherField::Temp)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_FEELS"),
+            Some(WeatherField::Feels)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_HI"),
+            Some(WeatherField::Hi)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_LO"),
+            Some(WeatherField::Lo)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_CONDITION"),
+            Some(WeatherField::Condition)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_CONDITION_SHORT"),
+            Some(WeatherField::ConditionShort)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_HUMIDITY"),
+            Some(WeatherField::Humidity)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_WIND_SPEED"),
+            Some(WeatherField::WindSpeed)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_WIND_DIR"),
+            Some(WeatherField::WindDir)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_WIND_GUST"),
+            Some(WeatherField::WindGust)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_PRECIP_CHANCE"),
+            Some(WeatherField::PrecipChance)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_PRECIP_AMOUNT"),
+            Some(WeatherField::PrecipAmount)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_UV"),
+            Some(WeatherField::Uv)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_PRESSURE"),
+            Some(WeatherField::Pressure)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_CLOUDS"),
+            Some(WeatherField::Clouds)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_VISIBILITY"),
+            Some(WeatherField::Visibility)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_SUNRISE"),
+            Some(WeatherField::Sunrise)
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_SUNSET"),
+            Some(WeatherField::Sunset)
+        );
     }
 
     #[test]
     fn from_sensor_name_parses_day_variants() {
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_HI_D1"), Some(WeatherField::HiD(1)));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_LO_D2"), Some(WeatherField::LoD(2)));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_CONDITION_D3"), Some(WeatherField::ConditionD(3)));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_CONDITION_SHORT_D1"), Some(WeatherField::ConditionShortD(1)));
-        assert_eq!(WeatherField::from_sensor_name("WEATHER_PRECIP_CHANCE_D2"), Some(WeatherField::PrecipChanceD(2)));
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_HI_D1"),
+            Some(WeatherField::HiD(1))
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_LO_D2"),
+            Some(WeatherField::LoD(2))
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_CONDITION_D3"),
+            Some(WeatherField::ConditionD(3))
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_CONDITION_SHORT_D1"),
+            Some(WeatherField::ConditionShortD(1))
+        );
+        assert_eq!(
+            WeatherField::from_sensor_name("WEATHER_PRECIP_CHANCE_D2"),
+            Some(WeatherField::PrecipChanceD(2))
+        );
     }
 
     #[test]
