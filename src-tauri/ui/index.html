@@ -360,6 +360,9 @@
             <label for="direct-usb">Direct USB (HID) Mode</label>
             <input type="checkbox" id="direct-usb">
 
+            <label for="device-select" id="device-select-label" style="display: none;">USB Device</label>
+            <select id="device-select" style="display: none;"></select>
+
             <label for="decimal">Show Decimals</label>
             <input type="checkbox" id="decimal">
 
@@ -812,6 +815,8 @@
         function updateUI() {
             document.getElementById('direct-usb').checked = !!config.direct_usb;
             document.getElementById('decimal').checked = !!config.decimal;
+            updateDevicePickerVisibility();
+            if (config.direct_usb) refreshDeviceList();
 
             let style = 'Horizontal';
             if (!config.is_summary) style = 'Custom';
@@ -843,8 +848,62 @@
 
         document.getElementById('direct-usb').addEventListener('change', (e) => {
             config.direct_usb = e.target.checked;
+            updateDevicePickerVisibility();
+            if (e.target.checked) refreshDeviceList();
             renderLines();
         });
+
+        document.getElementById('device-select').addEventListener('change', (e) => {
+            config.direct_usb_serial = e.target.value;
+        });
+
+        function updateDevicePickerVisibility() {
+            const visible = !!document.getElementById('direct-usb').checked;
+            document.getElementById('device-select-label').style.display = visible ? 'block' : 'none';
+            document.getElementById('device-select').style.display = visible ? 'block' : 'none';
+        }
+
+        async function refreshDeviceList() {
+            const select = document.getElementById('device-select');
+            select.replaceChildren();
+
+            let devices = [];
+            try {
+                devices = await invoke('list_hid_devices');
+            } catch (e) {
+                console.warn('list_hid_devices failed', e);
+            }
+
+            if (devices.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = 'No SteelSeries OLED devices detected';
+                opt.disabled = true;
+                select.appendChild(opt);
+                return;
+            }
+
+            // "Auto (first match)" sentinel
+            const autoOpt = document.createElement('option');
+            autoOpt.value = '';
+            autoOpt.textContent = 'Auto (first match)';
+            select.appendChild(autoOpt);
+
+            for (const d of devices) {
+                const opt = document.createElement('option');
+                opt.value = d.serial || '';
+                const label = d.product || `Unknown device ${d.product_id.toString(16)}`;
+                const serialPart = d.serial ? ` — ${d.serial.slice(0, 12)}` : ' — (no serial)';
+                opt.textContent = `${label} [PID 0x${d.product_id.toString(16).padStart(4, '0')}, if ${d.interface_number}]${serialPart}`;
+                if (!d.serial) opt.disabled = true;
+                select.appendChild(opt);
+            }
+
+            // Select the currently configured serial if it's in the list
+            const wanted = config.direct_usb_serial || '';
+            const found = Array.from(select.options).find(o => o.value === wanted);
+            select.value = found ? wanted : '';
+        }
 
         document.getElementById('pages').addEventListener('change', () => {
             const n = parseInt(document.getElementById('pages').value) || 1;
