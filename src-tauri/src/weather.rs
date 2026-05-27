@@ -78,6 +78,82 @@ fn parse_day_suffix(name: &str) -> Option<WeatherField> {
     }
 }
 
+/// One day's forecast slice. All fields are `Option<String>` so missing data
+/// hides the sensor rather than rendering a placeholder.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DayForecast {
+    pub hi: Option<String>,
+    pub lo: Option<String>,
+    pub condition: Option<String>,
+    pub condition_short: Option<String>,
+    pub precip_chance: Option<String>,
+}
+
+/// Parsed snapshot of the current weather plus a 3-day forecast.
+/// Stored values are already unit-converted strings ready for the OLED.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WeatherInfo {
+    pub temp: Option<String>,
+    pub feels: Option<String>,
+    pub hi: Option<String>,
+    pub lo: Option<String>,
+    pub condition: Option<String>,
+    pub condition_short: Option<String>,
+    pub humidity: Option<String>,
+    pub wind_speed: Option<String>,
+    pub wind_dir: Option<String>,
+    pub wind_gust: Option<String>,
+    pub precip_chance: Option<String>,
+    pub precip_amount: Option<String>,
+    pub uv: Option<String>,
+    pub pressure: Option<String>,
+    pub clouds: Option<String>,
+    pub visibility: Option<String>,
+    pub sunrise: Option<String>,
+    pub sunset: Option<String>,
+    /// Indexed 0..3 representing D1, D2, D3 (tomorrow, day-after, day-after-that).
+    pub days: [Option<DayForecast>; 3],
+}
+
+impl WeatherInfo {
+    /// Look up a single field for the OLED. Returns `None` if the field is unset
+    /// or the requested forecast day is missing.
+    pub fn get(&self, field: WeatherField) -> Option<String> {
+        match field {
+            WeatherField::Temp => self.temp.clone(),
+            WeatherField::Feels => self.feels.clone(),
+            WeatherField::Hi => self.hi.clone(),
+            WeatherField::Lo => self.lo.clone(),
+            WeatherField::Condition => self.condition.clone(),
+            WeatherField::ConditionShort => self.condition_short.clone(),
+            WeatherField::Humidity => self.humidity.clone(),
+            WeatherField::WindSpeed => self.wind_speed.clone(),
+            WeatherField::WindDir => self.wind_dir.clone(),
+            WeatherField::WindGust => self.wind_gust.clone(),
+            WeatherField::PrecipChance => self.precip_chance.clone(),
+            WeatherField::PrecipAmount => self.precip_amount.clone(),
+            WeatherField::Uv => self.uv.clone(),
+            WeatherField::Pressure => self.pressure.clone(),
+            WeatherField::Clouds => self.clouds.clone(),
+            WeatherField::Visibility => self.visibility.clone(),
+            WeatherField::Sunrise => self.sunrise.clone(),
+            WeatherField::Sunset => self.sunset.clone(),
+            WeatherField::HiD(d) => self.day(d).and_then(|f| f.hi.clone()),
+            WeatherField::LoD(d) => self.day(d).and_then(|f| f.lo.clone()),
+            WeatherField::ConditionD(d) => self.day(d).and_then(|f| f.condition.clone()),
+            WeatherField::ConditionShortD(d) => self.day(d).and_then(|f| f.condition_short.clone()),
+            WeatherField::PrecipChanceD(d) => self.day(d).and_then(|f| f.precip_chance.clone()),
+        }
+    }
+
+    fn day(&self, d: u8) -> Option<&DayForecast> {
+        if !(1..=3).contains(&d) {
+            return None;
+        }
+        self.days[(d - 1) as usize].as_ref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +270,75 @@ mod tests {
         assert_eq!(WeatherField::from_sensor_name("WEATHER_HI_DX"), None);
         // Wrong prefix:
         assert_eq!(WeatherField::from_sensor_name("WEATHER_TEMP_D1"), None);
+    }
+
+    fn sample_info() -> WeatherInfo {
+        let mut info = WeatherInfo::default();
+        info.temp = Some("72".into());
+        info.feels = Some("74".into());
+        info.hi = Some("78".into());
+        info.lo = Some("61".into());
+        info.condition = Some("Partly cloudy".into());
+        info.condition_short = Some("P.Cloudy".into());
+        info.humidity = Some("54".into());
+        info.wind_speed = Some("8".into());
+        info.wind_dir = Some("NW".into());
+        info.wind_gust = Some("15".into());
+        info.precip_chance = Some("30".into());
+        info.precip_amount = Some("0.2".into());
+        info.uv = Some("6".into());
+        info.pressure = Some("1013".into());
+        info.clouds = Some("25".into());
+        info.visibility = Some("10".into());
+        info.sunrise = Some("06:42 AM".into());
+        info.sunset = Some("08:14 PM".into());
+        info.days[0] = Some(DayForecast {
+            hi: Some("75".into()),
+            lo: Some("60".into()),
+            condition: Some("Sunny".into()),
+            condition_short: Some("Sunny".into()),
+            precip_chance: Some("10".into()),
+        });
+        info
+    }
+
+    #[test]
+    fn get_returns_current_field_when_present() {
+        let info = sample_info();
+        assert_eq!(info.get(WeatherField::Temp), Some("72".into()));
+        assert_eq!(
+            info.get(WeatherField::Condition),
+            Some("Partly cloudy".into())
+        );
+        assert_eq!(info.get(WeatherField::Sunrise), Some("06:42 AM".into()));
+    }
+
+    #[test]
+    fn get_returns_none_for_unset_field() {
+        let info = WeatherInfo::default();
+        assert_eq!(info.get(WeatherField::Temp), None);
+        assert_eq!(info.get(WeatherField::HiD(1)), None);
+    }
+
+    #[test]
+    fn get_returns_forecast_field_when_day_present() {
+        let info = sample_info();
+        assert_eq!(info.get(WeatherField::HiD(1)), Some("75".into()));
+        assert_eq!(info.get(WeatherField::ConditionD(1)), Some("Sunny".into()));
+        assert_eq!(info.get(WeatherField::PrecipChanceD(1)), Some("10".into()));
+    }
+
+    #[test]
+    fn get_returns_none_for_missing_day() {
+        let info = sample_info(); // only day 0 populated
+        assert_eq!(info.get(WeatherField::HiD(2)), None);
+        assert_eq!(info.get(WeatherField::HiD(3)), None);
+    }
+
+    #[test]
+    fn get_returns_none_for_out_of_range_day_index() {
+        let info = sample_info();
+        assert_eq!(info.get(WeatherField::HiD(0)), None);
+        assert_eq!(info.get(WeatherField::HiD(4)), None);
     }
 }
