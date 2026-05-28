@@ -47,8 +47,13 @@ pub fn run_sensors<'a>(
         } else if sensor[0] == "CLOCK" {
             labels[k] = label;
             units[k] = unit;
+            let fmt = sensor
+                .get(1)
+                .copied()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("%I:%M:%S %P");
             let now = Local::now();
-            values[k] = now.format("%I:%M:%S %P").to_string();
+            values[k] = now.format(fmt).to_string();
             continue;
         } else if sensor[0] == "DATE" {
             labels[k] = label;
@@ -418,6 +423,35 @@ mod tests {
             && values[0].chars().nth(5) == Some(':')
             && (values[0].ends_with("am") || values[0].ends_with("pm"));
         assert!(re_like, "unexpected CLOCK value: {}", values[0]);
+    }
+
+    #[test]
+    fn test_run_sensors_clock_custom_format() {
+        let props = make_props(&[("sensor_0", "CLOCK;%H:%M"), ("label_0", ""), ("unit_0", "")]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            &weather,
+            None,
+        )
+        .unwrap();
+
+        // HH:MM, 24-hour, no seconds, no am/pm
+        assert_eq!(values[0].len(), 5);
+        assert_eq!(values[0].chars().nth(2), Some(':'));
+        assert!(!values[0].ends_with("am") && !values[0].ends_with("pm"));
     }
 
     #[test]

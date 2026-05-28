@@ -557,6 +557,11 @@ impl<R: Runtime> Daemon<R> {
         let new_config = AppConfig::from_ini(&ini)?;
         self.config = new_config.clone();
 
+        // Respawn the weather reader so [Weather] changes (location/units/refresh)
+        // take effect without an app restart. Stop the old thread first.
+        self.weather_reader.stop();
+        self.weather_reader = crate::weather::WeatherReader::spawn(&self.config.weather);
+
         // Tear down existing OLED connection
         if let Some(mut oled) = self.oled.take() {
             let _ = oled.stop_heartbeat();

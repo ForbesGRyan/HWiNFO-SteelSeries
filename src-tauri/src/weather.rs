@@ -99,6 +99,7 @@ fn parse_day_suffix(name: &str) -> Option<WeatherField> {
 
 use log::{debug, info, warn};
 use serde::Deserialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -404,6 +405,7 @@ pub fn abbreviate_condition(condition: &str) -> String {
 /// refresh thread writes; this reader only reads.
 pub struct WeatherReader {
     shared: Arc<RwLock<Option<WeatherInfo>>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl WeatherReader {
@@ -412,6 +414,7 @@ impl WeatherReader {
     pub fn disabled() -> Self {
         Self {
             shared: Arc::new(RwLock::new(None)),
+            stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -419,6 +422,7 @@ impl WeatherReader {
     pub fn with_cached_info(info: WeatherInfo) -> Self {
         Self {
             shared: Arc::new(RwLock::new(Some(info))),
+            stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -430,17 +434,25 @@ impl WeatherReader {
             return Self::disabled();
         }
         let shared = Arc::new(RwLock::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
         let url = build_request_url(&cfg.location);
         let units = cfg.units;
         let refresh = Duration::from_secs(cfg.refresh_minutes.saturating_mul(60));
         let shared_clone = Arc::clone(&shared);
+        let stop_clone = Arc::clone(&stop);
 
         thread::Builder::new()
             .name("weather-refresh".to_string())
-            .spawn(move || refresh_loop(shared_clone, url, units, refresh))
+            .spawn(move || refresh_loop(shared_clone, stop_clone, url, units, refresh))
             .expect("spawn weather refresh thread");
 
-        Self { shared }
+        Self { shared, stop }
+    }
+
+    /// Signal the refresh thread (if any) to exit. Used before replacing the reader
+    /// on config reload so the old thread does not keep polling wttr.in.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 
     /// Look up a field from the cached `WeatherInfo`. Returns `None` if no data
@@ -467,11 +479,12 @@ pub(crate) fn build_request_url(location: &str) -> String {
 
 fn refresh_loop(
     shared: Arc<RwLock<Option<WeatherInfo>>>,
+    stop: Arc<AtomicBool>,
     url: String,
     units: Units,
     refresh: Duration,
 ) {
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         match fetch_and_parse(&url, units) {
             Ok(info) => {
                 if let Ok(mut guard) = shared.write() {
@@ -485,7 +498,15 @@ fn refresh_loop(
                 warn!("Weather refresh failed: {} (keeping prior data)", trunc);
             }
         }
-        thread::sleep(refresh);
+        // Sleep in short ticks so a stop signal is honored promptly instead of
+        // blocking for the full refresh interval.
+        let mut remaining = refresh;
+        let tick = Duration::from_secs(1);
+        while remaining > Duration::ZERO && !stop.load(Ordering::Relaxed) {
+            let step = remaining.min(tick);
+            thread::sleep(step);
+            remaining -= step;
+        }
     }
 }
 

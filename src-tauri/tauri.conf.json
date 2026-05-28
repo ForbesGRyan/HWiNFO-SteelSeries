@@ -13,8 +13,9 @@
             {
                 "label": "main",
                 "title": "HWiNFO-SteelSeries Settings",
-                "width": 600,
-                "height": 800,
+                "width": 720,
+                "height": 900,
+                "center": true,
                 "resizable": true,
                 "fullscreen": false,
                 "visible": false
