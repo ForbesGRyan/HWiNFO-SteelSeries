@@ -378,6 +378,22 @@
         </div>
     </div>
 
+    <div id="font-size-section" class="section">
+        <span class="section-title">Line Font Sizes (Direct USB)</span>
+        <div class="grid">
+            <label for="font-line1">Line 1</label>
+            <select id="font-line1" class="font-line-select"></select>
+            <label for="font-line2">Line 2</label>
+            <select id="font-line2" class="font-line-select"></select>
+            <label for="font-line3">Line 3</label>
+            <select id="font-line3" class="font-line-select"></select>
+            <label for="font-line4">Line 4</label>
+            <select id="font-line4" class="font-line-select"></select>
+            <label for="font-line5">Line 5</label>
+            <select id="font-line5" class="font-line-select"></select>
+        </div>
+    </div>
+
     <div id="custom-sensors-section" class="section" style="display: none;">
         <span class="section-title">Custom Sensors</span>
         <div class="grid" style="margin-bottom: 10px;">
@@ -837,6 +853,15 @@
                 renderTabs();
                 renderLines();
             }
+
+            populateFontSelects();
+            if (!Array.isArray(config.font_sizes) || config.font_sizes.length !== FONT_LINES) {
+                config.font_sizes = ['medium', 'medium', 'medium', 'medium', 'medium'];
+            }
+            for (let i = 1; i <= FONT_LINES; i++) {
+                document.getElementById('font-line' + i).value = config.font_sizes[i - 1] || 'medium';
+            }
+            updateFontSectionVisibility();
         }
 
         document.getElementById('style').addEventListener('change', () => {
@@ -845,6 +870,25 @@
             config.is_vertical = style === 'Vertical';
             updateUI();
         });
+
+        const FONT_LINES = 5;
+        function populateFontSelects() {
+            for (let i = 1; i <= FONT_LINES; i++) {
+                const sel = document.getElementById('font-line' + i);
+                if (sel.options.length) continue;
+                for (const v of ['small', 'medium', 'large']) {
+                    const opt = document.createElement('option');
+                    opt.value = v;
+                    opt.textContent = v.charAt(0).toUpperCase() + v.slice(1);
+                    sel.appendChild(opt);
+                }
+            }
+        }
+
+        function updateFontSectionVisibility() {
+            const on = !!document.getElementById('direct-usb').checked;
+            document.getElementById('font-size-section').style.display = on ? 'block' : 'none';
+        }
 
         document.getElementById('direct-usb').addEventListener('change', (e) => {
             config.direct_usb = e.target.checked;
@@ -861,6 +905,7 @@
             const visible = !!document.getElementById('direct-usb').checked;
             document.getElementById('device-select-label').style.display = visible ? 'block' : 'none';
             document.getElementById('device-select').style.display = visible ? 'block' : 'none';
+            updateFontSectionVisibility();
         }
 
         async function refreshDeviceList() {
@@ -953,6 +998,11 @@
             } else {
                 config.is_summary = true;
                 config.is_vertical = style === 'Vertical';
+            }
+
+            config.font_sizes = [];
+            for (let i = 1; i <= FONT_LINES; i++) {
+                config.font_sizes.push(document.getElementById('font-line' + i).value || 'medium');
             }
 
             try {
