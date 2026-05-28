@@ -321,6 +321,25 @@ This is particularly useful for memory sensors that HWiNFO reports in MB but you
 - With `convert_0="MB/GB"` and `unit_0="G"`
 - Display shows: `16G`
 
+### Per-Line Font Size (Direct USB)
+
+When using **Direct USB** output, each display line can use a different font size:
+
+- **Small** (9pt), **Medium** (12pt, default), **Large** (18pt)
+
+Set these in the GUI under "Line Font Sizes (Direct USB)" (visible only in Direct USB mode), or directly in `conf.ini`:
+
+```ini
+[Main]
+font_line1 = large
+font_line2 = medium
+font_line3 = small
+font_line4 = medium
+font_line5 = medium
+```
+
+Font size only affects the Direct USB render path. In GameSense mode, SteelSeries GG controls the font and this setting has no effect. Large fonts reduce how many lines fit on the 128x64 screen; lines past the bottom edge are clipped.
+
 ### Configuration Options Reference
 
 | Option | Description | Default | Values |
@@ -335,6 +354,7 @@ This is particularly useful for memory sensors that HWiNFO reports in MB but you
 | `label_X` | Display label for sensor | - | Any text (can be empty) |
 | `unit_X` | Unit to display after value | - | Any text (°, %, W, G, etc.) |
 | `convert_X` | Unit conversion | None | `MB/GB`, `kb/mb` |
+| `font_lineX` | Per-line font size (Direct USB only), X = 1-5 | `medium` | `small`, `medium`, `large` |
 
 ## Troubleshooting
 
