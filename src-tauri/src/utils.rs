@@ -48,6 +48,17 @@ pub fn run_sensors<'a>(
             let now = Local::now();
             values[k] = now.format("%I:%M:%S %P").to_string();
             continue;
+        } else if sensor[0] == "DATE" {
+            labels[k] = label;
+            units[k] = unit;
+            let fmt = sensor
+                .get(1)
+                .copied()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("%Y-%m-%d");
+            let now = Local::now();
+            values[k] = now.format(fmt).to_string();
+            continue;
         } else if sensor[0] == "MOUSE_BATTERY" {
             labels[k] = label;
             units[k] = unit;
@@ -239,6 +250,61 @@ mod tests {
             && values[0].chars().nth(5) == Some(':')
             && (values[0].ends_with("am") || values[0].ends_with("pm"));
         assert!(re_like, "unexpected CLOCK value: {}", values[0]);
+    }
+
+    #[test]
+    fn test_run_sensors_date_default_format() {
+        let props = make_props(&[("sensor_0", "DATE"), ("label_0", "D"), ("unit_0", "")]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(labels[0], "D");
+        // YYYY-MM-DD
+        assert_eq!(values[0].len(), 10);
+        assert_eq!(values[0].chars().nth(4), Some('-'));
+        assert_eq!(values[0].chars().nth(7), Some('-'));
+    }
+
+    #[test]
+    fn test_run_sensors_date_custom_format() {
+        let props = make_props(&[("sensor_0", "DATE;%m/%d/%Y"), ("label_0", ""), ("unit_0", "")]);
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let (mut labels, mut units, mut values) = empty_buffers();
+
+        run_sensors(
+            &props,
+            &mut labels,
+            &mut units,
+            &mut values,
+            &hwinfo,
+            false,
+            &mut mouse,
+            &mut media,
+            None,
+        )
+        .unwrap();
+
+        // MM/DD/YYYY
+        assert_eq!(values[0].len(), 10);
+        assert_eq!(values[0].chars().nth(2), Some('/'));
+        assert_eq!(values[0].chars().nth(5), Some('/'));
     }
 
     #[test]
