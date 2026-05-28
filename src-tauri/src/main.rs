@@ -553,10 +553,7 @@ mod tests {
 
     #[test]
     fn test_wants_open_settings() {
-        assert!(wants_open_settings(&[
-            "prog".into(),
-            "--settings".into()
-        ]));
+        assert!(wants_open_settings(&["prog".into(), "--settings".into()]));
         assert!(wants_open_settings(&[
             "prog".into(),
             "--other".into(),
