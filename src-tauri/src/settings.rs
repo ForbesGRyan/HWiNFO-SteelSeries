@@ -208,6 +208,17 @@ impl AppConfig {
                                     .get(format!("convert_{}", k))
                                     .unwrap_or("")
                                     .to_string();
+                                // Preserve index gaps: empty slots between
+                                // sensors map to flat positions (line * spl +
+                                // slot), so pad up to k before inserting.
+                                while page_sensors.len() < k {
+                                    page_sensors.push(CustomSensor {
+                                        sensor: String::new(),
+                                        label: String::new(),
+                                        unit: String::new(),
+                                        convert: String::new(),
+                                    });
+                                }
                                 page_sensors.push(CustomSensor {
                                     sensor: sensor.to_string(),
                                     label,
@@ -1057,6 +1068,28 @@ mod tests {
         let config = AppConfig::from_ini(&ini).unwrap();
         assert!(config.font_sizes.iter().all(|f| *f == FontSize::Medium));
         assert_eq!(config.font_sizes.len(), crate::consts::DISPLAY_LINES);
+    }
+
+    #[test]
+    fn test_from_ini_preserves_sensor_index_gaps() {
+        // sensor_0 + sensor_3 (e.g. DATE on line 1, CLOCK on line 2 with
+        // sensors_per_line=3) must reconstruct with the gap intact, so the
+        // flat index `line * spl + slot` still maps CLOCK to line 2 slot 0.
+        let mut ini = Ini::new();
+        ini.with_section(Some("Main"))
+            .set("style", "custom")
+            .set("pages", "1")
+            .set("sensors_per_line", "3");
+        ini.with_section(Some("PAGE1.Sensors"))
+            .set("sensor_0", "DATE")
+            .set("sensor_3", "CLOCK");
+        let config = AppConfig::from_ini(&ini).unwrap();
+        let page = &config.custom_sensors[0];
+        assert_eq!(page.len(), 4, "gap slots must be preserved");
+        assert_eq!(page[0].sensor, "DATE");
+        assert_eq!(page[1].sensor, "");
+        assert_eq!(page[2].sensor, "");
+        assert_eq!(page[3].sensor, "CLOCK");
     }
 }
 
