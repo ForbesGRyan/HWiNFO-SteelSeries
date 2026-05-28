@@ -394,6 +394,26 @@
         </div>
     </div>
 
+    <div class="section">
+        <span class="section-title">Weather</span>
+        <div class="grid">
+            <label for="weather-enabled">Enable Weather Sensors</label>
+            <input type="checkbox" id="weather-enabled">
+
+            <label class="weather-field" for="weather-location">Location</label>
+            <input class="weather-field" type="text" id="weather-location" placeholder="e.g. Seattle,US or 98101">
+
+            <label class="weather-field" for="weather-units">Units</label>
+            <select class="weather-field" id="weather-units">
+                <option value="imperial">Imperial (°F, mph)</option>
+                <option value="metric">Metric (°C, km/h)</option>
+            </select>
+
+            <label class="weather-field" for="weather-refresh">Refresh Interval (min)</label>
+            <input class="weather-field" type="number" id="weather-refresh" min="1" max="1440">
+        </div>
+    </div>
+
     <div id="custom-sensors-section" class="section" style="display: none;">
         <span class="section-title">Custom Sensors</span>
         <div class="grid" style="margin-bottom: 10px;">
@@ -762,11 +782,8 @@
 
             function pick(s) {
                 editingDraft.sensor = s.full_id;
-                if (!editingDraft.label) editingDraft.label = s.reading;
                 input.value = s.full_id;
                 list.classList.remove('visible');
-                // Re-render lines? Only the slot is open; refresh form to reflect label change
-                renderLines();
             }
 
             input.onfocus = () => { rebuild(input.value); list.classList.add('visible'); };
@@ -865,7 +882,25 @@
                 document.getElementById('font-line' + i).value = config.font_sizes[i - 1] || 'medium';
             }
             updateFontSectionVisibility();
+
+            if (!config.weather || typeof config.weather !== 'object') {
+                config.weather = { enabled: false, location: '', units: 'imperial', refresh_minutes: 15 };
+            }
+            document.getElementById('weather-enabled').checked = !!config.weather.enabled;
+            document.getElementById('weather-location').value = config.weather.location || '';
+            document.getElementById('weather-units').value = config.weather.units === 'metric' ? 'metric' : 'imperial';
+            document.getElementById('weather-refresh').value = config.weather.refresh_minutes || 15;
+            updateWeatherFieldsVisibility();
         }
+
+        function updateWeatherFieldsVisibility() {
+            const on = document.getElementById('weather-enabled').checked;
+            document.querySelectorAll('.weather-field').forEach(el => {
+                el.style.display = on ? '' : 'none';
+            });
+        }
+
+        document.getElementById('weather-enabled').addEventListener('change', updateWeatherFieldsVisibility);
 
         document.getElementById('style').addEventListener('change', () => {
             const style = document.getElementById('style').value;
@@ -1006,6 +1041,13 @@
             for (let i = 1; i <= FONT_LINES; i++) {
                 config.font_sizes.push(document.getElementById('font-line' + i).value || 'medium');
             }
+
+            config.weather = {
+                enabled: document.getElementById('weather-enabled').checked,
+                location: document.getElementById('weather-location').value.trim(),
+                units: document.getElementById('weather-units').value === 'metric' ? 'metric' : 'imperial',
+                refresh_minutes: parseInt(document.getElementById('weather-refresh').value) || 15,
+            };
 
             try {
                 await invoke('save_config', { config });
