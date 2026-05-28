@@ -187,9 +187,14 @@ To find sensor names:
 
 Special sensors don't pull data from HWiNFO - they provide additional functionality:
 
-- **CLOCK**: Displays current time (12-hour format with am/pm)
-  - Example: `03:45pm`
+- **CLOCK**: Displays current time
+  - Default format: `12-hour with seconds and am/pm` (e.g., `03:45:09 pm`)
   - Configuration: `sensor_0="CLOCK"`
+  - Custom format: append a [chrono strftime](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) string after `;`
+    - 24-hour: `sensor_0="CLOCK;%H:%M"` → `15:45`
+    - No seconds: `sensor_0="CLOCK;%I:%M %p"` → `03:45 PM`
+    - With seconds (24-hour): `sensor_0="CLOCK;%H:%M:%S"` → `15:45:09`
+  - See the **Format specifiers (CLOCK & DATE)** entry below for the full list.
 
 - **WEATHER_***: Live weather data from [wttr.in](https://wttr.in) (no API key required)
   - Requires a `[Weather]` section in `conf.ini`:
@@ -241,59 +246,55 @@ Special sensors don't pull data from HWiNFO - they provide additional functional
     - US: `sensor_0="DATE;%m/%d/%Y"` → `05/27/2026`
     - EU: `sensor_0="DATE;%d/%m/%Y"` → `27/05/2026`
     - Short: `sensor_0="DATE;%b %d"` → `May 27`
+  - See the **Format specifiers (CLOCK & DATE)** entry below for the full list.
+
+- **Format specifiers (CLOCK & DATE)**: both special sensors accept a [chrono strftime](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) string after a `;`. Any literal text passes through unchanged (e.g. `DATE;Day %j of %Y` → `Day 148 of 2026`). The most useful specifiers:
+
+  **Date**
+
+  | Spec | Example | Meaning |
+  |------|---------|---------|
+  | `%Y` | `2026` | 4-digit year |
+  | `%y` | `26` | 2-digit year |
+  | `%m` | `05` | month, zero-padded |
+  | `%d` | `28` | day, zero-padded |
+  | `%e` | `28` | day, space-padded |
+  | `%B` | `May` | full month name |
+  | `%b` / `%h` | `May` | abbreviated month |
+  | `%A` | `Thursday` | full weekday |
+  | `%a` | `Thu` | abbreviated weekday |
+  | `%j` | `148` | day of year |
+
+  **Time**
+
+  | Spec | Example | Meaning |
+  |------|---------|---------|
+  | `%H` | `14` | hour, 24-hour |
+  | `%I` | `02` | hour, 12-hour |
+  | `%M` | `30` | minute |
+  | `%S` | `45` | second |
+  | `%p` | `PM` | AM/PM uppercase |
+  | `%P` | `pm` | am/pm lowercase |
+  | `%Z` | `PST` | timezone name |
+
+  **Common presets**
+
+  | Config | Output |
+  |--------|--------|
+  | `DATE` (default) | `2026-05-28` |
+  | `DATE;%m/%d/%Y` | `05/28/2026` |
+  | `DATE;%a %b %e` | `Thu May 28` |
+  | `DATE;%A, %B %d` | `Thursday, May 28` |
+  | `CLOCK` (default) | `02:30:45 pm` |
+  | `CLOCK;%H:%M` | `14:30` |
+  | `CLOCK;%I:%M %p` | `02:30 PM` |
+  | `CLOCK;%H:%M:%S` | `14:30:45` |
+
+  > OLED line width is limited — long formats may overflow. See the [full strftime reference](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) for all specifiers.
 
 - **BLANK**: Empty sensor slot for spacing/alignment
   - Useful for multi-sensor layouts
   - Configuration: `sensor_0="BLANK"`
-
-- **MOUSE_BATTERY**: Wireless gaming mouse battery percentage
-  - Shows battery level (e.g., `75`)
-  - Displays `N/A` if mouse disconnected or not supported
-  - Compatible with Logitech G-series, SteelSeries Aerox, Razer wireless mice
-  - Automatically detects common gaming mice
-  - Configuration example:
-    ```ini
-    sensor_0="MOUSE_BATTERY"
-    label_0="Mouse:"
-    unit_0="%"
-    ```
-  - **Note**: Only works with wireless gaming mice that expose HID battery information. Standard office mice and wired mice are not supported.
-
-  **Adding Support for Your Mouse:**
-
-  If your mouse isn't detected automatically, you can discover the battery report ID:
-
-  1. **Find your mouse VID/PID** (in Device Manager → Properties → Details → Hardware IDs)
-     - Format: `HID\VID_046D&PID_C539` means VID=046d, PID=c539
-
-  2. **Run discovery mode:**
-     ```cmd
-     hwinfo-steelseries-oled.exe --discover-mouse-battery 046d c539
-     ```
-     Or with 0x prefix:
-     ```cmd
-     hwinfo-steelseries-oled.exe --discover-mouse-battery 0x046d 0xc539
-     ```
-
-  3. **Review the results** - The tool will test all report IDs and highlight likely battery values:
-     ```
-     Report ID: 0x07
-       Raw data: [07, 75, 00, 00]
-       Likely battery: 75%
-       <- USE THIS REPORT ID
-     ```
-
-  4. **Add your mouse profile** to `src-tauri/src/mouse_battery.rs`:
-     ```rust
-     // In MOUSE_PROFILES constant, add:
-     (0x046d, 0xc539, 0x07, "Your Mouse Model Name"),
-     ```
-
-  5. **Rebuild the application:**
-     ```cmd
-     cd src-tauri
-     cargo build --release
-     ```
 
 - **RTSS**: Framerate from RivaTuner Statistics Server (if installed)
   - Not currently implemented
@@ -366,45 +367,6 @@ This is particularly useful for memory sensors that HWiNFO reports in MB but you
 2. Some sensors only appear when the hardware is active
 3. Run the config wizard again to see available sensors
 4. Delete `conf.ini` and reconfigure from scratch
-
-### Mouse Battery Shows "N/A"
-
-**Problem**: MOUSE_BATTERY special sensor displays "N/A" instead of battery percentage
-
-**Solutions**:
-1. **Check mouse compatibility**: Only wireless gaming mice are supported
-   - Supported brands: Logitech G-series, SteelSeries Aerox, Razer
-   - Standard office mice don't expose battery information
-   - Wired mice have no battery to report
-
-2. **Verify mouse is powered on and connected**
-   - Ensure mouse is not in sleep mode
-   - Check wireless receiver is plugged in
-   - Try moving the mouse to wake it up
-
-3. **Enable debug logging** to see detection details:
-   ```cmd
-   set RUST_LOG=debug
-   hwinfo-steelseries-oled.exe
-   ```
-   Look for messages like:
-   - `"Enumerating HID devices for gaming mice..."`
-   - `"Found compatible mouse: ..."`
-   - `"Mouse battery: X%"`
-
-4. **Check supported mouse list** in `src-tauri/src/mouse_battery.rs`:
-   - If your mouse isn't listed, use discovery mode to find the battery report ID
-   - Run: `hwinfo-steelseries-oled.exe --discover-mouse-battery <VID> <PID>`
-   - See "Adding Support for Your Mouse" in the Special Sensors section above
-
-5. **Verify HID API is initialized**:
-   - The application should show a HID API connection on startup
-   - Check console output for any HID-related errors
-
-6. **Use discovery mode** to identify the correct report ID:
-   - Find your mouse VID/PID in Device Manager
-   - Run discovery mode with your mouse VID/PID
-   - Add the detected report ID to the MOUSE_PROFILES list
 
 ### Configuration File Errors
 
