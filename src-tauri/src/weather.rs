@@ -219,43 +219,43 @@ pub fn parse(json: &str, units: Units) -> Result<WeatherInfo, anyhow::Error> {
         .ok_or_else(|| anyhow::anyhow!("wttr.in response missing weather[0]"))?;
     let astronomy = today.astronomy.first();
 
-    let mut info = WeatherInfo::default();
-
-    info.temp = Some(pick(units, &current.temp_c, &current.temp_f).clone());
-    info.feels = Some(pick(units, &current.feels_c, &current.feels_f).clone());
-    info.hi = Some(pick(units, &today.maxtemp_c, &today.maxtemp_f).clone());
-    info.lo = Some(pick(units, &today.mintemp_c, &today.mintemp_f).clone());
-
     let condition = current.weather_desc.first().map(|d| d.value.clone());
-    info.condition_short = condition.as_deref().map(abbreviate_condition);
-    info.condition = condition;
 
-    info.humidity = Some(current.humidity.clone());
-    info.wind_speed = Some(pick(units, &current.windspeed_kmph, &current.windspeed_miles).clone());
-    info.wind_dir = Some(current.wind_dir_16.clone());
-    info.wind_gust = today
-        .hourly
-        .iter()
-        .map(|h| pick(units, &h.wind_gust_kmph, &h.wind_gust_miles))
-        .filter_map(|s| s.parse::<f64>().ok())
-        .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
-        .map(|v| format!("{:.0}", v));
-    info.precip_chance = today
-        .hourly
-        .iter()
-        .filter_map(|h| h.precip_chance())
-        .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
-        .map(|v| format!("{:.0}", v));
-    info.precip_amount = current.precip_mm.parse::<f64>().ok().map(|mm| match units {
-        Units::Metric => format!("{:.1}", mm),
-        Units::Imperial => format!("{:.1}", mm / 25.4),
-    });
-    info.uv = Some(current.uv_index.clone());
-    info.pressure = Some(pick(units, &current.pressure, &current.pressure_inches).clone());
-    info.clouds = Some(current.cloudcover.clone());
-    info.visibility = Some(pick(units, &current.visibility, &current.visibility_miles).clone());
-    info.sunrise = astronomy.map(|a| a.sunrise.clone());
-    info.sunset = astronomy.map(|a| a.sunset.clone());
+    let mut info = WeatherInfo {
+        temp: Some(pick(units, &current.temp_c, &current.temp_f).clone()),
+        feels: Some(pick(units, &current.feels_c, &current.feels_f).clone()),
+        hi: Some(pick(units, &today.maxtemp_c, &today.maxtemp_f).clone()),
+        lo: Some(pick(units, &today.mintemp_c, &today.mintemp_f).clone()),
+        condition_short: condition.as_deref().map(abbreviate_condition),
+        condition,
+        humidity: Some(current.humidity.clone()),
+        wind_speed: Some(pick(units, &current.windspeed_kmph, &current.windspeed_miles).clone()),
+        wind_dir: Some(current.wind_dir_16.clone()),
+        wind_gust: today
+            .hourly
+            .iter()
+            .map(|h| pick(units, &h.wind_gust_kmph, &h.wind_gust_miles))
+            .filter_map(|s| s.parse::<f64>().ok())
+            .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
+            .map(|v| format!("{:.0}", v)),
+        precip_chance: today
+            .hourly
+            .iter()
+            .filter_map(|h| h.precip_chance())
+            .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.max(v))))
+            .map(|v| format!("{:.0}", v)),
+        precip_amount: current.precip_mm.parse::<f64>().ok().map(|mm| match units {
+            Units::Metric => format!("{:.1}", mm),
+            Units::Imperial => format!("{:.1}", mm / 25.4),
+        }),
+        uv: Some(current.uv_index.clone()),
+        pressure: Some(pick(units, &current.pressure, &current.pressure_inches).clone()),
+        clouds: Some(current.cloudcover.clone()),
+        visibility: Some(pick(units, &current.visibility, &current.visibility_miles).clone()),
+        sunrise: astronomy.map(|a| a.sunrise.clone()),
+        sunset: astronomy.map(|a| a.sunset.clone()),
+        ..Default::default()
+    };
 
     // Forecast days: D1 = weather[1], D2 = weather[2], D3 = weather[3]
     // (weather[0] is today, already used for info.hi/info.lo etc).
@@ -427,6 +427,7 @@ impl WeatherReader {
     }
 
     /// Test-only constructor with a pre-populated cache.
+    #[cfg(test)]
     pub fn with_cached_info(info: WeatherInfo) -> Self {
         Self {
             shared: Arc::new(RwLock::new(Some(info))),
@@ -638,25 +639,27 @@ mod tests {
     }
 
     fn sample_info() -> WeatherInfo {
-        let mut info = WeatherInfo::default();
-        info.temp = Some("72".into());
-        info.feels = Some("74".into());
-        info.hi = Some("78".into());
-        info.lo = Some("61".into());
-        info.condition = Some("Partly cloudy".into());
-        info.condition_short = Some("P.Cloudy".into());
-        info.humidity = Some("54".into());
-        info.wind_speed = Some("8".into());
-        info.wind_dir = Some("NW".into());
-        info.wind_gust = Some("15".into());
-        info.precip_chance = Some("30".into());
-        info.precip_amount = Some("0.2".into());
-        info.uv = Some("6".into());
-        info.pressure = Some("1013".into());
-        info.clouds = Some("25".into());
-        info.visibility = Some("10".into());
-        info.sunrise = Some("06:42 AM".into());
-        info.sunset = Some("08:14 PM".into());
+        let mut info = WeatherInfo {
+            temp: Some("72".into()),
+            feels: Some("74".into()),
+            hi: Some("78".into()),
+            lo: Some("61".into()),
+            condition: Some("Partly cloudy".into()),
+            condition_short: Some("P.Cloudy".into()),
+            humidity: Some("54".into()),
+            wind_speed: Some("8".into()),
+            wind_dir: Some("NW".into()),
+            wind_gust: Some("15".into()),
+            precip_chance: Some("30".into()),
+            precip_amount: Some("0.2".into()),
+            uv: Some("6".into()),
+            pressure: Some("1013".into()),
+            clouds: Some("25".into()),
+            visibility: Some("10".into()),
+            sunrise: Some("06:42 AM".into()),
+            sunset: Some("08:14 PM".into()),
+            ..Default::default()
+        };
         info.days[0] = Some(DayForecast {
             hi: Some("75".into()),
             lo: Some("60".into()),

@@ -234,9 +234,11 @@ mod tests {
     }
 
     fn weather_with_info() -> crate::weather::WeatherReader {
-        let mut info = crate::weather::WeatherInfo::default();
-        info.temp = Some("72".into());
-        info.condition_short = Some("P.Cloudy".into());
+        let mut info = crate::weather::WeatherInfo {
+            temp: Some("72".into()),
+            condition_short: Some("P.Cloudy".into()),
+            ..Default::default()
+        };
         info.days[0] = Some(crate::weather::DayForecast {
             hi: Some("75".into()),
             lo: Some("60".into()),
