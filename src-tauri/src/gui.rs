@@ -293,7 +293,7 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
         let hwinfo = match hwinfo_opt.as_ref() {
             Some(h) => h,
             None => {
-                let buf = render_text_to_oled("HWiNFO not\nconnected", 0);
+                let buf = render_text_to_oled("HWiNFO not\nconnected", 0, &[]);
                 return Ok(buffer_to_pixels(&buf));
             }
         };
@@ -321,14 +321,14 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
             &weather,
             None,
         ) {
-            let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0);
+            let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0, &[]);
             return Ok(buffer_to_pixels(&buf));
         }
 
         format_custom_value(config.sensors_per_line, labels, values, units)
     };
 
-    let buf = render_text_to_oled(&value_to_preview_text(&value), 0);
+    let buf = render_text_to_oled(&value_to_preview_text(&value), 0, &config.font_sizes);
     Ok(buffer_to_pixels(&buf))
 }
 

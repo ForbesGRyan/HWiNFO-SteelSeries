@@ -161,17 +161,25 @@ fn get_emoji_icon(emoji: &str) -> Option<&'static [u8; 8]> {
     None
 }
 
-pub fn render_text_to_oled(text: &str, x: i32) -> OledBuffer {
+pub fn render_text_to_oled(text: &str, x: i32, line_fonts: &[FontSize]) -> OledBuffer {
     let mut buffer = OledBuffer::new();
-    let style = MonoTextStyle::new(&PROFONT_12_POINT, BinaryColor::On);
 
-    let mut y = 10;
-    for line in text.lines() {
+    let mut y = 0;
+    for (i, line) in text.lines().enumerate() {
+        let fs = line_fonts.get(i).copied().unwrap_or(FontSize::Medium);
+        if i == 0 {
+            y = fs.first_baseline();
+        } else {
+            y += fs.line_advance();
+        }
+
+        let style = MonoTextStyle::new(fs.font(), BinaryColor::On);
         let mut current_x = x;
 
         if let Some(rest) = line.strip_prefix("IMG:") {
             let path = rest.trim();
-            let _ = load_image_to_buffer(path, &mut buffer, current_x as u32, (y - 10) as u32);
+            let img_y = (y - 10).max(0) as u32;
+            let _ = load_image_to_buffer(path, &mut buffer, current_x as u32, img_y);
         } else {
             if let Some(icon_data) = get_emoji_icon(line) {
                 let raw_image = ImageRaw::<BinaryColor>::new(icon_data, 8);
@@ -183,7 +191,6 @@ pub fn render_text_to_oled(text: &str, x: i32) -> OledBuffer {
             let clean_line: String = line.chars().filter(|c| !c.is_emoji()).collect();
             let _ = Text::new(clean_line.trim(), Point::new(current_x, y), style).draw(&mut buffer);
         }
-        y += 12;
     }
 
     buffer
@@ -447,14 +454,14 @@ mod tests {
 
     #[test]
     fn test_render_text_empty_string() {
-        let buffer = render_text_to_oled("", 0);
+        let buffer = render_text_to_oled("", 0, &[]);
         // Should return a valid buffer
         assert_eq!(buffer.data.len(), 128 * 8);
     }
 
     #[test]
     fn test_render_text_simple_ascii() {
-        let buffer = render_text_to_oled("Hello", 0);
+        let buffer = render_text_to_oled("Hello", 0, &[]);
         // Buffer should have some pixels set (not all zeros)
         let has_pixels = buffer.data.iter().any(|&b| b != 0);
         assert!(has_pixels, "Text should render some pixels");
@@ -462,29 +469,29 @@ mod tests {
 
     #[test]
     fn test_render_text_multiple_lines() {
-        let buffer = render_text_to_oled("Line1\nLine2\nLine3", 0);
+        let buffer = render_text_to_oled("Line1\nLine2\nLine3", 0, &[]);
         let has_pixels = buffer.data.iter().any(|&b| b != 0);
         assert!(has_pixels, "Multi-line text should render some pixels");
     }
 
     #[test]
     fn test_render_text_with_emoji() {
-        let buffer = render_text_to_oled("🔥 Hot", 0);
+        let buffer = render_text_to_oled("🔥 Hot", 0, &[]);
         let has_pixels = buffer.data.iter().any(|&b| b != 0);
         assert!(has_pixels, "Text with emoji should render some pixels");
     }
 
     #[test]
     fn test_render_text_correct_buffer_dimensions() {
-        let buffer = render_text_to_oled("Test", 0);
+        let buffer = render_text_to_oled("Test", 0, &[]);
         // OriginDimensions should report 128x64
         assert_eq!(buffer.size(), Size::new(128, 64));
     }
 
     #[test]
     fn test_render_text_with_x_offset() {
-        let buffer_no_offset = render_text_to_oled("A", 0);
-        let buffer_with_offset = render_text_to_oled("A", 50);
+        let buffer_no_offset = render_text_to_oled("A", 0, &[]);
+        let buffer_with_offset = render_text_to_oled("A", 50, &[]);
 
         // Both should have pixels, but in different positions
         let has_pixels_no_offset = buffer_no_offset.data.iter().any(|&b| b != 0);
@@ -680,7 +687,7 @@ mod tests {
         write_test_image(&path, 4, 4, 255);
 
         let text = format!("IMG:{}", path.to_string_lossy());
-        let buffer = render_text_to_oled(&text, 0);
+        let buffer = render_text_to_oled(&text, 0, &[]);
         let any_lit = buffer.data.iter().any(|b| *b != 0);
         assert!(any_lit);
 
@@ -732,5 +739,28 @@ mod tests {
     #[test]
     fn test_fontsize_default_is_medium() {
         assert_eq!(FontSize::default(), FontSize::Medium);
+    }
+
+    #[test]
+    fn test_render_small_vs_large_differ() {
+        let small = render_text_to_oled("Hello", 0, &[FontSize::Small]);
+        let large = render_text_to_oled("Hello", 0, &[FontSize::Large]);
+        assert_ne!(small.data, large.data);
+    }
+
+    #[test]
+    fn test_render_mixed_line_fonts_no_panic_and_lit() {
+        let buf = render_text_to_oled(
+            "Big\nsmall\nmed",
+            0,
+            &[FontSize::Large, FontSize::Small, FontSize::Medium],
+        );
+        assert!(buf.data.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn test_render_fewer_fonts_than_lines_falls_back_medium() {
+        let buf = render_text_to_oled("a\nb\nc", 0, &[FontSize::Small]);
+        assert!(buf.data.iter().any(|&b| b != 0));
     }
 }

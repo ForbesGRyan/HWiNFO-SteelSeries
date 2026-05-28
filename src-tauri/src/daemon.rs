@@ -2,7 +2,7 @@ use crate::connect::{connect_hid, connect_hwinfo, connect_steelseries};
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES, TICK_RATE};
 use crate::media::MediaReader;
 use crate::mouse_battery::MouseBatteryReader;
-use crate::render::{render_text_to_oled, OledBuffer};
+use crate::render::{render_text_to_oled, FontSize, OledBuffer};
 use crate::settings::AppConfig;
 use crate::state::{ActiveMode, SensorValue, Shared, SleepCommand};
 use crate::steelseries::page_handler;
@@ -81,7 +81,7 @@ fn format_horizontal_summary(s: &SummarySensors, decimal: bool) -> Value {
     })
 }
 
-fn value_to_oled_buffer(value: &Value) -> OledBuffer {
+fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize]) -> OledBuffer {
     let mut text = String::new();
     if let Some(obj) = value.as_object() {
         for i in 1..=DISPLAY_LINES {
@@ -94,7 +94,7 @@ fn value_to_oled_buffer(value: &Value) -> OledBuffer {
             }
         }
     }
-    render_text_to_oled(&text, 0)
+    render_text_to_oled(&text, 0, font_sizes)
 }
 
 fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
@@ -638,7 +638,7 @@ impl<R: Runtime> Daemon<R> {
         if disconnected {
             warn!("HWiNFO disconnected");
             let value = disconnected_value();
-            let buffer = value_to_oled_buffer(&value);
+            let buffer = value_to_oled_buffer(&value, &self.config.font_sizes);
             let _ = oled.trigger_frame("ERROR", self.i.0, &value, &buffer);
 
             self.write_state(|s| {
@@ -678,7 +678,7 @@ impl<R: Runtime> Daemon<R> {
             self.hid_api.as_ref(),
         )?;
 
-        let buffer = value_to_oled_buffer(&value);
+        let buffer = value_to_oled_buffer(&value, &self.config.font_sizes);
         let event_name = page_event_name(self.page_counter);
         oled.trigger_frame(&event_name, self.i.0, &value, &buffer)?;
 
@@ -1003,7 +1003,7 @@ mod tests {
     #[test]
     fn test_value_to_oled_buffer_populates_text() {
         let v = json!({ "line1": "Hi", "line2": "There", "line3": "" });
-        let buf = value_to_oled_buffer(&v);
+        let buf = value_to_oled_buffer(&v, &[]);
         // Some pixels should be lit
         assert!(buf.data.iter().any(|&b| b != 0));
     }
@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn test_value_to_oled_buffer_with_non_object_value() {
         let v = json!("not an object");
-        let buf = value_to_oled_buffer(&v);
+        let buf = value_to_oled_buffer(&v, &[]);
         // Should produce an empty buffer (no text rendered)
         assert!(buf.data.iter().all(|b| *b == 0));
     }
