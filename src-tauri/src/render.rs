@@ -10,18 +10,13 @@ use image::ImageReader;
 use profont::{PROFONT_12_POINT, PROFONT_18_POINT, PROFONT_9_POINT};
 
 /// Font size preset for a single OLED display line (direct-USB render path).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FontSize {
     Small,
+    #[default]
     Medium,
     Large,
-}
-
-impl Default for FontSize {
-    fn default() -> Self {
-        FontSize::Medium
-    }
 }
 
 impl FontSize {
