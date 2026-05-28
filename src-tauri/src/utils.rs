@@ -426,6 +426,7 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -437,6 +438,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
@@ -450,10 +452,15 @@ mod tests {
 
     #[test]
     fn test_run_sensors_date_custom_format() {
-        let props = make_props(&[("sensor_0", "DATE;%m/%d/%Y"), ("label_0", ""), ("unit_0", "")]);
+        let props = make_props(&[
+            ("sensor_0", "DATE;%m/%d/%Y"),
+            ("label_0", ""),
+            ("unit_0", ""),
+        ]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
         let (mut labels, mut units, mut values) = empty_buffers();
 
         run_sensors(
@@ -465,6 +472,7 @@ mod tests {
             false,
             &mut mouse,
             &mut media,
+            &weather,
             None,
         )
         .unwrap();
