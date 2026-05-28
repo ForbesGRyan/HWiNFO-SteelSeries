@@ -1,4 +1,4 @@
-use chrono::Local;
+use chrono::{DateTime, Local};
 use log::{debug, error};
 use serde_json::{json, Value};
 
@@ -8,6 +8,19 @@ use crate::weather::WeatherReader;
 use hwinfo_steelseries_oled::Hwinfo;
 
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
+
+/// Format `now` with a user-supplied strftime string. chrono's `Display`
+/// panics on an invalid specifier, so render into a buffer via `write!`
+/// (which returns `Err` instead) and fall back to `fallback` on failure.
+fn safe_strftime(now: &DateTime<Local>, fmt: &str, fallback: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    if write!(out, "{}", now.format(fmt)).is_err() {
+        out.clear();
+        let _ = write!(out, "{}", now.format(fallback));
+    }
+    out
+}
 
 pub fn run_sensors<'a>(
     pages_sensors: &'a ini::Properties,
@@ -53,7 +66,7 @@ pub fn run_sensors<'a>(
                 .filter(|s| !s.is_empty())
                 .unwrap_or("%I:%M:%S %P");
             let now = Local::now();
-            values[k] = now.format(fmt).to_string();
+            values[k] = safe_strftime(&now, fmt, "%I:%M:%S %P");
             continue;
         } else if sensor[0] == "DATE" {
             labels[k] = label;
@@ -64,7 +77,7 @@ pub fn run_sensors<'a>(
                 .filter(|s| !s.is_empty())
                 .unwrap_or("%Y-%m-%d");
             let now = Local::now();
-            values[k] = now.format(fmt).to_string();
+            values[k] = safe_strftime(&now, fmt, "%Y-%m-%d");
             continue;
         } else if sensor[0] == "MOUSE_BATTERY" {
             labels[k] = label;
