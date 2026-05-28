@@ -421,6 +421,7 @@
         const { invoke } = window.__TAURI__.core;
         const { listen } = window.__TAURI__.event;
 
+        const FONT_LINES = 5;
         let config = {};
         let activePage = 0;
         let sensorCatalog = [];           // full list from list_sensors
@@ -871,7 +872,6 @@
             updateUI();
         });
 
-        const FONT_LINES = 5;
         function populateFontSelects() {
             for (let i = 1; i <= FONT_LINES; i++) {
                 const sel = document.getElementById('font-line' + i);
