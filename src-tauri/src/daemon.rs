@@ -81,20 +81,29 @@ fn format_horizontal_summary(s: &SummarySensors, decimal: bool) -> Value {
     })
 }
 
-fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize]) -> OledBuffer {
+/// Join `line1..lineN` into newline-separated text, preserving each line's
+/// slot position. An empty line keeps its place (so blank/hidden sensors leave
+/// a gap rather than shifting later lines up).
+fn value_to_text(value: &Value) -> String {
     let mut text = String::new();
     if let Some(obj) = value.as_object() {
+        let mut first = true;
         for i in 1..=DISPLAY_LINES {
             let key = format!("line{}", i);
             if let Some(s) = obj.get(&key).and_then(|v| v.as_str()) {
-                if !text.is_empty() {
+                if !first {
                     text.push('\n');
                 }
                 text.push_str(s);
+                first = false;
             }
         }
     }
-    render_text_to_oled(&text, 0, font_sizes)
+    text
+}
+
+fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize]) -> OledBuffer {
+    render_text_to_oled(&value_to_text(value), 0, font_sizes)
 }
 
 fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
@@ -1006,6 +1015,25 @@ mod tests {
         let buf = value_to_oled_buffer(&v, &[]);
         // Some pixels should be lit
         assert!(buf.data.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn test_value_to_text_preserves_leading_blank_line() {
+        // An empty top line must keep its slot, not shift line2/line3 up.
+        let v = json!({ "line1": "", "line2": "CPU", "line3": "GPU" });
+        assert_eq!(value_to_text(&v), "\nCPU\nGPU");
+    }
+
+    #[test]
+    fn test_value_to_text_preserves_middle_blank_slot() {
+        let v = json!({ "line1": "A", "line2": "", "line3": "C" });
+        assert_eq!(value_to_text(&v), "A\n\nC");
+    }
+
+    #[test]
+    fn test_value_to_text_all_present_unchanged() {
+        let v = json!({ "line1": "A", "line2": "B", "line3": "C" });
+        assert_eq!(value_to_text(&v), "A\nB\nC");
     }
 
     #[test]

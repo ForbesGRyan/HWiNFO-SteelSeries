@@ -74,12 +74,14 @@ fn value_to_preview_text(value: &Value) -> String {
     if let Some(obj) = value.as_object() {
         let mut keys: Vec<&String> = obj.keys().collect();
         keys.sort();
+        let mut first = true;
         for key in keys {
             if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                if !text.is_empty() {
+                if !first {
                     text.push('\n');
                 }
                 text.push_str(s);
+                first = false;
             }
         }
     }
@@ -490,6 +492,15 @@ mod tests {
     fn test_value_to_preview_text_orders_lines() {
         let v = serde_json::json!({ "line3": "C", "line1": "A", "line2": "B" });
         assert_eq!(value_to_preview_text(&v), "A\nB\nC");
+    }
+
+    #[test]
+    fn test_value_to_preview_text_preserves_blank_slots() {
+        // Empty lines keep their position instead of shifting later lines up.
+        let v = serde_json::json!({ "line1": "", "line2": "CPU", "line3": "GPU" });
+        assert_eq!(value_to_preview_text(&v), "\nCPU\nGPU");
+        let v2 = serde_json::json!({ "line1": "A", "line2": "", "line3": "C" });
+        assert_eq!(value_to_preview_text(&v2), "A\n\nC");
     }
 
     #[test]
