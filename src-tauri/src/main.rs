@@ -108,6 +108,11 @@ fn find_flag_position(args: &[String], flag: &str) -> Option<usize> {
     args.iter().position(|a| a == flag)
 }
 
+/// Whether argv requests opening the settings window on launch (`--settings`).
+fn wants_open_settings(args: &[String]) -> bool {
+    find_flag_position(args, "--settings").is_some()
+}
+
 /// Validate that argv contains at least one more arg after the given flag position.
 fn has_required_arg_after(args: &[String], flag_pos: usize) -> bool {
     args.len() >= flag_pos + 2
@@ -262,6 +267,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     let args: Vec<String> = std::env::args().collect();
     handle_discovery_flags(&args);
+    let open_settings = wants_open_settings(&args);
 
     info!("Starting HWiNFO-SteelSeries");
     let term = Term::stdout();
@@ -293,8 +299,11 @@ fn main() -> Result<(), anyhow::Error> {
         .setup(move |app| {
             let app_handle = app.handle().clone();
 
-            // Hide main window on launch
-            if let Some(win) = app.get_webview_window("main") {
+            // Show settings on launch if requested via `--settings`, otherwise
+            // start hidden in the tray.
+            if open_settings {
+                show_main_window(&app_handle);
+            } else if let Some(win) = app.get_webview_window("main") {
                 let _ = win.hide();
             }
 
@@ -540,6 +549,21 @@ mod tests {
         let r = run_discover_mouse_battery(&args, 1);
         // discover_battery_report_id returns Err when no devices match
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_wants_open_settings() {
+        assert!(wants_open_settings(&[
+            "prog".into(),
+            "--settings".into()
+        ]));
+        assert!(wants_open_settings(&[
+            "prog".into(),
+            "--other".into(),
+            "--settings".into()
+        ]));
+        assert!(!wants_open_settings(&["prog".into()]));
+        assert!(!wants_open_settings(&["prog".into(), "--setting".into()]));
     }
 
     #[test]
