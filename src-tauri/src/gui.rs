@@ -135,6 +135,12 @@ fn apply_main_section(ini: &mut Ini, config: &AppConfig) {
         .set("page_time", config.page_time.to_string())
         .set("sensors_per_line", config.sensors_per_line.to_string())
         .set("gpu", &config.gpu);
+    {
+        let mut sec = ini.with_section(Some("Main"));
+        for (i, fs) in config.font_sizes.iter().enumerate() {
+            sec.set(format!("font_line{}", i + 1), fs.as_str());
+        }
+    }
 }
 
 /// Delete existing PAGE*.Sensors sections and rewrite from the config's custom_sensors.
@@ -918,6 +924,20 @@ mod tests {
         let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
         // Preview error rendered to pixels
         assert!(pixels.iter().any(|p| *p != 0));
+    }
+
+    #[test]
+    fn test_apply_main_section_writes_font_sizes() {
+        use crate::render::FontSize;
+        let mut config = base_config();
+        config.font_sizes[0] = FontSize::Large;
+        config.font_sizes[1] = FontSize::Small;
+        let mut ini = Ini::new();
+        apply_main_section(&mut ini, &config);
+        let main = ini.section(Some("Main")).unwrap();
+        assert_eq!(main.get("font_line1"), Some("large"));
+        assert_eq!(main.get("font_line2"), Some("small"));
+        assert_eq!(main.get("font_line3"), Some("medium"));
     }
 
     #[test]
