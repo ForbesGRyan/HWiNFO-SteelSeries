@@ -723,7 +723,9 @@
             function rebuild(filter) {
                 list.replaceChildren();
                 const q = (filter || '').toLowerCase();
+                const weatherOn = document.getElementById('weather-enabled').checked;
                 filtered = sensorCatalog.filter(s => {
+                    if (s.category === 'Weather' && !weatherOn) return false;
                     if (!q) return true;
                     return s.category.toLowerCase().includes(q)
                         || s.reading.toLowerCase().includes(q)

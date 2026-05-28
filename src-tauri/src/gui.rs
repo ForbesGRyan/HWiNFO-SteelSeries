@@ -13,12 +13,54 @@ use serde_json::Value;
 use tauri::{command, State};
 
 const SPECIAL_SENSORS: &[(&str, &str)] = &[
-    ("CLOCK", "Current time (12-hour)"),
+    (
+        "CLOCK",
+        "Current time (append ;FORMAT for a custom strftime, e.g. CLOCK;%H:%M)",
+    ),
+    (
+        "DATE",
+        "Current date (append ;FORMAT for a custom strftime, e.g. DATE;%m/%d/%Y)",
+    ),
     ("BLANK", "Empty spacer"),
     ("MEDIA_TITLE", "Now-playing track title"),
     ("MEDIA_ARTIST", "Now-playing artist"),
     ("MEDIA_ALBUM", "Now-playing album"),
     ("MEDIA_APP", "Now-playing app source"),
+];
+
+/// Weather special sensors, backed by the [Weather] config + wttr.in.
+/// Listed separately so they group under their own picker category.
+/// The `_D1`/`_D2` suffixes are tomorrow / day-after; the parser also accepts
+/// `_D3` if typed manually.
+const WEATHER_SENSORS: &[(&str, &str)] = &[
+    ("WEATHER_TEMP", "Current temperature"),
+    ("WEATHER_FEELS", "Feels-like temperature"),
+    ("WEATHER_HI", "Today's high"),
+    ("WEATHER_LO", "Today's low"),
+    ("WEATHER_CONDITION", "Condition (full text)"),
+    ("WEATHER_CONDITION_SHORT", "Condition (abbreviated)"),
+    ("WEATHER_HUMIDITY", "Humidity %"),
+    ("WEATHER_WIND_SPEED", "Wind speed"),
+    ("WEATHER_WIND_DIR", "Wind direction"),
+    ("WEATHER_WIND_GUST", "Wind gust"),
+    ("WEATHER_PRECIP_CHANCE", "Precipitation chance %"),
+    ("WEATHER_PRECIP_AMOUNT", "Precipitation amount"),
+    ("WEATHER_UV", "UV index"),
+    ("WEATHER_PRESSURE", "Pressure"),
+    ("WEATHER_CLOUDS", "Cloud cover %"),
+    ("WEATHER_VISIBILITY", "Visibility"),
+    ("WEATHER_SUNRISE", "Sunrise time"),
+    ("WEATHER_SUNSET", "Sunset time"),
+    ("WEATHER_HI_D1", "High, tomorrow"),
+    ("WEATHER_LO_D1", "Low, tomorrow"),
+    ("WEATHER_CONDITION_D1", "Condition tomorrow (full)"),
+    ("WEATHER_CONDITION_SHORT_D1", "Condition tomorrow (short)"),
+    ("WEATHER_PRECIP_CHANCE_D1", "Precip chance tomorrow %"),
+    ("WEATHER_HI_D2", "High, in 2 days"),
+    ("WEATHER_LO_D2", "Low, in 2 days"),
+    ("WEATHER_CONDITION_D2", "Condition in 2 days (full)"),
+    ("WEATHER_CONDITION_SHORT_D2", "Condition in 2 days (short)"),
+    ("WEATHER_PRECIP_CHANCE_D2", "Precip chance in 2 days %"),
 ];
 
 /// Pick the INI "style" string for a config.
@@ -88,18 +130,24 @@ fn value_to_preview_text(value: &Value) -> String {
     text
 }
 
-/// Built-in special sensors (CLOCK, BLANK, MEDIA_*).
+/// Built-in special sensors: CLOCK/BLANK/MEDIA_* grouped under "Special",
+/// WEATHER_* grouped under "Weather".
 fn special_sensor_options() -> Vec<SensorOption> {
-    SPECIAL_SENSORS
-        .iter()
-        .map(|(name, desc)| SensorOption {
-            category: "Special".to_string(),
-            reading: name.to_string(),
-            full_id: name.to_string(),
-            is_special: true,
-            description: Some(desc.to_string()),
-        })
-        .collect()
+    let special = SPECIAL_SENSORS.iter().map(|(name, desc)| SensorOption {
+        category: "Special".to_string(),
+        reading: name.to_string(),
+        full_id: name.to_string(),
+        is_special: true,
+        description: Some(desc.to_string()),
+    });
+    let weather = WEATHER_SENSORS.iter().map(|(name, desc)| SensorOption {
+        category: "Weather".to_string(),
+        reading: name.to_string(),
+        full_id: name.to_string(),
+        is_special: true,
+        description: Some(desc.to_string()),
+    });
+    special.chain(weather).collect()
 }
 
 /// Flatten an Hwinfo snapshot into a sorted list of SensorOption rows.
@@ -174,6 +222,23 @@ fn apply_pages_sections(ini: &mut Ini, config: &AppConfig) {
     }
 }
 
+/// Write the [Weather] section from an AppConfig into an Ini.
+/// When weather is disabled, the location is blanked (the backend treats an
+/// empty location as disabled) while units/refresh are preserved for re-enable.
+fn apply_weather_section(ini: &mut Ini, config: &AppConfig) {
+    use crate::weather::Units;
+    let w = &config.weather;
+    let units = match w.units {
+        Units::Metric => "metric",
+        Units::Imperial => "imperial",
+    };
+    let location = if w.enabled { w.location.trim() } else { "" };
+    ini.with_section(Some("Weather"))
+        .set("location", location)
+        .set("units", units)
+        .set("refresh_minutes", w.refresh_minutes.to_string());
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HidDeviceInfo {
     pub serial: String,
@@ -209,6 +274,7 @@ fn get_config_impl(shared: &Shared) -> Result<AppConfig, String> {
 fn save_config_impl(path: &str, shared: &Shared, config: AppConfig) -> Result<(), String> {
     let mut ini = Ini::load_from_file(path).unwrap_or_else(|_| Ini::new());
     apply_main_section(&mut ini, &config);
+    apply_weather_section(&mut ini, &config);
     if !config.is_summary {
         apply_pages_sections(&mut ini, &config);
     }
@@ -526,9 +592,9 @@ mod tests {
     #[test]
     fn test_special_sensor_options_count_and_categories() {
         let opts = special_sensor_options();
-        assert_eq!(opts.len(), SPECIAL_SENSORS.len());
+        assert_eq!(opts.len(), SPECIAL_SENSORS.len() + WEATHER_SENSORS.len());
         for opt in &opts {
-            assert_eq!(opt.category, "Special");
+            assert!(opt.category == "Special" || opt.category == "Weather");
             assert!(opt.is_special);
             assert!(opt.description.is_some());
             assert_eq!(opt.reading, opt.full_id);
@@ -540,8 +606,30 @@ mod tests {
         let opts = special_sensor_options();
         let names: Vec<&str> = opts.iter().map(|o| o.reading.as_str()).collect();
         assert!(names.contains(&"CLOCK"));
+        assert!(names.contains(&"DATE"));
         assert!(names.contains(&"BLANK"));
         assert!(names.contains(&"MEDIA_TITLE"));
+    }
+
+    #[test]
+    fn test_special_sensor_options_includes_weather() {
+        let opts = special_sensor_options();
+        let weather: Vec<&str> = opts
+            .iter()
+            .filter(|o| o.category == "Weather")
+            .map(|o| o.reading.as_str())
+            .collect();
+        assert!(weather.contains(&"WEATHER_TEMP"));
+        assert!(weather.contains(&"WEATHER_CONDITION_SHORT"));
+        assert!(weather.contains(&"WEATHER_HI_D1"));
+        // Every weather option parses as a real weather field.
+        for name in &weather {
+            assert!(
+                crate::weather::WeatherField::from_sensor_name(name).is_some(),
+                "{} is not a recognized weather sensor",
+                name
+            );
+        }
     }
 
     // ==================== sensors_from_hwinfo ====================
@@ -778,7 +866,7 @@ mod tests {
     fn test_list_sensors_impl_without_hwinfo_returns_specials_only() {
         let shared = mock_shared(base_config());
         let opts = list_sensors_impl(&shared).unwrap();
-        assert_eq!(opts.len(), SPECIAL_SENSORS.len());
+        assert_eq!(opts.len(), SPECIAL_SENSORS.len() + WEATHER_SENSORS.len());
         assert!(opts.iter().all(|o| o.is_special));
     }
 
@@ -790,7 +878,10 @@ mod tests {
             g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")]));
         }
         let opts = list_sensors_impl(&shared).unwrap();
-        assert_eq!(opts.len(), SPECIAL_SENSORS.len() + 1);
+        assert_eq!(
+            opts.len(),
+            SPECIAL_SENSORS.len() + WEATHER_SENSORS.len() + 1
+        );
         assert!(opts
             .iter()
             .any(|o| !o.is_special && o.full_id == "CPU;Temp"));
@@ -819,6 +910,53 @@ mod tests {
         assert!(g.config.decimal);
         assert!(g.reload_requested);
         assert_eq!(g.sleep_requested, Some(SleepCommand::Wake));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_save_config_impl_writes_weather_section() {
+        let tmp =
+            std::env::temp_dir().join(format!("hwinfo_ss_gui_weather_{}.ini", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let shared = mock_shared(base_config());
+        let mut cfg = base_config();
+        cfg.weather.enabled = true;
+        cfg.weather.location = "Seattle,US".to_string();
+        cfg.weather.units = crate::weather::Units::Metric;
+        cfg.weather.refresh_minutes = 30;
+
+        save_config_impl(tmp.to_str().unwrap(), &shared, cfg).unwrap();
+
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert!(contents.contains("location=Seattle,US"));
+        assert!(contents.contains("units=metric"));
+        assert!(contents.contains("refresh_minutes=30"));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_save_config_impl_disabled_weather_blanks_location() {
+        let tmp = std::env::temp_dir().join(format!(
+            "hwinfo_ss_gui_weather_off_{}.ini",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&tmp);
+
+        let shared = mock_shared(base_config());
+        let mut cfg = base_config();
+        cfg.weather.enabled = false;
+        cfg.weather.location = "Seattle,US".to_string();
+
+        save_config_impl(tmp.to_str().unwrap(), &shared, cfg).unwrap();
+
+        // Round-trip: a disabled save must produce a config that parses back as disabled.
+        let ini = Ini::load_from_file(&tmp).unwrap();
+        let parsed = crate::settings::WeatherConfig::from_ini(&ini);
+        assert!(!parsed.enabled);
+        assert!(parsed.location.is_empty());
 
         let _ = std::fs::remove_file(&tmp);
     }
