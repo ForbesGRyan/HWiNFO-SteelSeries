@@ -1,3 +1,4 @@
+use embedded_graphics::mono_font::MonoFont;
 use embedded_graphics::{
     image::{Image, ImageRaw},
     mono_font::MonoTextStyle,
@@ -6,7 +7,69 @@ use embedded_graphics::{
     text::Text,
 };
 use image::ImageReader;
-use profont::PROFONT_12_POINT;
+use profont::{PROFONT_12_POINT, PROFONT_18_POINT, PROFONT_9_POINT};
+
+/// Font size preset for a single OLED display line (direct-USB render path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FontSize {
+    Small,
+    Medium,
+    Large,
+}
+
+impl Default for FontSize {
+    fn default() -> Self {
+        FontSize::Medium
+    }
+}
+
+impl FontSize {
+    /// Parse a config string; unknown/empty → Medium.
+    pub fn from_config_str(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "small" => FontSize::Small,
+            "large" => FontSize::Large,
+            _ => FontSize::Medium,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FontSize::Small => "small",
+            FontSize::Medium => "medium",
+            FontSize::Large => "large",
+        }
+    }
+
+    fn font(&self) -> &'static MonoFont<'static> {
+        match self {
+            FontSize::Small => &PROFONT_9_POINT,
+            FontSize::Medium => &PROFONT_12_POINT,
+            FontSize::Large => &PROFONT_18_POINT,
+        }
+    }
+
+    /// Baseline y for the first line at this size. Medium=10 reproduces the
+    /// original fixed layout so existing configs render identically.
+    fn first_baseline(&self) -> i32 {
+        match self {
+            FontSize::Small => 8,
+            FontSize::Medium => 10,
+            FontSize::Large => 16,
+        }
+    }
+
+    /// Vertical step added before drawing each subsequent line. Medium=12
+    /// reproduces the original `y += 12` spacing.
+    fn line_advance(&self) -> i32 {
+        match self {
+            FontSize::Small => 10,
+            FontSize::Medium => 12,
+            FontSize::Large => 20,
+        }
+    }
+}
 
 /// A buffer for the SteelSeries OLED screen (128x64)
 pub struct OledBuffer {
@@ -639,5 +702,35 @@ mod tests {
         for byte in buffer.data.iter() {
             assert_eq!(*byte, 0);
         }
+    }
+
+    #[test]
+    fn test_fontsize_from_config_str_known_values() {
+        assert_eq!(FontSize::from_config_str("small"), FontSize::Small);
+        assert_eq!(FontSize::from_config_str("medium"), FontSize::Medium);
+        assert_eq!(FontSize::from_config_str("large"), FontSize::Large);
+    }
+
+    #[test]
+    fn test_fontsize_from_config_str_case_and_whitespace() {
+        assert_eq!(FontSize::from_config_str("  LARGE "), FontSize::Large);
+    }
+
+    #[test]
+    fn test_fontsize_from_config_str_unknown_defaults_medium() {
+        assert_eq!(FontSize::from_config_str("huge"), FontSize::Medium);
+        assert_eq!(FontSize::from_config_str(""), FontSize::Medium);
+    }
+
+    #[test]
+    fn test_fontsize_as_str_roundtrips() {
+        for fs in [FontSize::Small, FontSize::Medium, FontSize::Large] {
+            assert_eq!(FontSize::from_config_str(fs.as_str()), fs);
+        }
+    }
+
+    #[test]
+    fn test_fontsize_default_is_medium() {
+        assert_eq!(FontSize::default(), FontSize::Medium);
     }
 }
