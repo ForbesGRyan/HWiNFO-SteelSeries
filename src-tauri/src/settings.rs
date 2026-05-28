@@ -66,11 +66,7 @@ mod units_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(units: &Units, s: S) -> Result<S::Ok, S::Error> {
-        match units {
-            Units::Metric => "metric",
-            Units::Imperial => "imperial",
-        }
-        .serialize(s)
+        units.as_str().serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Units, D::Error> {

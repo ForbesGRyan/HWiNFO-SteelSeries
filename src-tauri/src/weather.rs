@@ -18,6 +18,14 @@ impl Units {
             _ => Units::default(),
         }
     }
+
+    /// The `conf.ini` `units=` string for this variant (inverse of `from_config_str`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Units::Metric => "metric",
+            Units::Imperial => "imperial",
+        }
+    }
 }
 
 /// Identifier for one weather field that can appear in `conf.ini` as a sensor name.
@@ -464,16 +472,7 @@ impl WeatherReader {
 
 /// Build the wttr.in request URL. Spaces in the location are percent-encoded.
 pub(crate) fn build_request_url(location: &str) -> String {
-    let encoded: String = location
-        .chars()
-        .map(|c| {
-            if c == ' ' {
-                "%20".to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect();
+    let encoded = location.replace(' ', "%20");
     format!("https://wttr.in/{}?format=j1", encoded)
 }
 

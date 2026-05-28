@@ -226,16 +226,11 @@ fn apply_pages_sections(ini: &mut Ini, config: &AppConfig) {
 /// When weather is disabled, the location is blanked (the backend treats an
 /// empty location as disabled) while units/refresh are preserved for re-enable.
 fn apply_weather_section(ini: &mut Ini, config: &AppConfig) {
-    use crate::weather::Units;
     let w = &config.weather;
-    let units = match w.units {
-        Units::Metric => "metric",
-        Units::Imperial => "imperial",
-    };
     let location = if w.enabled { w.location.trim() } else { "" };
     ini.with_section(Some("Weather"))
         .set("location", location)
-        .set("units", units)
+        .set("units", w.units.as_str())
         .set("refresh_minutes", w.refresh_minutes.to_string());
 }
 
