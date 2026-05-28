@@ -1,4 +1,5 @@
-use crate::consts::{Style, CUSTOM_SENSORS};
+use crate::consts::{Style, CUSTOM_SENSORS, DISPLAY_LINES};
+use crate::render::FontSize;
 use crate::weather::Units;
 use anyhow::anyhow;
 use console::Term;
@@ -94,6 +95,12 @@ pub struct AppConfig {
     pub custom_sensors: Vec<Vec<CustomSensor>>,
     #[serde(default)]
     pub weather: WeatherConfig,
+    #[serde(default = "default_font_sizes")]
+    pub font_sizes: [FontSize; DISPLAY_LINES],
+}
+
+fn default_font_sizes() -> [FontSize; DISPLAY_LINES] {
+    [FontSize::Medium; DISPLAY_LINES]
 }
 
 impl AppConfig {
@@ -164,6 +171,16 @@ impl AppConfig {
             is_summary, direct_usb
         );
 
+        let font_sizes = {
+            let mut arr = [FontSize::Medium; DISPLAY_LINES];
+            for (i, slot) in arr.iter_mut().enumerate() {
+                if let Some(v) = main.get(format!("font_line{}", i + 1)) {
+                    *slot = FontSize::from_config_str(v);
+                }
+            }
+            arr
+        };
+
         Ok(Self {
             is_summary,
             is_vertical,
@@ -205,6 +222,7 @@ impl AppConfig {
                 all_pages
             },
             weather: WeatherConfig::from_ini(config),
+            font_sizes,
         })
     }
 }
@@ -1014,6 +1032,31 @@ mod tests {
         let config = result.unwrap();
         assert!(config.is_summary);
         assert!(config.is_vertical);
+    }
+
+    #[test]
+    fn test_appconfig_font_sizes_parsed() {
+        use crate::render::FontSize;
+        let mut ini = Ini::new();
+        ini.with_section(Some("Main"))
+            .set("style", "vertical")
+            .set("font_line1", "large")
+            .set("font_line2", "small")
+            .set("font_line3", "medium");
+        let config = AppConfig::from_ini(&ini).unwrap();
+        assert_eq!(config.font_sizes[0], FontSize::Large);
+        assert_eq!(config.font_sizes[1], FontSize::Small);
+        assert_eq!(config.font_sizes[2], FontSize::Medium);
+    }
+
+    #[test]
+    fn test_appconfig_font_sizes_default_medium_when_missing() {
+        use crate::render::FontSize;
+        let mut ini = Ini::new();
+        ini.with_section(Some("Main")).set("style", "vertical");
+        let config = AppConfig::from_ini(&ini).unwrap();
+        assert!(config.font_sizes.iter().all(|f| *f == FontSize::Medium));
+        assert_eq!(config.font_sizes.len(), crate::consts::DISPLAY_LINES);
     }
 }
 

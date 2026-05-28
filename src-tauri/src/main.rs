@@ -585,6 +585,7 @@ mod tests {
             direct_usb_serial: String::new(),
             custom_sensors: vec![],
             weather: WeatherConfig::default(),
+            font_sizes: [crate::render::FontSize::Medium; crate::consts::DISPLAY_LINES],
         })))
     }
 
