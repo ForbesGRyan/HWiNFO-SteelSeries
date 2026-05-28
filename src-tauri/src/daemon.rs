@@ -335,6 +335,7 @@ fn build_display_value(
     page_counter: usize,
     mouse: &mut MouseBatteryReader,
     media: &mut MediaReader,
+    weather: &crate::weather::WeatherReader,
     hid_api: Option<&hidapi::HidApi>,
 ) -> Result<Value, anyhow::Error> {
     if config.is_summary {
@@ -362,6 +363,7 @@ fn build_display_value(
             config.decimal,
             mouse,
             media,
+            weather,
             hid_api,
         )?;
 
@@ -392,6 +394,7 @@ struct Daemon<R: Runtime = tauri::Wry> {
 
     mouse_battery_reader: MouseBatteryReader,
     media_reader: MediaReader,
+    weather_reader: crate::weather::WeatherReader,
 
     is_sleeping: bool,
     is_white_screen: bool,
@@ -399,6 +402,7 @@ struct Daemon<R: Runtime = tauri::Wry> {
 
 impl<R: Runtime> Daemon<R> {
     fn new(state: Shared, app: AppHandle<R>, config: AppConfig) -> Self {
+        let weather_reader = crate::weather::WeatherReader::spawn(&config.weather);
         Self {
             state,
             app,
@@ -413,6 +417,7 @@ impl<R: Runtime> Daemon<R> {
             page_counter: 0,
             mouse_battery_reader: MouseBatteryReader::new(),
             media_reader: MediaReader::new(),
+            weather_reader,
             is_sleeping: false,
             is_white_screen: false,
         }
@@ -669,6 +674,7 @@ impl<R: Runtime> Daemon<R> {
             self.page_counter,
             &mut self.mouse_battery_reader,
             &mut self.media_reader,
+            &self.weather_reader,
             self.hid_api.as_ref(),
         )?;
 
@@ -764,7 +770,7 @@ fn _arc_assert(_: Arc<()>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::AppConfig;
+    use crate::settings::{AppConfig, WeatherConfig};
     use hwinfo_steelseries_oled::{
         HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
     };
@@ -827,6 +833,7 @@ mod tests {
             direct_usb: false,
             direct_usb_serial: String::new(),
             custom_sensors: Vec::new(),
+            weather: WeatherConfig::default(),
         }
     }
 
@@ -929,8 +936,10 @@ mod tests {
         let hw = full_summary_hwinfo();
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
 
-        let v = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, None).unwrap();
+        let v =
+            build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None).unwrap();
         assert_eq!(v["line1"], "CPU   GPU   MEM");
     }
 
@@ -941,8 +950,10 @@ mod tests {
         let hw = full_summary_hwinfo();
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
 
-        let v = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, None).unwrap();
+        let v =
+            build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None).unwrap();
         assert_eq!(v["line1"], "CPU 42° 50%");
     }
 
@@ -953,8 +964,10 @@ mod tests {
         let hw = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
 
-        let err = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, None).unwrap_err();
+        let err = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None)
+            .unwrap_err();
         assert!(format!("{}", err).contains("Page 0 missing"));
     }
 
@@ -970,8 +983,19 @@ mod tests {
 
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
 
-        let v = build_display_value(&cfg, &hw, &[props], 0, &mut mouse, &mut media, None).unwrap();
+        let v = build_display_value(
+            &cfg,
+            &hw,
+            &[props],
+            0,
+            &mut mouse,
+            &mut media,
+            &weather,
+            None,
+        )
+        .unwrap();
         assert!(v["line1"].as_str().unwrap().contains("X"));
     }
 
@@ -1040,7 +1064,17 @@ mod tests {
         props.insert("sensor_0", "CPU;Temp");
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
-        let r = build_display_value(&cfg, &hw, &[props], 0, &mut mouse, &mut media, None);
+        let weather = crate::weather::WeatherReader::disabled();
+        let r = build_display_value(
+            &cfg,
+            &hw,
+            &[props],
+            0,
+            &mut mouse,
+            &mut media,
+            &weather,
+            None,
+        );
         assert!(r.is_err());
     }
 

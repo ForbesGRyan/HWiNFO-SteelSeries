@@ -301,6 +301,7 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
 
         let mut mb = MouseBatteryReader::new();
         let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
 
         if let Err(e) = run_sensors(
             &props,
@@ -311,6 +312,7 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
             config.decimal,
             &mut mb,
             &mut media,
+            &weather,
             None,
         ) {
             let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0);
@@ -373,7 +375,7 @@ pub fn request_white_screen(state: State<Shared>) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::render::OledBuffer;
-    use crate::settings::CustomSensor;
+    use crate::settings::{CustomSensor, WeatherConfig};
     use hwinfo_steelseries_oled::{
         Hwinfo, HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
     };
@@ -391,6 +393,7 @@ mod tests {
             direct_usb: false,
             direct_usb_serial: String::new(),
             custom_sensors: Vec::new(),
+            weather: WeatherConfig::default(),
         }
     }
 

@@ -22,6 +22,8 @@ mod mouse_battery;
 
 mod media;
 
+mod weather;
+
 mod render;
 
 mod state;
@@ -566,6 +568,7 @@ mod tests {
         assert_eq!(lines.last().unwrap(), "Press Enter to exit...");
     }
 
+    use crate::settings::WeatherConfig;
     use crate::state::SharedState;
     use std::sync::{Arc, Mutex};
 
@@ -581,6 +584,7 @@ mod tests {
             direct_usb: false,
             direct_usb_serial: String::new(),
             custom_sensors: vec![],
+            weather: WeatherConfig::default(),
         })))
     }
 

@@ -1,4 +1,5 @@
 use crate::consts::{Style, CUSTOM_SENSORS};
+use crate::weather::Units;
 use anyhow::anyhow;
 use console::Term;
 use dialoguer::Input;
@@ -12,6 +13,69 @@ pub struct CustomSensor {
     pub label: String,
     pub unit: String,
     pub convert: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WeatherConfig {
+    pub enabled: bool,
+    pub location: String,
+    #[serde(with = "units_serde")]
+    pub units: Units,
+    pub refresh_minutes: u64,
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            location: String::new(),
+            units: Units::Imperial,
+            refresh_minutes: 15,
+        }
+    }
+}
+
+impl WeatherConfig {
+    pub fn from_ini(config: &ini::Ini) -> Self {
+        let section = match config.section(Some("Weather")) {
+            Some(s) => s,
+            None => return Self::default(),
+        };
+        let location = section.get("location").unwrap_or("").trim().to_string();
+        if location.is_empty() {
+            return Self::default();
+        }
+        let units = Units::from_config_str(section.get("units").unwrap_or(""));
+        let refresh_minutes = section
+            .get("refresh_minutes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|v| v.max(1))
+            .unwrap_or(15);
+        Self {
+            enabled: true,
+            location,
+            units,
+            refresh_minutes,
+        }
+    }
+}
+
+mod units_serde {
+    use super::Units;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(units: &Units, s: S) -> Result<S::Ok, S::Error> {
+        match units {
+            Units::Metric => "metric",
+            Units::Imperial => "imperial",
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Units, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(Units::from_config_str(&s))
+    }
 }
 
 // Configuration struct for parsing existing config files
@@ -28,6 +92,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub direct_usb_serial: String,
     pub custom_sensors: Vec<Vec<CustomSensor>>,
+    #[serde(default)]
+    pub weather: WeatherConfig,
 }
 
 impl AppConfig {
@@ -138,6 +204,7 @@ impl AppConfig {
                 }
                 all_pages
             },
+            weather: WeatherConfig::from_ini(config),
         })
     }
 }
@@ -947,5 +1014,67 @@ mod tests {
         let config = result.unwrap();
         assert!(config.is_summary);
         assert!(config.is_vertical);
+    }
+}
+
+#[cfg(test)]
+mod weather_config_tests {
+    use super::*;
+    use ini::Ini;
+
+    fn ini_with_weather(section: &str) -> Ini {
+        let raw = format!("[Main]\nstyle=vertical\n\n{}", section);
+        Ini::load_from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn weather_config_missing_section_disabled() {
+        let ini = ini_with_weather("");
+        let cfg = WeatherConfig::from_ini(&ini);
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.location, "");
+    }
+
+    #[test]
+    fn weather_config_empty_location_disabled() {
+        let ini = ini_with_weather("[Weather]\nlocation=\"\"\nunits=\"metric\"\n");
+        let cfg = WeatherConfig::from_ini(&ini);
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn weather_config_populated_enabled() {
+        let ini = ini_with_weather(
+            "[Weather]\nlocation=\"Seattle,US\"\nunits=\"metric\"\nrefresh_minutes=10\n",
+        );
+        let cfg = WeatherConfig::from_ini(&ini);
+        assert!(cfg.enabled);
+        assert_eq!(cfg.location, "Seattle,US");
+        assert_eq!(cfg.units, crate::weather::Units::Metric);
+        assert_eq!(cfg.refresh_minutes, 10);
+    }
+
+    #[test]
+    fn weather_config_defaults_when_keys_missing() {
+        let ini = ini_with_weather("[Weather]\nlocation=\"Boston\"\n");
+        let cfg = WeatherConfig::from_ini(&ini);
+        assert!(cfg.enabled);
+        assert_eq!(cfg.units, crate::weather::Units::Imperial);
+        assert_eq!(cfg.refresh_minutes, 15);
+    }
+
+    #[test]
+    fn weather_config_refresh_minutes_clamped_to_one() {
+        let ini = ini_with_weather("[Weather]\nlocation=\"X\"\nrefresh_minutes=0\n");
+        let cfg = WeatherConfig::from_ini(&ini);
+        assert_eq!(cfg.refresh_minutes, 1);
+    }
+
+    #[test]
+    fn weather_config_strips_surrounding_quotes_from_location() {
+        // ini crate already strips quotes on load, but be explicit in case of nesting.
+        let ini = ini_with_weather("[Weather]\nlocation=Boise,US\n");
+        let cfg = WeatherConfig::from_ini(&ini);
+        assert_eq!(cfg.location, "Boise,US");
     }
 }

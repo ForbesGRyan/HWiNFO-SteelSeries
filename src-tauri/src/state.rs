@@ -83,7 +83,7 @@ pub type Shared = Arc<Mutex<SharedState>>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::AppConfig;
+    use crate::settings::{AppConfig, WeatherConfig};
 
     fn mock_config() -> AppConfig {
         AppConfig {
@@ -97,6 +97,7 @@ mod tests {
             direct_usb: false,
             direct_usb_serial: String::new(),
             custom_sensors: vec![],
+            weather: WeatherConfig::default(),
         }
     }
 
