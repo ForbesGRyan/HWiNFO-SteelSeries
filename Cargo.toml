@@ -1,3 +1,10 @@
 [workspace]
 members = ["src-tauri"]
 resolver = "2"
+
+[profile.release]
+opt-level = "z"     # optimize for size
+lto = true          # link-time optimization across crates
+codegen-units = 1   # better optimization at cost of compile time
+panic = "abort"     # drop unwinding tables/landing pads
+strip = true        # strip symbols from binary

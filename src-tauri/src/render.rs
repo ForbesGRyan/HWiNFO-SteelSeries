@@ -130,12 +130,51 @@ impl OriginDimensions for OledBuffer {
     }
 }
 
-// Icon Bitmaps (8x8)
+// Icon Bitmaps (8x8). Each byte is one row, MSB = leftmost pixel.
 const ICON_FIRE: [u8; 8] = [0x18, 0x3c, 0x7e, 0xdb, 0xff, 0xff, 0x7e, 0x3c];
 const ICON_FAN: [u8; 8] = [0x66, 0x66, 0x3c, 0xff, 0xff, 0x3c, 0x66, 0x66];
 const ICON_BOLT: [u8; 8] = [0x08, 0x1c, 0x3e, 0x7f, 0x1e, 0x1c, 0x08, 0x00];
 const ICON_CHART: [u8; 8] = [0x01, 0x03, 0x05, 0x09, 0x11, 0x21, 0x41, 0xff];
 const ICON_DISK: [u8; 8] = [0x7e, 0x81, 0xbd, 0xa5, 0xa5, 0xbd, 0x81, 0x7e];
+const ICON_CPU: [u8; 8] = [0x18, 0x7e, 0x42, 0x5a, 0x5a, 0x42, 0x7e, 0x18];
+const ICON_GPU: [u8; 8] = [0xff, 0x81, 0xbd, 0xa5, 0xbd, 0x81, 0xff, 0x24];
+const ICON_MEM: [u8; 8] = [0x7e, 0xff, 0xdb, 0xdb, 0xdb, 0xff, 0x66, 0x66];
+const ICON_TEMP: [u8; 8] = [0x18, 0x24, 0x24, 0x24, 0x3c, 0x7e, 0x7e, 0x3c];
+const ICON_CLOCK: [u8; 8] = [0x3c, 0x42, 0x89, 0x89, 0x8f, 0x81, 0x42, 0x3c];
+const ICON_NET: [u8; 8] = [0x18, 0x3c, 0x7e, 0x18, 0x18, 0x7e, 0x3c, 0x18];
+
+/// Resolve a builtin icon name (from the per-sensor `icon` config field) to its
+/// 8x8 bitmap. Case-insensitive; surrounding whitespace ignored. Unknown or
+/// empty names return None (no icon drawn). Several names alias the legacy
+/// emoji glyphs so existing artwork is reused.
+pub fn icon_by_name(name: &str) -> Option<&'static [u8; 8]> {
+    match name.trim().to_lowercase().as_str() {
+        "cpu" => Some(&ICON_CPU),
+        "gpu" => Some(&ICON_GPU),
+        "mem" | "ram" => Some(&ICON_MEM),
+        "temp" => Some(&ICON_TEMP),
+        "clock" => Some(&ICON_CLOCK),
+        "net" => Some(&ICON_NET),
+        "fan" => Some(&ICON_FAN),
+        "disk" => Some(&ICON_DISK),
+        "power" | "bolt" => Some(&ICON_BOLT),
+        "usage" | "chart" => Some(&ICON_CHART),
+        "fire" => Some(&ICON_FIRE),
+        _ => None,
+    }
+}
+
+/// Delimiter wrapping an inline icon name inside a display line, e.g.
+/// `"\u{1}cpu\u{1}42°C"`. Uses SOH (U+0001) so it can never collide with a
+/// user label, sensor value, or unit. `format_custom_value` emits these; the
+/// renderer parses them out.
+pub const ICON_DELIM: char = '\u{1}';
+
+/// Wrap a builtin icon name in [`ICON_DELIM`] so it survives line joining and
+/// is recognised by [`render_text_to_oled`].
+pub fn icon_token(name: &str) -> String {
+    format!("{d}{n}{d}", d = ICON_DELIM, n = name)
+}
 
 fn get_emoji_icon(emoji: &str) -> Option<&'static [u8; 8]> {
     if emoji.contains('🔥') {
@@ -175,6 +214,25 @@ pub fn render_text_to_oled(text: &str, x: i32, line_fonts: &[FontSize]) -> OledB
             let path = rest.trim();
             let img_y = (y - 10).max(0) as u32;
             let _ = load_image_to_buffer(path, &mut buffer, current_x as u32, img_y);
+        } else if line.contains(ICON_DELIM) {
+            // Inline icon tokens: text and `\u{1}name\u{1}` icons interleave.
+            // Splitting on the delimiter yields alternating segments — even
+            // indices are text, odd indices are icon names.
+            for (seg_idx, seg) in line.split(ICON_DELIM).enumerate() {
+                if seg_idx % 2 == 1 {
+                    if let Some(icon_data) = icon_by_name(seg) {
+                        let raw_image = ImageRaw::<BinaryColor>::new(icon_data, 8);
+                        let image = Image::new(&raw_image, Point::new(current_x, y - 8));
+                        let _ = image.draw(&mut buffer);
+                        current_x += 10;
+                    }
+                } else if !seg.is_empty() {
+                    current_x = Text::new(seg, Point::new(current_x, y), style)
+                        .draw(&mut buffer)
+                        .map(|next| next.x)
+                        .unwrap_or(current_x);
+                }
+            }
         } else {
             if let Some(icon_data) = get_emoji_icon(line) {
                 let raw_image = ImageRaw::<BinaryColor>::new(icon_data, 8);
@@ -385,6 +443,34 @@ mod tests {
     }
 
     // ===========================================
+    // icon_by_name() tests
+    // ===========================================
+
+    #[test]
+    fn test_icon_by_name_known_builtins_resolve() {
+        for name in [
+            "cpu", "gpu", "mem", "temp", "fan", "clock", "disk", "power", "usage", "net",
+        ] {
+            assert!(
+                icon_by_name(name).is_some(),
+                "builtin icon '{}' should resolve",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_icon_by_name_is_case_insensitive_and_trims() {
+        assert_eq!(icon_by_name("  CPU "), icon_by_name("cpu"));
+    }
+
+    #[test]
+    fn test_icon_by_name_unknown_returns_none() {
+        assert!(icon_by_name("not-an-icon").is_none());
+        assert!(icon_by_name("").is_none());
+    }
+
+    // ===========================================
     // get_emoji_icon() tests
     // ===========================================
 
@@ -441,6 +527,43 @@ mod tests {
         let result = get_emoji_icon("Temperature 🔥");
         assert!(result.is_some());
         assert_eq!(result.unwrap(), &ICON_FIRE);
+    }
+
+    // ===========================================
+    // inline icon token tests
+    // ===========================================
+
+    #[test]
+    fn test_icon_token_roundtrips_with_icon_by_name() {
+        let tok = icon_token("cpu");
+        // The token wraps the name in delimiters so it survives line joining.
+        assert!(tok.starts_with(ICON_DELIM));
+        assert!(tok.ends_with(ICON_DELIM));
+        assert!(tok.contains("cpu"));
+    }
+
+    #[test]
+    fn test_render_inline_icon_token_lights_pixels() {
+        let text = format!("{}Temp", icon_token("cpu"));
+        let buf = render_text_to_oled(&text, 0, &[]);
+        assert!(buf.data.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn test_render_inline_icon_differs_from_plain_text() {
+        let with_icon = render_text_to_oled(&format!("{}42", icon_token("cpu")), 0, &[]);
+        let plain = render_text_to_oled("42", 0, &[]);
+        assert_ne!(with_icon.data, plain.data);
+    }
+
+    #[test]
+    fn test_render_unknown_icon_token_renders_following_text() {
+        // Unknown icon name: no glyph, but the trailing text still renders and
+        // the delimiter chars must not appear as literal glyphs.
+        let with_bogus = render_text_to_oled(&format!("{}Hi", icon_token("bogus")), 0, &[]);
+        let plain = render_text_to_oled("Hi", 0, &[]);
+        assert!(with_bogus.data.iter().any(|&b| b != 0));
+        assert_eq!(with_bogus.data, plain.data);
     }
 
     // ===========================================

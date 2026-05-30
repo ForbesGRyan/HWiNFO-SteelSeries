@@ -376,11 +376,19 @@ fn build_display_value(
             hid_api,
         )?;
 
+        // Per-sensor icon names (direct-USB bitmap path). Read straight from the
+        // page properties, parallel to labels/units, so `run_sensors` stays
+        // unchanged.
+        let icons: Vec<&str> = (0..CUSTOM_SENSORS)
+            .map(|k| pages_sensors.get(format!("icon_{}", k)).unwrap_or_default())
+            .collect();
+
         Ok(format_custom_value(
             config.sensors_per_line,
             labels,
             values,
             units,
+            icons,
         ))
     }
 }
@@ -696,11 +704,19 @@ impl<R: Runtime> Daemon<R> {
         let event_name = page_event_name(self.page_counter);
         oled.trigger_frame(&event_name, self.i.0, &value, &buffer)?;
 
+        // Publish live dynamic-sensor snapshots so the settings preview can render
+        // MEDIA_*/WEATHER_* with the same data the OLED shows (the GUI preview has
+        // no access to the daemon's live readers otherwise).
+        let media_snapshot = self.media_reader.snapshot();
+        let weather_snapshot = self.weather_reader.current_info();
+
         self.write_state(|s| {
             s.hwinfo_connected = true;
             s.oled_buffer = OledBuffer { data: buffer.data };
             s.sensor_values = value_to_sensor_values(&value);
             s.last_error = None;
+            s.media_info = media_snapshot;
+            s.weather_info = weather_snapshot;
         });
         self.push_status();
         self.push_frame(&buffer);

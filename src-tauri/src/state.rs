@@ -40,6 +40,13 @@ pub struct SharedState {
     pub reload_requested: bool,
     pub sleep_requested: Option<SleepCommand>,
     pub hwinfo_snapshot: Option<Hwinfo>,
+    /// Latest media snapshot from the daemon's live `MediaReader`, published each
+    /// tick so the settings preview can render `MEDIA_*` sensors with real data.
+    pub media_info: crate::media::MediaInfo,
+    /// Latest weather snapshot from the daemon's live `WeatherReader`, published
+    /// each tick so the settings preview can render `WEATHER_*` sensors. `None`
+    /// when weather is disabled or no fetch has completed yet.
+    pub weather_info: Option<crate::weather::WeatherInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +70,8 @@ impl SharedState {
             reload_requested: false,
             sleep_requested: None,
             hwinfo_snapshot: None,
+            media_info: crate::media::MediaInfo::default(),
+            weather_info: None,
         }
     }
 

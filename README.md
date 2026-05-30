@@ -152,11 +152,29 @@ sensor_12="Network: Intel Ethernet Controller I225-V;Current UP rate"
 label_12="NET ^"
 unit_12="mb/s"
 convert_12="kb/mb"
+icon_12="net"  # Optional builtin icon, Direct USB mode only (see below)
 
 sensor_13="Network: Intel Ethernet Controller I225-V;Current DL rate"
 label_13="NET v"
 unit_13="mb/s"
 convert_13="kb/mb"
+```
+
+#### Sensor Icons (Direct USB mode)
+
+In **Direct USB (HID)** mode the display is drawn as a bitmap, so each sensor can
+show a small icon before its value via the optional `icon_N` key (or the **Icon**
+dropdown in the settings window). Icons are ignored in SteelSeries GG mode, which
+only renders text.
+
+Available builtin icon names: `cpu`, `gpu`, `mem`, `temp`, `fan`, `clock`,
+`disk`, `power`, `usage`, `net`. Leave empty for no icon.
+
+```ini
+sensor_0="CPU [#0]: AMD Ryzen 9 5950X;CPU (Tctl/Tdie)"
+label_0=""
+unit_0="°"
+icon_0="cpu"
 ```
 
 #### Custom Mode Output Examples

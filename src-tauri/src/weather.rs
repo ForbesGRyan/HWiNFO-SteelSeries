@@ -426,8 +426,8 @@ impl WeatherReader {
         }
     }
 
-    /// Test-only constructor with a pre-populated cache.
-    #[cfg(test)]
+    /// Constructor with a pre-populated cache and no refresh thread. Used by the
+    /// settings preview to render `WEATHER_*` sensors with the daemon's live data.
     pub fn with_cached_info(info: WeatherInfo) -> Self {
         Self {
             shared: Arc::new(RwLock::new(Some(info))),
@@ -468,6 +468,13 @@ impl WeatherReader {
     /// has been fetched yet, or the field is unset.
     pub fn get_field(&self, field: WeatherField) -> Option<String> {
         self.shared.read().ok()?.as_ref()?.get(field)
+    }
+
+    /// Clone the current cached `WeatherInfo`, if any. The daemon publishes this
+    /// into shared state each tick so the GUI preview can seed a reader via
+    /// `with_cached_info`.
+    pub fn current_info(&self) -> Option<WeatherInfo> {
+        self.shared.read().ok()?.clone()
     }
 }
 

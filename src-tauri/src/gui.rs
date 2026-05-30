@@ -105,6 +105,7 @@ fn build_preview_props(page_sensors: &[crate::settings::CustomSensor]) -> ini::P
         props.insert(format!("label_{}", k), sensor.label.clone());
         props.insert(format!("unit_{}", k), sensor.unit.clone());
         props.insert(format!("convert_{}", k), sensor.convert.clone());
+        props.insert(format!("icon_{}", k), sensor.icon.clone());
     }
     props
 }
@@ -218,6 +219,7 @@ fn apply_pages_sections(ini: &mut Ini, config: &AppConfig) {
             section.set(format!("label_{}", k), &sensor.label);
             section.set(format!("unit_{}", k), &sensor.unit);
             section.set(format!("convert_{}", k), &sensor.convert);
+            section.set(format!("icon_{}", k), &sensor.icon);
         }
     }
 }
@@ -345,9 +347,13 @@ pub fn list_sensors(state: State<Shared>) -> Result<Vec<SensorOption>, String> {
 }
 
 fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Result<Vec<u8>, String> {
-    let hwinfo_opt = {
+    let (hwinfo_opt, media_info, weather_info) = {
         let g = shared.lock().map_err(|e| e.to_string())?;
-        g.hwinfo_snapshot.clone()
+        (
+            g.hwinfo_snapshot.clone(),
+            g.media_info.clone(),
+            g.weather_info.clone(),
+        )
     };
 
     let value: Value = if config.is_summary {
@@ -369,8 +375,13 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
         let mut values = vec![String::new(); CUSTOM_SENSORS];
 
         let mut mb = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
+        // Seed the preview readers with the daemon's live snapshots so MEDIA_*/
+        // WEATHER_* sensors render real data instead of always-blank placeholders.
+        let mut media = MediaReader::with_cached_info(media_info);
+        let weather = match weather_info {
+            Some(info) => crate::weather::WeatherReader::with_cached_info(info),
+            None => crate::weather::WeatherReader::disabled(),
+        };
 
         if let Err(e) = run_sensors(
             &props,
@@ -388,7 +399,11 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
             return Ok(buffer_to_pixels(&buf));
         }
 
-        format_custom_value(config.sensors_per_line, labels, values, units)
+        let icons: Vec<&str> = (0..CUSTOM_SENSORS)
+            .map(|k| props.get(format!("icon_{}", k)).unwrap_or_default())
+            .collect();
+
+        format_custom_value(config.sensors_per_line, labels, values, units, icons)
     };
 
     let buf = render_text_to_oled(&value_to_preview_text(&value), 0, &config.font_sizes);
@@ -473,6 +488,7 @@ mod tests {
             label: format!("L_{}", name),
             unit: "U".to_string(),
             convert: String::new(),
+            icon: String::new(),
         }
     }
 
@@ -524,6 +540,20 @@ mod tests {
         assert_eq!(p.get("label_0"), Some("L_CPU;Temp"));
         assert_eq!(p.get("unit_0"), Some("U"));
         assert_eq!(p.get("convert_0"), Some(""));
+        assert_eq!(p.get("icon_0"), Some(""));
+    }
+
+    #[test]
+    fn test_build_preview_props_writes_icon() {
+        let page = vec![CustomSensor {
+            sensor: "CPU;Temp".to_string(),
+            label: String::new(),
+            unit: String::new(),
+            convert: String::new(),
+            icon: "cpu".to_string(),
+        }];
+        let p = build_preview_props(&page);
+        assert_eq!(p.get("icon_0"), Some("cpu"));
     }
 
     #[test]
@@ -719,6 +749,23 @@ mod tests {
         let sec = ini.section(Some("PAGE1.Sensors")).unwrap();
         assert_eq!(sec.get("sensor_0"), Some("CPU;Temp"));
         assert_eq!(sec.get("sensor_1"), Some("GPU;Temp"));
+    }
+
+    #[test]
+    fn test_apply_pages_sections_writes_icon() {
+        let mut ini = Ini::new();
+        let mut c = base_config();
+        c.is_summary = false;
+        c.custom_sensors = vec![vec![CustomSensor {
+            sensor: "CPU;Temp".to_string(),
+            label: String::new(),
+            unit: String::new(),
+            convert: String::new(),
+            icon: "cpu".to_string(),
+        }]];
+        apply_pages_sections(&mut ini, &c);
+        let sec = ini.section(Some("PAGE1.Sensors")).unwrap();
+        assert_eq!(sec.get("icon_0"), Some("cpu"));
     }
 
     #[test]
@@ -1068,6 +1115,55 @@ mod tests {
         let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
         // Preview error rendered to pixels
         assert!(pixels.iter().any(|p| *p != 0));
+    }
+
+    #[test]
+    fn test_preview_config_impl_renders_live_media() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")]));
+            g.media_info = crate::media::MediaInfo {
+                title: "NowPlaying".to_string(),
+                is_playing: true,
+                ..Default::default()
+            };
+        }
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![vec![sensor("MEDIA_TITLE")]];
+
+        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        // The live media title must render → some pixels lit. With the old
+        // throwaway MediaReader, nothing was playing → blank frame.
+        assert!(
+            pixels.iter().any(|p| *p != 0),
+            "live MEDIA_TITLE should render in preview"
+        );
+    }
+
+    #[test]
+    fn test_preview_config_impl_renders_live_weather() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")]));
+            g.weather_info = Some(crate::weather::WeatherInfo {
+                temp: Some("72".to_string()),
+                ..Default::default()
+            });
+        }
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![vec![sensor("WEATHER_TEMP")]];
+
+        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        // The live weather temp must render → some pixels lit. With the old
+        // disabled WeatherReader, the field was None → blank frame.
+        assert!(
+            pixels.iter().any(|p| *p != 0),
+            "live WEATHER_TEMP should render in preview"
+        );
     }
 
     #[test]
