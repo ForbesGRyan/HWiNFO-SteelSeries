@@ -1192,7 +1192,7 @@ mod tests {
 
     #[test]
     fn test_buffer_to_pixels_size_and_mapping() {
-        let mut buf = OledBuffer::new();
+        let mut buf = OledBuffer::new(128, 64);
         buf.set_pixel(0, 0, true);
         buf.set_pixel(127, 63, true);
         let px = buffer_to_pixels(&buf);

@@ -66,27 +66,37 @@ impl FontSize {
     }
 }
 
-/// A buffer for the SteelSeries OLED screen (128x64)
+/// A buffer for a SteelSeries OLED screen. Layout is column-major pages:
+/// for each column, `height/8` bytes; within a byte, bit 0 is the topmost pixel.
+#[derive(Debug, Clone, PartialEq)]
 pub struct OledBuffer {
-    // 128 columns, 8 bytes per column (64 pixels / 8)
-    pub data: [u8; 128 * 8],
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
 }
 
 impl OledBuffer {
-    pub fn new() -> Self {
+    pub fn new(width: u32, height: u32) -> Self {
+        debug_assert!(height % 8 == 0, "OLED height must be a multiple of 8");
         Self {
-            data: [0u8; 128 * 8],
+            width,
+            height,
+            data: vec![0u8; (width * height / 8) as usize],
         }
     }
 
+    /// Bytes per column (= height / 8).
+    fn pages(&self) -> usize {
+        (self.height / 8) as usize
+    }
+
     pub fn set_pixel(&mut self, x: u32, y: u32, on: bool) {
-        if x >= 128 || y >= 64 {
+        if x >= self.width || y >= self.height {
             return;
         }
-        let col = x as usize;
-        let byte_row = (y / 8) as usize;
+        let pages = self.pages();
+        let idx = x as usize * pages + (y / 8) as usize;
         let bit = (y % 8) as u8;
-        let idx = col * 8 + byte_row;
 
         if on {
             self.data[idx] |= 1 << bit;
@@ -98,10 +108,11 @@ impl OledBuffer {
     // clear is omitted as it is currently unused
 
     pub fn get_chunk(&self, x_offset: u8, width: u8) -> Vec<u8> {
-        let mut chunk = Vec::with_capacity(width as usize * 8);
+        let pages = self.pages();
+        let mut chunk = Vec::with_capacity(width as usize * pages);
         for x in x_offset..(x_offset + width) {
-            let start = x as usize * 8;
-            chunk.extend_from_slice(&self.data[start..start + 8]);
+            let start = x as usize * pages;
+            chunk.extend_from_slice(&self.data[start..start + pages]);
         }
         chunk
     }
@@ -116,7 +127,11 @@ impl DrawTarget for OledBuffer {
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
         for Pixel(point, color) in pixels.into_iter() {
-            if point.x >= 0 && point.x < 128 && point.y >= 0 && point.y < 64 {
+            if point.x >= 0
+                && point.x < self.width as i32
+                && point.y >= 0
+                && point.y < self.height as i32
+            {
                 self.set_pixel(point.x as u32, point.y as u32, color.is_on());
             }
         }
@@ -126,7 +141,7 @@ impl DrawTarget for OledBuffer {
 
 impl OriginDimensions for OledBuffer {
     fn size(&self) -> Size {
-        Size::new(128, 64)
+        Size::new(self.width, self.height)
     }
 }
 
@@ -196,7 +211,7 @@ fn get_emoji_icon(emoji: &str) -> Option<&'static [u8; 8]> {
 }
 
 pub fn render_text_to_oled(text: &str, x: i32, line_fonts: &[FontSize]) -> OledBuffer {
-    let mut buffer = OledBuffer::new();
+    let mut buffer = OledBuffer::new(128, 64);
 
     let mut y = 0;
     for (i, line) in text.lines().enumerate() {
@@ -303,14 +318,14 @@ mod tests {
 
     #[test]
     fn test_oled_buffer_new_creates_correct_size() {
-        let buffer = OledBuffer::new();
+        let buffer = OledBuffer::new(128, 64);
         // 128 columns * 8 bytes per column = 1024 bytes
         assert_eq!(buffer.data.len(), 128 * 8);
     }
 
     #[test]
     fn test_oled_buffer_new_initialized_to_zeros() {
-        let buffer = OledBuffer::new();
+        let buffer = OledBuffer::new(128, 64);
         // All bytes should be zero (black/off)
         for byte in buffer.data.iter() {
             assert_eq!(*byte, 0);
@@ -323,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_set_pixel_at_origin() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         buffer.set_pixel(0, 0, true);
 
         // Pixel at (0,0) should set bit 0 of byte at index 0
@@ -332,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_set_pixel_at_max_bounds() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         // Max valid coordinates are (127, 63) for 128x64 display
         buffer.set_pixel(127, 63, true);
 
@@ -344,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_set_pixel_out_of_bounds_x_does_not_panic() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         // Should not panic, just be ignored
         buffer.set_pixel(128, 0, true);
         buffer.set_pixel(200, 0, true);
@@ -357,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_set_pixel_out_of_bounds_y_does_not_panic() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         // Should not panic, just be ignored
         buffer.set_pixel(0, 64, true);
         buffer.set_pixel(0, 100, true);
@@ -370,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_set_pixel_can_turn_off() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         buffer.set_pixel(5, 5, true);
 
         // Verify pixel is on
@@ -385,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_set_pixel_different_y_positions() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
 
         // Set pixels at different y positions in same column
         buffer.set_pixel(0, 0, true); // bit 0 of byte 0
@@ -402,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_get_chunk_at_offset_zero() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         buffer.set_pixel(0, 0, true);
 
         let chunk = buffer.get_chunk(0, 1);
@@ -413,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_get_chunk_multiple_columns() {
-        let buffer = OledBuffer::new();
+        let buffer = OledBuffer::new(128, 64);
 
         let chunk = buffer.get_chunk(0, 10);
         // 10 columns * 8 bytes = 80 bytes
@@ -422,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_get_chunk_at_middle_offset() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         buffer.set_pixel(64, 0, true);
 
         let chunk = buffer.get_chunk(64, 1);
@@ -432,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_get_chunk_preserves_data() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         // Set a pattern in column 5
         buffer.set_pixel(5, 0, true);
         buffer.set_pixel(5, 1, true);
@@ -440,6 +455,52 @@ mod tests {
 
         let chunk = buffer.get_chunk(5, 1);
         assert_eq!(chunk[0], 0b00000111); // bits 0, 1, 2 set
+    }
+
+    // ===========================================
+    // Resolution-aware OledBuffer tests
+    // ===========================================
+
+    #[test]
+    fn test_new_sizes_buffer_for_dimensions() {
+        let b64 = OledBuffer::new(128, 64);
+        assert_eq!(b64.width, 128);
+        assert_eq!(b64.height, 64);
+        assert_eq!(b64.data.len(), 128 * 64 / 8); // 1024
+
+        let b40 = OledBuffer::new(128, 40);
+        assert_eq!(b40.data.len(), 128 * 40 / 8); // 640
+    }
+
+    #[test]
+    fn test_set_pixel_respects_instance_bounds() {
+        let mut b40 = OledBuffer::new(128, 40);
+        b40.set_pixel(0, 39, true); // in bounds
+        b40.set_pixel(0, 40, true); // out of bounds for 40-tall: no-op, no panic
+        b40.set_pixel(127, 0, true);
+        b40.set_pixel(128, 0, true); // no-op
+
+        // (0, 39): column 0, page 4, bit 7
+        assert_eq!(b40.data[4], 0x80);
+        // (127, 0): column 127, page 0, bit 0; 5 pages per column
+        assert_eq!(b40.data[127 * 5], 0x01);
+    }
+
+    #[test]
+    fn test_get_chunk_uses_instance_pages() {
+        let mut b40 = OledBuffer::new(128, 40);
+        b40.set_pixel(2, 0, true);
+        let chunk = b40.get_chunk(0, 4); // 4 columns × 5 pages
+        assert_eq!(chunk.len(), 20);
+        assert_eq!(chunk[2 * 5], 0x01);
+    }
+
+    #[test]
+    fn test_buffer_clone_is_deep() {
+        let mut a = OledBuffer::new(128, 64);
+        a.set_pixel(1, 1, true);
+        let b = a.clone();
+        assert_eq!(a, b);
     }
 
     // ===========================================
@@ -689,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_draw_target_size() {
-        let buffer = OledBuffer::new();
+        let buffer = OledBuffer::new(128, 64);
         let size = buffer.size();
         assert_eq!(size.width, 128);
         assert_eq!(size.height, 64);
@@ -699,7 +760,7 @@ mod tests {
     fn test_draw_target_draw_iter() {
         use embedded_graphics::prelude::*;
 
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         let pixels = vec![
             Pixel(Point::new(10, 10), BinaryColor::On),
             Pixel(Point::new(20, 20), BinaryColor::On),
@@ -720,7 +781,7 @@ mod tests {
 
     #[test]
     fn test_draw_target_ignores_negative_coordinates() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         let pixels = vec![
             Pixel(Point::new(-1, 0), BinaryColor::On),
             Pixel(Point::new(0, -1), BinaryColor::On),
@@ -751,7 +812,7 @@ mod tests {
         let path = dir.join("hwinfo_ss_render_bright.png");
         write_test_image(&path, 4, 4, 255);
 
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         load_image_to_buffer(&path.to_string_lossy(), &mut buffer, 0, 0).unwrap();
 
         // Pixels (0,0)..(3,3) should be on
@@ -767,7 +828,7 @@ mod tests {
         let path = dir.join("hwinfo_ss_render_dark.png");
         write_test_image(&path, 4, 4, 50);
 
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         load_image_to_buffer(&path.to_string_lossy(), &mut buffer, 0, 0).unwrap();
 
         assert!(buffer.data.iter().all(|b| *b == 0));
@@ -782,7 +843,7 @@ mod tests {
         let path = dir.join("hwinfo_ss_render_clip.png");
         write_test_image(&path, 200, 100, 255);
 
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         load_image_to_buffer(&path.to_string_lossy(), &mut buffer, 0, 0).unwrap();
 
         // Buffer length unchanged (no panic from clipping)
@@ -793,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_load_image_to_buffer_missing_file_returns_err() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         let r = load_image_to_buffer("/no/such/path/xyz.png", &mut buffer, 0, 0);
         assert!(r.is_err());
     }
@@ -814,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_draw_target_ignores_out_of_bounds() {
-        let mut buffer = OledBuffer::new();
+        let mut buffer = OledBuffer::new(128, 64);
         let pixels = vec![
             Pixel(Point::new(128, 0), BinaryColor::On),
             Pixel(Point::new(0, 64), BinaryColor::On),

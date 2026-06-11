@@ -147,7 +147,7 @@ fn build_hid_packet(chunk_x: u8, chunk_width: u8, screen_height: u8, bitmap: &[u
 
 /// Pure helper: create an OledBuffer with every pixel turned on ("white" screen).
 fn white_buffer() -> OledBuffer {
-    let mut buffer = OledBuffer::new();
+    let mut buffer = OledBuffer::new(128, 64);
     for x in 0..128 {
         for y in 0..64 {
             buffer.set_pixel(x, y, true);
@@ -250,7 +250,7 @@ impl OledClient {
                 client.trigger_event_frame("BLANK", 0, v)?;
             }
             OledClient::Hid(sender) => {
-                for packet in build_hid_packets_for_buffer(&OledBuffer::new()) {
+                for packet in build_hid_packets_for_buffer(&OledBuffer::new(128, 64)) {
                     let _ = sender.send_feature_report(&packet);
                 }
             }
@@ -665,7 +665,7 @@ impl<R: Runtime> Daemon<R> {
 
             self.write_state(|s| {
                 s.hwinfo_connected = false;
-                s.oled_buffer = OledBuffer { data: buffer.data };
+                s.oled_buffer = buffer.clone();
                 s.sensor_values = value_to_sensor_values(&value);
                 s.last_error = Some("HWiNFO disconnected".to_string());
             });
@@ -712,7 +712,7 @@ impl<R: Runtime> Daemon<R> {
 
         self.write_state(|s| {
             s.hwinfo_connected = true;
-            s.oled_buffer = OledBuffer { data: buffer.data };
+            s.oled_buffer = buffer.clone();
             s.sensor_values = value_to_sensor_values(&value);
             s.last_error = None;
             s.media_info = media_snapshot;
@@ -1264,7 +1264,7 @@ mod tests {
     #[test]
     fn test_daemon_push_frame_runs() {
         let d = daemon_for_tests();
-        d.push_frame(&OledBuffer::new());
+        d.push_frame(&OledBuffer::new(128, 64));
     }
 
     #[test]
@@ -1677,7 +1677,7 @@ mod tests {
     #[test]
     fn test_oled_client_hid_trigger_frame_sends_two_packets() {
         let mut oled = OledClient::Hid(Box::new(FakeHidSender::new()));
-        let buf = OledBuffer::new();
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         oled.trigger_frame("E", 0, &val, &buf).unwrap();
         // FakeHidSender should have received 2 packets
@@ -1691,7 +1691,7 @@ mod tests {
     #[test]
     fn test_oled_client_hid_trigger_frame_returns_err_when_sender_fails() {
         let mut oled = OledClient::Hid(Box::new(FakeHidSender::failing()));
-        let buf = OledBuffer::new();
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         let r = oled.trigger_frame("E", 0, &val, &buf);
         assert!(r.is_err());
@@ -1715,7 +1715,7 @@ mod tests {
         // Exercise OledClient's DisplayDriver impl via dyn dispatch (covers the trait wrapper methods).
         let mut drv: Box<dyn DisplayDriver> =
             Box::new(OledClient::Hid(Box::new(FakeHidSender::new())));
-        let buf = OledBuffer::new();
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         assert!(drv.trigger_frame("E", 0, &val, &buf).is_ok());
         assert!(drv.send_blank().is_ok());
@@ -1763,7 +1763,7 @@ mod tests {
 
     #[test]
     fn test_build_hid_packets_for_buffer_produces_two_packets() {
-        let buf = OledBuffer::new();
+        let buf = OledBuffer::new(128, 64);
         let packets = build_hid_packets_for_buffer(&buf);
         assert_eq!(packets.len(), 2);
         assert_eq!(packets[0][2], 0); // chunk_x = 0
@@ -1786,7 +1786,7 @@ mod tests {
     fn test_oled_client_dyn_dispatch_via_mock() {
         // Exercise the trait methods through dyn dispatch.
         let mut drv: Box<dyn DisplayDriver> = Box::new(MockDriver::new());
-        let buf = OledBuffer::new();
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         assert!(drv.trigger_frame("e", 0, &val, &buf).is_ok());
         assert!(drv.send_blank().is_ok());
@@ -1796,7 +1796,7 @@ mod tests {
 
     #[test]
     fn test_buffer_to_rgba_grayscale_size_and_mapping() {
-        let mut buf = OledBuffer::new();
+        let mut buf = OledBuffer::new(128, 64);
         buf.set_pixel(0, 0, true);
         buf.set_pixel(127, 63, true);
         let px = buffer_to_rgba_grayscale(&buf);

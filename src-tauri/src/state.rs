@@ -65,7 +65,7 @@ impl SharedState {
             active_mode: ActiveMode::Disconnected,
             last_error: None,
             sensor_values: Vec::new(),
-            oled_buffer: OledBuffer::new(),
+            oled_buffer: OledBuffer::new(128, 64),
             config,
             reload_requested: false,
             sleep_requested: None,
