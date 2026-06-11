@@ -107,6 +107,20 @@ impl OledBuffer {
 
     // clear is omitted as it is currently unused
 
+    /// Serialize to SSD1306 page-major order: all columns of page 0, then
+    /// page 1, etc. (The internal layout is column-major pages.) Used by the
+    /// Apex legacy protocol.
+    pub fn to_page_major(&self) -> Vec<u8> {
+        let pages = self.pages();
+        let mut out = Vec::with_capacity(self.data.len());
+        for page in 0..pages {
+            for x in 0..self.width as usize {
+                out.push(self.data[x * pages + page]);
+            }
+        }
+        out
+    }
+
     pub fn get_chunk(&self, x_offset: u8, width: u8) -> Vec<u8> {
         let pages = self.pages();
         let mut chunk = Vec::with_capacity(width as usize * pages);
@@ -501,6 +515,37 @@ mod tests {
         a.set_pixel(1, 1, true);
         let b = a.clone();
         assert_eq!(a, b);
+        a.set_pixel(2, 2, true);
+        assert_ne!(a, b);
+    }
+
+    // ===========================================
+    // OledBuffer::to_page_major() tests
+    // ===========================================
+
+    #[test]
+    fn test_to_page_major_length_and_ordering() {
+        let mut b = OledBuffer::new(128, 40);
+        // (0,0) → page 0, column 0, bit 0 → out[0] = 0x01
+        b.set_pixel(0, 0, true);
+        // (5,9) → page 1, column 5, bit 1 → out[1*128 + 5] = 0x02
+        b.set_pixel(5, 9, true);
+        // (127,39) → page 4, column 127, bit 7 → out[4*128 + 127] = 0x80
+        b.set_pixel(127, 39, true);
+
+        let out = b.to_page_major();
+        assert_eq!(out.len(), 640);
+        assert_eq!(out[0], 0x01);
+        assert_eq!(out[128 + 5], 0x02);
+        assert_eq!(out[4 * 128 + 127], 0x80);
+    }
+
+    #[test]
+    fn test_to_page_major_empty_buffer_is_zeroes() {
+        let b = OledBuffer::new(128, 64);
+        let out = b.to_page_major();
+        assert_eq!(out.len(), 1024);
+        assert!(out.iter().all(|&byte| byte == 0));
     }
 
     // ===========================================
