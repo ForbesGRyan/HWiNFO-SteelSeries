@@ -1011,6 +1011,8 @@ mod tests {
         // 5 lines of Large font massively overflow 40px; must not panic.
         let buf = render_text_to_oled("A\nB\nC\nD\nE", 0, &[FontSize::Large; 5], 128, 40);
         assert_eq!(buf.data.len(), 640);
+        // Lines A/B fit (Large baselines 16/36 < 40), so content is guaranteed.
+        assert!(buf.data.iter().any(|&b| b != 0));
     }
 
     #[test]

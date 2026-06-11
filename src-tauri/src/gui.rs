@@ -426,14 +426,12 @@ pub fn preview_config(
 }
 
 fn buffer_to_pixels(buf: &crate::render::OledBuffer) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(128 * 64);
-    for y in 0..64u32 {
-        for x in 0..128u32 {
-            let col = x as usize;
-            let byte_row = (y / 8) as usize;
-            let bit = (y % 8) as u8;
-            let idx = col * 8 + byte_row;
-            let on = (buf.data[idx] & (1 << bit)) != 0;
+    let mut pixels = Vec::with_capacity((buf.width * buf.height) as usize);
+    let pages = (buf.height / 8) as usize;
+    for y in 0..buf.height {
+        for x in 0..buf.width {
+            let idx = x as usize * pages + (y / 8) as usize;
+            let on = (buf.data[idx] & (1 << (y % 8))) != 0;
             pixels.push(if on { 255 } else { 0 });
         }
     }
