@@ -77,7 +77,10 @@ pub struct OledBuffer {
 
 impl OledBuffer {
     pub fn new(width: u32, height: u32) -> Self {
-        debug_assert!(height % 8 == 0, "OLED height must be a multiple of 8");
+        debug_assert!(
+            height.is_multiple_of(8),
+            "OLED height must be a multiple of 8"
+        );
         Self {
             width,
             height,
