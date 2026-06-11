@@ -127,7 +127,7 @@
 
         #oled-preview {
             width: 384px;
-            height: 192px;
+            height: auto;
             image-rendering: pixelated;
             background-color: #111;
         }
@@ -461,11 +461,15 @@
         const previewCtx = previewCanvas.getContext('2d');
 
         // --- Preview rendering ---
-        function renderFrame(pixels) {
-            if (!pixels || pixels.length !== 128 * 64) return;
-            const imgData = previewCtx.createImageData(128, 64);
-            for (let i = 0; i < pixels.length; i++) {
-                const v = pixels[i];
+        function renderFrame(frame) {
+            if (!frame || !frame.pixels || frame.pixels.length !== frame.width * frame.height) return;
+            if (previewCanvas.width !== frame.width) previewCanvas.width = frame.width;
+            if (previewCanvas.height !== frame.height) previewCanvas.height = frame.height;
+            document.getElementById('preview-caption').textContent =
+                `What is currently on the OLED (${frame.width}×${frame.height})`;
+            const imgData = previewCtx.createImageData(frame.width, frame.height);
+            for (let i = 0; i < frame.pixels.length; i++) {
+                const v = frame.pixels[i];
                 imgData.data[i * 4] = v;
                 imgData.data[i * 4 + 1] = v;
                 imgData.data[i * 4 + 2] = v;
@@ -1002,7 +1006,9 @@
                 // platform HID path (prefixed so the backend can tell them apart)
                 // when the device does not expose a serial.
                 opt.value = d.serial ? d.serial : (d.path ? `path:${d.path}` : '');
-                const label = d.product || `Unknown device ${d.product_id.toString(16)}`;
+                const label = (d.supported && d.device_name)
+                    ? d.device_name
+                    : (d.product || `Unknown device ${d.product_id.toString(16)}`);
                 let tail;
                 if (d.serial) {
                     tail = ` — ${d.serial.slice(0, 12)}`;
@@ -1013,6 +1019,10 @@
                     tail = ' — (no serial)';
                 }
                 opt.textContent = `${label} [PID 0x${d.product_id.toString(16).padStart(4, '0')}, if ${d.interface_number}]${tail}`;
+                if (!d.supported) {
+                    opt.disabled = true;
+                    opt.textContent += ' — not yet supported';
+                }
                 if (!d.serial && !d.path) opt.disabled = true;
                 select.appendChild(opt);
             }
