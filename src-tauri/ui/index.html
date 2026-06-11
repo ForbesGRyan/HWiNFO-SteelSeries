@@ -465,8 +465,12 @@
             if (!frame || !frame.pixels || frame.pixels.length !== frame.width * frame.height) return;
             if (previewCanvas.width !== frame.width) previewCanvas.width = frame.width;
             if (previewCanvas.height !== frame.height) previewCanvas.height = frame.height;
-            document.getElementById('preview-caption').textContent =
-                `What is currently on the OLED (${frame.width}×${frame.height})`;
+            // Refresh the trailing (W×H) suffix without clobbering the
+            // caller-set caption ("Editing preview (page N)" / live text).
+            const caption = document.getElementById('preview-caption');
+            caption.textContent =
+                caption.textContent.replace(/\s*\(\d+×\d+\)$/, '') +
+                ` (${frame.width}×${frame.height})`;
             const imgData = previewCtx.createImageData(frame.width, frame.height);
             for (let i = 0; i < frame.pixels.length; i++) {
                 const v = frame.pixels[i];
