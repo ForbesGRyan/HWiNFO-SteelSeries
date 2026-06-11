@@ -1031,10 +1031,12 @@
                 select.appendChild(opt);
             }
 
-            // Select the currently configured serial if it's in the list
+            // Select the currently configured serial if it's in the list and
+            // selectable; a disabled option (unsupported device) falls back to
+            // Auto rather than programmatically selecting an unpickable entry.
             const wanted = config.direct_usb_serial || '';
             const found = Array.from(select.options).find(o => o.value === wanted);
-            select.value = found ? wanted : '';
+            select.value = (found && !found.disabled) ? wanted : '';
         }
 
         document.getElementById('pages').addEventListener('change', () => {

@@ -515,7 +515,10 @@ impl<R: Runtime> Daemon<R> {
             );
             self.display_size = (supported.width, supported.height);
             let size = self.display_size;
-            self.write_state(|s| s.display_size = size);
+            self.write_state(|s| {
+                s.display_size = size;
+                s.oled_buffer = OledBuffer::new(size.0, size.1);
+            });
             self.oled = Some(Box::new(OledClient::Hid {
                 sender: Box::new(device),
                 device: supported,
@@ -526,7 +529,10 @@ impl<R: Runtime> Daemon<R> {
         } else {
             self.display_size = (128, 64);
             let size = self.display_size;
-            self.write_state(|s| s.display_size = size);
+            self.write_state(|s| {
+                s.display_size = size;
+                s.oled_buffer = OledBuffer::new(size.0, size.1);
+            });
             self.announce_connecting_gamesense();
 
             let mut gg = connect_steelseries(&self.term)?;
