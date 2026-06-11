@@ -102,8 +102,8 @@ fn value_to_text(value: &Value) -> String {
     text
 }
 
-fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize]) -> OledBuffer {
-    render_text_to_oled(&value_to_text(value), 0, font_sizes)
+fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize], size: (u32, u32)) -> OledBuffer {
+    render_text_to_oled(&value_to_text(value), 0, font_sizes, size.0, size.1)
 }
 
 fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
@@ -660,7 +660,7 @@ impl<R: Runtime> Daemon<R> {
         if disconnected {
             warn!("HWiNFO disconnected");
             let value = disconnected_value();
-            let buffer = value_to_oled_buffer(&value, &self.config.font_sizes);
+            let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, (128, 64));
             let _ = oled.trigger_frame("ERROR", self.i.0, &value, &buffer);
 
             self.write_state(|s| {
@@ -700,7 +700,7 @@ impl<R: Runtime> Daemon<R> {
             self.hid_api.as_ref(),
         )?;
 
-        let buffer = value_to_oled_buffer(&value, &self.config.font_sizes);
+        let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, (128, 64));
         let event_name = page_event_name(self.page_counter);
         oled.trigger_frame(&event_name, self.i.0, &value, &buffer)?;
 
@@ -1033,7 +1033,7 @@ mod tests {
     #[test]
     fn test_value_to_oled_buffer_populates_text() {
         let v = json!({ "line1": "Hi", "line2": "There", "line3": "" });
-        let buf = value_to_oled_buffer(&v, &[]);
+        let buf = value_to_oled_buffer(&v, &[], (128, 64));
         // Some pixels should be lit
         assert!(buf.data.iter().any(|&b| b != 0));
     }
@@ -1131,7 +1131,7 @@ mod tests {
     #[test]
     fn test_value_to_oled_buffer_with_non_object_value() {
         let v = json!("not an object");
-        let buf = value_to_oled_buffer(&v, &[]);
+        let buf = value_to_oled_buffer(&v, &[], (128, 64));
         // Should produce an empty buffer (no text rendered)
         assert!(buf.data.iter().all(|b| *b == 0));
     }

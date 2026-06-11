@@ -228,8 +228,14 @@ fn get_emoji_icon(emoji: &str) -> Option<&'static [u8; 8]> {
     None
 }
 
-pub fn render_text_to_oled(text: &str, x: i32, line_fonts: &[FontSize]) -> OledBuffer {
-    let mut buffer = OledBuffer::new(128, 64);
+pub fn render_text_to_oled(
+    text: &str,
+    x: i32,
+    line_fonts: &[FontSize],
+    width: u32,
+    height: u32,
+) -> OledBuffer {
+    let mut buffer = OledBuffer::new(width, height);
 
     let mut y = 0;
     for (i, line) in text.lines().enumerate() {
@@ -297,11 +303,11 @@ pub fn load_image_to_buffer(
     let (width, height) = gray.dimensions();
 
     for y in 0..height {
-        if y + y_off >= 64 {
+        if y + y_off >= buffer.height {
             break;
         }
         for x in 0..width {
-            if x + x_off >= 128 {
+            if x + x_off >= buffer.width {
                 break;
             }
             let pixel = gray.get_pixel(x, y);
@@ -657,14 +663,14 @@ mod tests {
     #[test]
     fn test_render_inline_icon_token_lights_pixels() {
         let text = format!("{}Temp", icon_token("cpu"));
-        let buf = render_text_to_oled(&text, 0, &[]);
+        let buf = render_text_to_oled(&text, 0, &[], 128, 64);
         assert!(buf.data.iter().any(|&b| b != 0));
     }
 
     #[test]
     fn test_render_inline_icon_differs_from_plain_text() {
-        let with_icon = render_text_to_oled(&format!("{}42", icon_token("cpu")), 0, &[]);
-        let plain = render_text_to_oled("42", 0, &[]);
+        let with_icon = render_text_to_oled(&format!("{}42", icon_token("cpu")), 0, &[], 128, 64);
+        let plain = render_text_to_oled("42", 0, &[], 128, 64);
         assert_ne!(with_icon.data, plain.data);
     }
 
@@ -672,8 +678,9 @@ mod tests {
     fn test_render_unknown_icon_token_renders_following_text() {
         // Unknown icon name: no glyph, but the trailing text still renders and
         // the delimiter chars must not appear as literal glyphs.
-        let with_bogus = render_text_to_oled(&format!("{}Hi", icon_token("bogus")), 0, &[]);
-        let plain = render_text_to_oled("Hi", 0, &[]);
+        let with_bogus =
+            render_text_to_oled(&format!("{}Hi", icon_token("bogus")), 0, &[], 128, 64);
+        let plain = render_text_to_oled("Hi", 0, &[], 128, 64);
         assert!(with_bogus.data.iter().any(|&b| b != 0));
         assert_eq!(with_bogus.data, plain.data);
     }
@@ -684,14 +691,14 @@ mod tests {
 
     #[test]
     fn test_render_text_empty_string() {
-        let buffer = render_text_to_oled("", 0, &[]);
+        let buffer = render_text_to_oled("", 0, &[], 128, 64);
         // Should return a valid buffer
         assert_eq!(buffer.data.len(), 128 * 8);
     }
 
     #[test]
     fn test_render_text_simple_ascii() {
-        let buffer = render_text_to_oled("Hello", 0, &[]);
+        let buffer = render_text_to_oled("Hello", 0, &[], 128, 64);
         // Buffer should have some pixels set (not all zeros)
         let has_pixels = buffer.data.iter().any(|&b| b != 0);
         assert!(has_pixels, "Text should render some pixels");
@@ -699,29 +706,29 @@ mod tests {
 
     #[test]
     fn test_render_text_multiple_lines() {
-        let buffer = render_text_to_oled("Line1\nLine2\nLine3", 0, &[]);
+        let buffer = render_text_to_oled("Line1\nLine2\nLine3", 0, &[], 128, 64);
         let has_pixels = buffer.data.iter().any(|&b| b != 0);
         assert!(has_pixels, "Multi-line text should render some pixels");
     }
 
     #[test]
     fn test_render_text_with_emoji() {
-        let buffer = render_text_to_oled("🔥 Hot", 0, &[]);
+        let buffer = render_text_to_oled("🔥 Hot", 0, &[], 128, 64);
         let has_pixels = buffer.data.iter().any(|&b| b != 0);
         assert!(has_pixels, "Text with emoji should render some pixels");
     }
 
     #[test]
     fn test_render_text_correct_buffer_dimensions() {
-        let buffer = render_text_to_oled("Test", 0, &[]);
+        let buffer = render_text_to_oled("Test", 0, &[], 128, 64);
         // OriginDimensions should report 128x64
         assert_eq!(buffer.size(), Size::new(128, 64));
     }
 
     #[test]
     fn test_render_text_with_x_offset() {
-        let buffer_no_offset = render_text_to_oled("A", 0, &[]);
-        let buffer_with_offset = render_text_to_oled("A", 50, &[]);
+        let buffer_no_offset = render_text_to_oled("A", 0, &[], 128, 64);
+        let buffer_with_offset = render_text_to_oled("A", 50, &[], 128, 64);
 
         // Both should have pixels, but in different positions
         let has_pixels_no_offset = buffer_no_offset.data.iter().any(|&b| b != 0);
@@ -917,7 +924,7 @@ mod tests {
         write_test_image(&path, 4, 4, 255);
 
         let text = format!("IMG:{}", path.to_string_lossy());
-        let buffer = render_text_to_oled(&text, 0, &[]);
+        let buffer = render_text_to_oled(&text, 0, &[], 128, 64);
         let any_lit = buffer.data.iter().any(|b| *b != 0);
         assert!(any_lit);
 
@@ -973,8 +980,8 @@ mod tests {
 
     #[test]
     fn test_render_small_vs_large_differ() {
-        let small = render_text_to_oled("Hello", 0, &[FontSize::Small]);
-        let large = render_text_to_oled("Hello", 0, &[FontSize::Large]);
+        let small = render_text_to_oled("Hello", 0, &[FontSize::Small], 128, 64);
+        let large = render_text_to_oled("Hello", 0, &[FontSize::Large], 128, 64);
         assert_ne!(small.data, large.data);
     }
 
@@ -984,13 +991,32 @@ mod tests {
             "Big\nsmall\nmed",
             0,
             &[FontSize::Large, FontSize::Small, FontSize::Medium],
+            128,
+            64,
         );
         assert!(buf.data.iter().any(|&b| b != 0));
     }
 
     #[test]
+    fn test_render_text_at_explicit_dimensions() {
+        let buf = render_text_to_oled("Hi", 0, &[], 128, 40);
+        assert_eq!(buf.width, 128);
+        assert_eq!(buf.height, 40);
+        assert_eq!(buf.data.len(), 640);
+        // Something was drawn
+        assert!(buf.data.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn test_render_clips_safely_on_short_screen() {
+        // 5 lines of Large font massively overflow 40px; must not panic.
+        let buf = render_text_to_oled("A\nB\nC\nD\nE", 0, &[FontSize::Large; 5], 128, 40);
+        assert_eq!(buf.data.len(), 640);
+    }
+
+    #[test]
     fn test_render_fewer_fonts_than_lines_falls_back_medium() {
-        let buf = render_text_to_oled("a\nb\nc", 0, &[FontSize::Small]);
+        let buf = render_text_to_oled("a\nb\nc", 0, &[FontSize::Small], 128, 64);
         assert!(buf.data.iter().any(|&b| b != 0));
     }
 }
