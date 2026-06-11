@@ -113,7 +113,6 @@ impl OledBuffer {
     /// Serialize to SSD1306 page-major order: all columns of page 0, then
     /// page 1, etc. (The internal layout is column-major pages.) Used by the
     /// Apex legacy protocol.
-    #[allow(dead_code)] // consumed by Protocol::ApexLegacy in devices.rs (Task 4)
     pub fn to_page_major(&self) -> Vec<u8> {
         let pages = self.pages();
         let mut out = Vec::with_capacity(self.data.len());

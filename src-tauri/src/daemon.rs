@@ -1,5 +1,6 @@
 use crate::connect::{connect_hid, connect_hwinfo, connect_steelseries};
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES, TICK_RATE};
+use crate::devices::Protocol;
 use crate::media::MediaReader;
 use crate::mouse_battery::MouseBatteryReader;
 use crate::render::{render_text_to_oled, FontSize, OledBuffer};
@@ -137,14 +138,6 @@ fn buffer_to_rgba_grayscale(buf: &OledBuffer) -> Vec<u8> {
     pixels
 }
 
-/// Pure helper: build a single HID feature-report packet for a 64-px-tall column slice.
-fn build_hid_packet(chunk_x: u8, chunk_width: u8, screen_height: u8, bitmap: &[u8]) -> Vec<u8> {
-    let mut packet = vec![0x06u8, 0x93, chunk_x, 0, chunk_width, screen_height];
-    packet.extend_from_slice(bitmap);
-    packet.resize(1024, 0);
-    packet
-}
-
 /// Pure helper: create an OledBuffer with every pixel turned on ("white" screen).
 fn white_buffer() -> OledBuffer {
     let mut buffer = OledBuffer::new(128, 64);
@@ -154,17 +147,6 @@ fn white_buffer() -> OledBuffer {
         }
     }
     buffer
-}
-
-/// Pure helper: build the two HID packets that cover the entire 128×64 OLED.
-fn build_hid_packets_for_buffer(buffer: &OledBuffer) -> Vec<Vec<u8>> {
-    [0u8, 64u8]
-        .iter()
-        .map(|&chunk_x| {
-            let chunk_bitmap = buffer.get_chunk(chunk_x, 64);
-            build_hid_packet(chunk_x, 64, 64, &chunk_bitmap)
-        })
-        .collect()
 }
 
 /// Display driver abstraction so the daemon can be tested with mocks.
@@ -232,7 +214,9 @@ impl OledClient {
                 client.trigger_event_frame(event, i, value.clone())?;
             }
             OledClient::Hid(sender) => {
-                for packet in build_hid_packets_for_buffer(buffer) {
+                // TEMPORARY: hardcoded Nova Pro until Task 5 threads the
+                // matched SupportedDevice through connect/daemon.
+                for packet in Protocol::NovaPro.build_packets(buffer) {
                     if let Err(e) = sender.send_feature_report(&packet) {
                         error!("Failed to send HID frame: {}", e);
                         return Err(anyhow!("HID send failed: {}", e));
@@ -250,7 +234,7 @@ impl OledClient {
                 client.trigger_event_frame("BLANK", 0, v)?;
             }
             OledClient::Hid(sender) => {
-                for packet in build_hid_packets_for_buffer(&OledBuffer::new(128, 64)) {
+                for packet in Protocol::NovaPro.build_packets(&OledBuffer::new(128, 64)) {
                     let _ = sender.send_feature_report(&packet);
                 }
             }
@@ -270,7 +254,7 @@ impl OledClient {
             }
             OledClient::Hid(sender) => {
                 let buffer = white_buffer();
-                for packet in build_hid_packets_for_buffer(&buffer) {
+                for packet in Protocol::NovaPro.build_packets(&buffer) {
                     let _ = sender.send_feature_report(&packet);
                 }
             }
@@ -1741,38 +1725,6 @@ mod tests {
     fn test_oled_client_hid_send_white_ignores_sender_err() {
         let mut oled = OledClient::Hid(Box::new(FakeHidSender::failing()));
         oled.send_white().unwrap();
-    }
-
-    #[test]
-    fn test_build_hid_packet_header_layout() {
-        let bitmap = vec![0xAB; 100];
-        let p = build_hid_packet(64, 32, 48, &bitmap);
-        assert_eq!(p[0], 0x06);
-        assert_eq!(p[1], 0x93);
-        assert_eq!(p[2], 64); // chunk_x
-        assert_eq!(p[3], 0);
-        assert_eq!(p[4], 32); // chunk_width
-        assert_eq!(p[5], 48); // screen_height
-                              // Bitmap follows
-        assert_eq!(p[6], 0xAB);
-        assert_eq!(p[105], 0xAB);
-        // Padded to 1024
-        assert_eq!(p.len(), 1024);
-        assert_eq!(p[1023], 0);
-    }
-
-    #[test]
-    fn test_build_hid_packets_for_buffer_produces_two_packets() {
-        let buf = OledBuffer::new(128, 64);
-        let packets = build_hid_packets_for_buffer(&buf);
-        assert_eq!(packets.len(), 2);
-        assert_eq!(packets[0][2], 0); // chunk_x = 0
-        assert_eq!(packets[1][2], 64); // chunk_x = 64
-        for p in &packets {
-            assert_eq!(p.len(), 1024);
-            assert_eq!(p[0], 0x06);
-            assert_eq!(p[1], 0x93);
-        }
     }
 
     #[test]

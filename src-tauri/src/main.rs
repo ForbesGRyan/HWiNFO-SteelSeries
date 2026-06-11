@@ -8,6 +8,8 @@ use settings::{settings_create_config, AppConfig};
 
 mod consts;
 
+mod devices;
+
 mod connect;
 use connect::connect_hwinfo;
 
