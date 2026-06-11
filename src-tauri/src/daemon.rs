@@ -122,19 +122,6 @@ fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
     out
 }
 
-fn buffer_to_rgba_grayscale(buf: &OledBuffer) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity((buf.width * buf.height) as usize);
-    let pages = (buf.height / 8) as usize;
-    for y in 0..buf.height {
-        for x in 0..buf.width {
-            let idx = x as usize * pages + (y / 8) as usize;
-            let on = (buf.data[idx] & (1 << (y % 8))) != 0;
-            pixels.push(if on { 255 } else { 0 });
-        }
-    }
-    pixels
-}
-
 /// Pure helper: create an OledBuffer with every pixel turned on ("white" screen).
 fn white_buffer(width: u32, height: u32) -> OledBuffer {
     let mut buffer = OledBuffer::new(width, height);
@@ -443,8 +430,7 @@ impl<R: Runtime> Daemon<R> {
     }
 
     fn push_frame(&self, buf: &OledBuffer) {
-        let pixels = buffer_to_rgba_grayscale(buf);
-        let _ = self.app.emit("frame", pixels);
+        let _ = self.app.emit("frame", crate::gui::buffer_to_frame(buf));
     }
 
     fn announce_connecting_hwinfo(&self) {
@@ -528,6 +514,8 @@ impl<R: Runtime> Daemon<R> {
                 supported.name, supported.width, supported.height
             );
             self.display_size = (supported.width, supported.height);
+            let size = self.display_size;
+            self.write_state(|s| s.display_size = size);
             self.oled = Some(Box::new(OledClient::Hid {
                 sender: Box::new(device),
                 device: supported,
@@ -537,6 +525,8 @@ impl<R: Runtime> Daemon<R> {
             self.after_direct_usb_connected();
         } else {
             self.display_size = (128, 64);
+            let size = self.display_size;
+            self.write_state(|s| s.display_size = size);
             self.announce_connecting_gamesense();
 
             let mut gg = connect_steelseries(&self.term)?;
@@ -1809,17 +1799,5 @@ mod tests {
         assert!(drv.send_blank().is_ok());
         assert!(drv.send_white().is_ok());
         assert!(drv.stop_heartbeat().is_ok());
-    }
-
-    #[test]
-    fn test_buffer_to_rgba_grayscale_size_and_mapping() {
-        let mut buf = OledBuffer::new(128, 64);
-        buf.set_pixel(0, 0, true);
-        buf.set_pixel(127, 63, true);
-        let px = buffer_to_rgba_grayscale(&buf);
-        assert_eq!(px.len(), 128 * 64);
-        assert_eq!(px[0], 255); // (0,0)
-        assert_eq!(px[63 * 128 + 127], 255); // (127,63)
-        assert_eq!(px[1], 0); // (1,0) unlit
     }
 }
