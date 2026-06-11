@@ -1,3 +1,4 @@
+use crate::devices::{find_supported, SupportedDevice};
 use console::Term;
 use gamesense::client::GameSenseClient;
 use hidapi::{HidApi, HidDevice};
@@ -139,54 +140,109 @@ pub fn list_oled_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
     api.device_list().filter(|d| is_oled_capable(d)).collect()
 }
 
-/// Finds the OLED device matching the optional selector. Empty selector or
-/// no match returns the first OLED-capable device. A selector prefixed with
-/// `path:` matches against the platform HID device path (used when the
-/// device exposes no USB serial number); otherwise it is matched as a serial.
+/// Registry entry for a discovered HID interface, if the device is supported.
+pub fn supported_device(d: &hidapi::DeviceInfo) -> Option<&'static SupportedDevice> {
+    if !is_oled_capable(d) {
+        return None;
+    }
+    find_supported(d.product_id())
+}
+
+/// Error text naming detected-but-unsupported devices. `detected` pairs the
+/// USB product string (may be empty) with the PID.
+pub fn unsupported_devices_error(detected: &[(String, u16)]) -> String {
+    let list = detected
+        .iter()
+        .map(|(name, pid)| {
+            let shown = if name.is_empty() {
+                "unknown device"
+            } else {
+                name
+            };
+            format!("{} (PID 0x{:04X})", shown, pid)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Detected {} — not yet supported for direct USB", list)
+}
+
+/// Finds the supported OLED device matching the optional selector, returning
+/// it together with its registry entry. Empty selector or no match returns the
+/// first supported OLED-capable device. A selector prefixed with `path:`
+/// matches against the platform HID device path (used when the device exposes
+/// no USB serial number); otherwise it is matched as a serial. OLED-capable
+/// devices whose PID is not in the supported-device registry are rejected
+/// with an error naming each detected model.
 pub fn find_hid_device<'a>(
     api: &'a HidApi,
     selector: &str,
-) -> Result<&'a hidapi::DeviceInfo, anyhow::Error> {
-    let candidates = list_oled_devices(api);
-    if candidates.is_empty() {
+) -> Result<(&'a hidapi::DeviceInfo, &'static SupportedDevice), anyhow::Error> {
+    let oled_devices = list_oled_devices(api);
+    if oled_devices.is_empty() {
         return Err(anyhow::anyhow!("No SteelSeries OLED device found"));
     }
-    if let Some(wanted_path) = selector.strip_prefix("path:") {
-        if let Some(d) = candidates
+    let candidates: Vec<&hidapi::DeviceInfo> = oled_devices
+        .iter()
+        .copied()
+        .filter(|d| supported_device(d).is_some())
+        .collect();
+    if candidates.is_empty() {
+        let detected: Vec<(String, u16)> = oled_devices
+            .iter()
+            .map(|d| (d.product_string().unwrap_or("").to_string(), d.product_id()))
+            .collect();
+        return Err(anyhow::anyhow!(unsupported_devices_error(&detected)));
+    }
+    let chosen = if let Some(wanted_path) = selector.strip_prefix("path:") {
+        match candidates
             .iter()
             .find(|d| d.path().to_string_lossy() == wanted_path)
         {
-            return Ok(*d);
-        }
-        warn!(
-            "Configured device path '{}' not present; falling back to first OLED device",
-            wanted_path
-        );
-        return Ok(candidates[0]);
-    }
-    let serials: Vec<Option<&str>> = candidates.iter().map(|d| d.serial_number()).collect();
-    match pick_oled_index(&serials, selector) {
-        Some(idx) => {
-            if !selector.is_empty() && serials[idx] != Some(selector) {
+            Some(d) => *d,
+            None => {
                 warn!(
-                    "Configured device serial '{}' not present; falling back to first OLED device",
-                    selector
+                    "Configured device path '{}' not present; falling back to first supported OLED device",
+                    wanted_path
                 );
+                candidates[0]
             }
-            Ok(candidates[idx])
         }
-        None => Err(anyhow::anyhow!("No SteelSeries OLED device found")),
-    }
+    } else {
+        let serials: Vec<Option<&str>> = candidates.iter().map(|d| d.serial_number()).collect();
+        match pick_oled_index(&serials, selector) {
+            Some(idx) => {
+                if !selector.is_empty() && serials[idx] != Some(selector) {
+                    warn!(
+                        "Configured device serial '{}' not present; falling back to first supported OLED device",
+                        selector
+                    );
+                }
+                candidates[idx]
+            }
+            None => return Err(anyhow::anyhow!("No SteelSeries OLED device found")),
+        }
+    };
+    Ok((
+        chosen,
+        supported_device(chosen).expect("candidates are pre-filtered"),
+    ))
 }
 
-pub fn connect_hid(term: &Term, api: &HidApi, serial: &str) -> Result<HidDevice, anyhow::Error> {
+/// Connects to a supported SteelSeries OLED device over HID, returning the
+/// opened device together with its supported-device registry entry.
+pub fn connect_hid(
+    term: &Term,
+    api: &HidApi,
+    serial: &str,
+) -> Result<(HidDevice, &'static SupportedDevice), anyhow::Error> {
     retry_connect(term, "SteelSeries OLED (HID)", || {
-        let device_info = find_hid_device(api, serial)?;
+        let (device_info, supported) = find_hid_device(api, serial)?;
 
-        device_info.open_device(api).map_err(|e| {
+        let device = device_info.open_device(api).map_err(|e| {
             error!("Failed to open HID device: {}", e);
             anyhow::anyhow!("Failed to open HID device: {}", e)
-        })
+        })?;
+        Ok((device, supported))
     })
 }
 
@@ -341,7 +397,14 @@ mod tests {
         let _hwinfo_fn: fn(&Term) -> Result<Hwinfo, anyhow::Error> = connect_hwinfo;
         let _steelseries_fn: fn(&Term) -> Result<GameSenseClient, anyhow::Error> =
             connect_steelseries;
-        let _hid_fn: fn(&Term, &HidApi, &str) -> Result<HidDevice, anyhow::Error> = connect_hid;
+        let _hid_fn: fn(
+            &Term,
+            &HidApi,
+            &str,
+        ) -> Result<
+            (HidDevice, &'static crate::devices::SupportedDevice),
+            anyhow::Error,
+        > = connect_hid;
     }
 
     // ==========================================================================
@@ -527,8 +590,12 @@ mod tests {
         };
         // Filter on HID_VENDOR_ID+usage page is unlikely to match a generic test box.
         if !list_oled_devices(&api).is_empty() {
-            // SteelSeries device present — find should succeed.
-            assert!(find_hid_device(&api, "").is_ok());
+            // SteelSeries device present — find should succeed for a supported
+            // model, or report the detected models as unsupported.
+            match find_hid_device(&api, "") {
+                Ok((_info, _supported)) => {}
+                Err(e) => assert!(e.to_string().contains("not yet supported")),
+            }
             return;
         }
         let r = find_hid_device(&api, "");
@@ -557,17 +624,25 @@ mod tests {
             return;
         };
         let candidates = list_oled_devices(&api);
-        let Some(first) = candidates.first() else {
+        if candidates.is_empty() {
             // No OLED device present — just verify the path selector still
             // surfaces the "no device" error rather than panicking.
             let r = find_hid_device(&api, "path:nonexistent");
             assert!(r.is_err());
             return;
+        }
+        let Some(first) = candidates.iter().find(|d| supported_device(d).is_some()) else {
+            // OLED devices present but none supported — the path selector
+            // must surface the unsupported-device error.
+            let r = find_hid_device(&api, "path:nonexistent");
+            assert!(r.unwrap_err().to_string().contains("not yet supported"));
+            return;
         };
         let path = first.path().to_string_lossy().into_owned();
         let r = find_hid_device(&api, &format!("path:{}", path));
         assert!(r.is_ok());
-        assert_eq!(r.unwrap().path().to_string_lossy(), path);
+        let (info, _supported) = r.unwrap();
+        assert_eq!(info.path().to_string_lossy(), path);
     }
 
     #[test]
@@ -575,12 +650,17 @@ mod tests {
         let Some(api) = try_hid_api_for_connect() else {
             return;
         };
-        if list_oled_devices(&api).is_empty() {
+        let candidates = list_oled_devices(&api);
+        if candidates.is_empty() {
             return;
         }
-        // Bogus path → fallback to first OLED device, not an error.
         let r = find_hid_device(&api, "path:does-not-exist");
-        assert!(r.is_ok());
+        if candidates.iter().any(|d| supported_device(d).is_some()) {
+            // Bogus path → fallback to first supported OLED device, not an error.
+            let (_info, _supported) = r.unwrap();
+        } else {
+            assert!(r.unwrap_err().to_string().contains("not yet supported"));
+        }
     }
 
     /// Set the bounded retry budget for the current test thread.
@@ -615,9 +695,14 @@ mod tests {
         let Some(api) = try_hid_api_for_connect() else {
             return;
         };
-        if !list_oled_devices(&api).is_empty() {
-            return; // SteelSeries device present, skip negative test
+        if list_oled_devices(&api)
+            .iter()
+            .any(|d| supported_device(d).is_some())
+        {
+            return; // supported SteelSeries device present, skip negative test
         }
+        // No supported device → connect_hid must propagate an error, whether
+        // "no device found" or "not yet supported".
         set_test_retry_max(Some(1));
         let term = Term::stdout();
         let r = connect_hid(&term, &api, "");
@@ -653,6 +738,37 @@ mod tests {
         assert_eq!(calls.get(), 2);
         // First failure → 3 sleep_fn calls (countdown), second failure → no further sleeps before returning Err.
         assert_eq!(sleep_calls.get(), 3);
+    }
+
+    #[test]
+    fn test_unsupported_devices_error_lists_models() {
+        let msg = unsupported_devices_error(&[
+            ("SteelSeries Something".to_string(), 0x1234u16),
+            ("".to_string(), 0xABCD),
+        ]);
+        assert!(msg.contains("SteelSeries Something (PID 0x1234)"));
+        assert!(msg.contains("unknown device (PID 0xABCD)"));
+        assert!(msg.contains("not yet supported for direct USB"));
+    }
+
+    #[test]
+    fn test_find_hid_device_returns_supported_entry_when_present() {
+        let Some(api) = try_hid_api_for_connect() else {
+            return;
+        };
+        match find_hid_device(&api, "") {
+            Ok((info, supported)) => {
+                // Whatever matched must be a registry device.
+                assert!(supported.product_ids.contains(&info.product_id()));
+            }
+            Err(e) => {
+                let s = e.to_string();
+                assert!(
+                    s.contains("No SteelSeries OLED") || s.contains("not yet supported"),
+                    "unexpected error: {s}"
+                );
+            }
+        }
     }
 
     #[test]

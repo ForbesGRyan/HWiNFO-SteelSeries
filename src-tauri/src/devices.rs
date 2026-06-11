@@ -10,13 +10,11 @@ pub enum Protocol {
     NovaPro,
     /// Apex 5/7/Pro legacy keyboards: one 641-byte feature report,
     /// 0x61 followed by the 640-byte SSD1306 page-major bitmap.
-    #[allow(dead_code)] // wired up in Task 5 (connect/daemon) and Task 6 (GUI)
     ApexLegacy,
 }
 
 /// One supported direct-USB device model.
 #[derive(Debug)]
-#[allow(dead_code)] // wired up in Task 5 (connect/daemon) and Task 6 (GUI)
 pub struct SupportedDevice {
     /// Display name shown in the GUI device picker.
     pub name: &'static str,
@@ -34,7 +32,6 @@ pub struct SupportedDevice {
 /// PID→model mapping verified against apex-tux (apex-hardware/src/usb.rs).
 /// Apex Gen3 (0x1640/0x1644/0x1646) intentionally absent — different
 /// protocols, not yet implemented.
-#[allow(dead_code)] // wired up in Task 5 (connect/daemon) and Task 6 (GUI)
 pub static SUPPORTED_DEVICES: &[SupportedDevice] = &[
     SupportedDevice {
         name: "Arctis Nova Pro Wireless",
@@ -81,7 +78,6 @@ pub static SUPPORTED_DEVICES: &[SupportedDevice] = &[
 ];
 
 /// Look up the registry entry for a product ID.
-#[allow(dead_code)] // wired up in Task 5 (connect/daemon) and Task 6 (GUI)
 pub fn find_supported(product_id: u16) -> Option<&'static SupportedDevice> {
     SUPPORTED_DEVICES
         .iter()
