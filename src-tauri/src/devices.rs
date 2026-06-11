@@ -8,8 +8,9 @@ pub enum Protocol {
     /// reports, header [0x06, 0x93, chunk_x, 0, 64, height], column-major
     /// bitmap in 64-column chunks.
     NovaPro,
-    /// Apex 5/7/Pro legacy keyboards: one 641-byte feature report,
-    /// 0x61 followed by the 640-byte SSD1306 page-major bitmap.
+    /// Apex 5/7/Pro legacy keyboards: one 642-byte feature report —
+    /// 0x61, a 640-byte row-major MSB-first bitmap, and a trailing zero
+    /// pad byte.
     ApexLegacy,
 }
 
@@ -99,9 +100,12 @@ impl Protocol {
                 })
                 .collect(),
             Protocol::ApexLegacy => {
-                let mut packet = Vec::with_capacity(641);
+                let mut packet = Vec::with_capacity(642);
                 packet.push(0x61);
-                packet.extend_from_slice(&buf.to_page_major());
+                packet.extend_from_slice(&buf.to_row_major_msb());
+                // Trailing pad byte — the device's feature report is 642 bytes
+                // (apex-tux FB_SIZE = 40 * 128 / 8 + 2).
+                packet.push(0x00);
                 vec![packet]
             }
         }
@@ -195,15 +199,16 @@ mod tests {
     #[test]
     fn test_apex_legacy_packet_layout() {
         let mut buf = OledBuffer::new(128, 40);
-        buf.set_pixel(0, 0, true); // page 0, col 0 → payload byte 0
-        buf.set_pixel(127, 39, true); // page 4, col 127 → last payload byte
+        buf.set_pixel(0, 0, true); // row 0 byte 0 MSB → payload byte 0
+        buf.set_pixel(127, 39, true); // last row, last byte, LSB → payload byte 639
 
         let packets = Protocol::ApexLegacy.build_packets(&buf);
         assert_eq!(packets.len(), 1);
         let p = &packets[0];
-        assert_eq!(p.len(), 641);
+        assert_eq!(p.len(), 642);
         assert_eq!(p[0], 0x61);
-        assert_eq!(p[1], 0x01); // (0,0)
-        assert_eq!(p[640], 0x80); // (127,39): bit 7 of page 4
+        assert_eq!(p[1], 0x80); // (0,0): MSB of first bitmap byte
+        assert_eq!(p[640], 0x01); // (127,39): LSB of last bitmap byte
+        assert_eq!(p[641], 0x00); // trailing pad
     }
 }

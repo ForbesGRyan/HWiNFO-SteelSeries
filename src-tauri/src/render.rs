@@ -111,14 +111,37 @@ impl OledBuffer {
     // clear is omitted as it is currently unused
 
     /// Serialize to SSD1306 page-major order: all columns of page 0, then
-    /// page 1, etc. (The internal layout is column-major pages.) Used by the
-    /// Apex legacy protocol.
+    /// page 1, etc. (The internal layout is column-major pages.)
+    #[allow(dead_code)] // wire format for Apex Gen3 (0x1640/0x1644/0x1646), not yet in the registry
     pub fn to_page_major(&self) -> Vec<u8> {
         let pages = self.pages();
         let mut out = Vec::with_capacity(self.data.len());
         for page in 0..pages {
             for x in 0..self.width as usize {
                 out.push(self.data[x * pages + page]);
+            }
+        }
+        out
+    }
+
+    /// Serialize to row-major MSB-first order: 16 bytes per row for a
+    /// 128-wide screen, the MSB of each byte being the leftmost pixel.
+    /// Wire bitmap format of the Apex legacy keyboards.
+    pub fn to_row_major_msb(&self) -> Vec<u8> {
+        let pages = self.pages();
+        let bytes_per_row = (self.width / 8) as usize;
+        let mut out = Vec::with_capacity(bytes_per_row * self.height as usize);
+        for y in 0..self.height {
+            for byte_x in 0..bytes_per_row {
+                let mut byte = 0u8;
+                for b in 0..8u32 {
+                    let x = byte_x as u32 * 8 + b;
+                    let idx = x as usize * pages + (y / 8) as usize;
+                    if self.data[idx] & (1 << (y % 8)) != 0 {
+                        byte |= 1 << (7 - b);
+                    }
+                }
+                out.push(byte);
             }
         }
         out
@@ -557,6 +580,25 @@ mod tests {
         let out = b.to_page_major();
         assert_eq!(out.len(), 1024);
         assert!(out.iter().all(|&byte| byte == 0));
+    }
+
+    // ===========================================
+    // OledBuffer::to_row_major_msb() tests
+    // ===========================================
+
+    #[test]
+    fn test_to_row_major_msb_length_and_ordering() {
+        let mut b = OledBuffer::new(128, 40);
+        b.set_pixel(0, 0, true); // row 0, byte 0, MSB
+        b.set_pixel(7, 0, true); // row 0, byte 0, LSB
+        b.set_pixel(127, 39, true); // last row, last byte, LSB
+
+        let out = b.to_row_major_msb();
+        assert_eq!(out.len(), 640);
+        assert_eq!(out[0], 0x81); // bits 7 and 0
+        assert_eq!(out[39 * 16 + 15], 0x01);
+        // Exactly two bytes are non-zero.
+        assert_eq!(out.iter().filter(|&&v| v != 0).count(), 2);
     }
 
     // ===========================================

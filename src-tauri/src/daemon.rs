@@ -1767,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn test_oled_client_hid_apex_sends_single_641_byte_packet() {
+    fn test_oled_client_hid_apex_sends_single_642_byte_packet() {
         let (sender, calls) = FakeHidSender::with_shared_calls();
         let mut oled = OledClient::Hid {
             sender: Box::new(sender),
@@ -1778,7 +1778,7 @@ mod tests {
         oled.trigger_frame("E", 0, &val, &buf).unwrap();
         let packets = calls.lock().unwrap();
         assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].len(), 641);
+        assert_eq!(packets[0].len(), 642);
         assert_eq!(packets[0][0], 0x61);
     }
 

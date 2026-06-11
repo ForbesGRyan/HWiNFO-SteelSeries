@@ -41,9 +41,12 @@ Source: [apex-tux](https://github.com/not-jan/apex-tux)
 | PIDs | `0x12E0` | `0x1610`, `0x1612`, `0x1614`, `0x1618`, `0x161C` |
 | Screen | 128×64 | 128×40 |
 | Transport | `send_feature_report` | `send_feature_report` |
-| Packets | 2 × 1024 bytes | 1 × 641 bytes |
+| Packets | 2 × 1024 bytes | 1 × 642 bytes |
 | Header | `[0x06, 0x93, chunk_x, 0, 64, 64]` | `[0x61]` |
-| Bitmap | column-major pages (8 vertical px/byte, bit 0 top), 64-column chunks | SSD1306 page-major: 5 pages × 128 bytes = 640 bytes |
+| Bitmap | column-major pages (8 vertical px/byte, bit 0 top), 64-column chunks | row-major MSB-first (16 bytes/row × 40 rows = 640 bytes), then one trailing zero pad byte |
+
+Page-major preceded by `0x61` (642 bytes) is the Apex Gen3 (`0x1640`) format,
+kept in `OledBuffer::to_page_major()` for future use.
 
 Both transports use feature reports, so the existing `HidSender` trait is
 unchanged. Exact Apex model-name↔PID mapping is confirmed against apex-tux
@@ -60,7 +63,8 @@ pub enum Protocol {
     /// Two 1024-byte feature reports, header [0x06, 0x93, x, 0, w, h],
     /// column-major bitmap, 64-column chunks.
     NovaPro,
-    /// One 641-byte feature report: 0x61 + 640-byte page-major bitmap.
+    /// One 642-byte feature report: 0x61 + 640-byte row-major MSB-first
+    /// bitmap + trailing zero pad byte.
     ApexLegacy,
 }
 
@@ -89,7 +93,8 @@ impl Protocol {
 
 `build_hid_packet` and `build_hid_packets_for_buffer` move here from
 `daemon.rs` (NovaPro arm). The ApexLegacy arm is `0x61` followed by the
-640-byte `buf.to_page_major()` bitmap — 641 bytes exactly, no padding.
+640-byte `buf.to_row_major_msb()` bitmap and a trailing zero pad byte —
+642 bytes exactly (apex-tux `FB_SIZE = 40 * 128 / 8 + 2`).
 
 Adding a device that uses an existing protocol = one table row. A new packet
 format = one enum variant + one `build_packets` match arm.
@@ -159,8 +164,8 @@ format = one enum variant + one `build_packets` match arm.
 
 - `devices.rs`: PID lookup hit/miss; golden packet tests per protocol —
   NovaPro: 2 packets, 1024 bytes, header layout, chunk x = 0/64;
-  ApexLegacy: 1 packet, 641 bytes, `0x61` prefix, payload matches
-  `to_page_major`.
+  ApexLegacy: 1 packet, 642 bytes, `0x61` prefix, payload matches
+  `to_row_major_msb` plus a trailing zero pad byte.
 - `render.rs`: `new(w, h)` sizing; `set_pixel` bounds at both 128×64 and
   128×40; `to_page_major` ordering against hand-computed pixels; clipping on
   40-px-tall buffer.
