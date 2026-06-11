@@ -148,6 +148,10 @@ pub fn supported_device(d: &hidapi::DeviceInfo) -> Option<&'static SupportedDevi
     find_supported(d.product_id())
 }
 
+/// Suffix of the unsupported-device error; also used to detect that error
+/// class for fail-fast handling in `connect_hid`.
+pub const UNSUPPORTED_ERROR_SUFFIX: &str = "not yet supported for direct USB";
+
 /// Error text naming detected-but-unsupported devices. `detected` pairs the
 /// USB product string (may be empty) with the PID.
 pub fn unsupported_devices_error(detected: &[(String, u16)]) -> String {
@@ -163,7 +167,7 @@ pub fn unsupported_devices_error(detected: &[(String, u16)]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!("Detected {} — not yet supported for direct USB", list)
+    format!("Detected {} — {}", list, UNSUPPORTED_ERROR_SUFFIX)
 }
 
 /// Finds the supported OLED device matching the optional selector, returning
@@ -187,10 +191,14 @@ pub fn find_hid_device<'a>(
         .filter(|d| supported_device(d).is_some())
         .collect();
     if candidates.is_empty() {
-        let detected: Vec<(String, u16)> = oled_devices
-            .iter()
-            .map(|d| (d.product_string().unwrap_or("").to_string(), d.product_id()))
-            .collect();
+        // Dedupe by PID: a device exposing several OLED-capable interfaces
+        // should be listed once, not once per interface.
+        let mut detected: Vec<(String, u16)> = Vec::new();
+        for d in &oled_devices {
+            if !detected.iter().any(|(_, pid)| *pid == d.product_id()) {
+                detected.push((d.product_string().unwrap_or("").to_string(), d.product_id()));
+            }
+        }
         return Err(anyhow::anyhow!(unsupported_devices_error(&detected)));
     }
     let chosen = if let Some(wanted_path) = selector.strip_prefix("path:") {
@@ -235,6 +243,14 @@ pub fn connect_hid(
     api: &HidApi,
     serial: &str,
 ) -> Result<(HidDevice, &'static SupportedDevice), anyhow::Error> {
+    // A registry miss can't be fixed by retrying; bail immediately so the
+    // daemon's outer reconnect loop surfaces the named error in GUI status
+    // (it still re-probes every 3s, picking up newly plugged devices).
+    if let Err(e) = find_hid_device(api, serial) {
+        if e.to_string().contains(UNSUPPORTED_ERROR_SUFFIX) {
+            return Err(e);
+        }
+    }
     retry_connect(term, "SteelSeries OLED (HID)", || {
         let (device_info, supported) = find_hid_device(api, serial)?;
 
@@ -749,6 +765,8 @@ mod tests {
         assert!(msg.contains("SteelSeries Something (PID 0x1234)"));
         assert!(msg.contains("unknown device (PID 0xABCD)"));
         assert!(msg.contains("not yet supported for direct USB"));
+        // The fail-fast check in connect_hid keys off this exact suffix.
+        assert!(msg.ends_with(UNSUPPORTED_ERROR_SUFFIX));
     }
 
     #[test]
