@@ -58,7 +58,11 @@ pub fn unsupported_detected(interfaces: &[ReportInterface]) -> Vec<(String, u16)
 pub fn device_label(interfaces: &[ReportInterface]) -> String {
     match unsupported_detected(interfaces).first() {
         Some((name, pid)) => {
-            let shown = if name.is_empty() { "unknown device" } else { name };
+            let shown = if name.is_empty() {
+                "unknown device"
+            } else {
+                name
+            };
             format!("{} (PID 0x{:04X})", shown, pid)
         }
         None => "unknown device".to_string(),
@@ -257,8 +261,11 @@ Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB
     fn test_format_device_report_empty_product_shows_unknown() {
         let ifaces = vec![iface("", 0x1644, 0x000C)];
         let report = format_device_report("0.2.2", "Windows", &ifaces);
-        assert!(report.contains("| unknown device | SteelSeries | 0x1644 | 1 | 0x000C | 0x0001 | yes | no | no |"));
-        assert!(report.contains("Detected unknown device (PID 0x1644) — not yet supported for direct USB"));
+        assert!(report.contains(
+            "| unknown device | SteelSeries | 0x1644 | 1 | 0x000C | 0x0001 | yes | no | no |"
+        ));
+        assert!(report
+            .contains("Detected unknown device (PID 0x1644) — not yet supported for direct USB"));
     }
 
     #[test]
@@ -318,6 +325,8 @@ Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB
         ));
         assert!(!is_allowed_external_url("https://github.com/evil/repo"));
         assert!(!is_allowed_external_url("https://example.com/"));
-        assert!(!is_allowed_external_url("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_allowed_external_url(
+            "file:///C:/Windows/System32/calc.exe"
+        ));
     }
 }
