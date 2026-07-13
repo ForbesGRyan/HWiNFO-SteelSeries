@@ -507,7 +507,8 @@
             const banner = document.getElementById('error-banner');
             if (s.last_error) { banner.textContent = s.last_error; banner.classList.add('visible'); }
             else { banner.classList.remove('visible'); }
-            updateDeviceReportRow(!!(s.last_error && s.last_error.includes('not yet supported for direct USB')));
+            deviceReportErrorMatch = !!(s.last_error && s.last_error.includes('not yet supported for direct USB'));
+            updateDeviceReportRow();
 
             const liveEl = document.getElementById('live-sensors');
             if (s.sensor_values && s.sensor_values.length > 0) {
@@ -1001,6 +1002,8 @@
                 opt.textContent = 'No SteelSeries OLED devices detected';
                 opt.disabled = true;
                 select.appendChild(opt);
+                deviceReportAvailable = false;
+                updateDeviceReportRow();
                 return;
             }
 
@@ -1044,15 +1047,16 @@
             const found = Array.from(select.options).find(o => o.value === wanted);
             select.value = (found && !found.disabled) ? wanted : '';
             deviceReportAvailable = devices.some(d => !d.supported);
-            updateDeviceReportRow(false);
+            updateDeviceReportRow();
         }
 
         // --- Device-support report (unsupported direct-USB devices) ---
         let deviceReportAvailable = false;
+        let deviceReportErrorMatch = false;
 
-        function updateDeviceReportRow(fromError) {
+        function updateDeviceReportRow() {
             const row = document.getElementById('device-report-row');
-            row.style.display = (deviceReportAvailable || fromError) ? 'flex' : 'none';
+            row.style.display = (deviceReportAvailable || deviceReportErrorMatch) ? 'flex' : 'none';
         }
 
         async function copyText(text) {
@@ -1075,8 +1079,9 @@
         }
 
         document.getElementById('btn-request-support').onclick = async () => {
+            let r;
             try {
-                const r = await invoke('get_device_report');
+                r = await invoke('get_device_report');
                 if (r.url_truncated) {
                     await copyText(r.report);
                     flashButton(document.getElementById('btn-copy-report'),
@@ -1084,12 +1089,11 @@
                 }
                 await invoke('open_url', { url: r.issue_url });
             } catch (e) {
-                try {
-                    const r = await invoke('get_device_report');
+                if (r) {
                     await copyText(r.report + '\n\n' + r.issue_url);
                     showError('Could not open browser — report and URL copied to clipboard');
-                } catch (e2) {
-                    showError('Device report failed: ' + e2);
+                } else {
+                    showError('Device report failed: ' + e);
                 }
             }
         };
