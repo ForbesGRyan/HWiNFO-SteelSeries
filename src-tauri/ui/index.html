@@ -1073,9 +1073,13 @@
         }
 
         function flashButton(btn, label) {
-            const orig = btn.textContent;
+            if (!btn.dataset.origLabel) btn.dataset.origLabel = btn.textContent;
             btn.textContent = label;
-            setTimeout(() => { btn.textContent = orig; }, 2000);
+            clearTimeout(btn._flashTimer);
+            btn._flashTimer = setTimeout(() => {
+                btn.textContent = btn.dataset.origLabel;
+                delete btn.dataset.origLabel;
+            }, 2000);
         }
 
         document.getElementById('btn-request-support').onclick = async () => {

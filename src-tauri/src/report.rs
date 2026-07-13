@@ -69,6 +69,12 @@ pub fn device_label(interfaces: &[ReportInterface]) -> String {
     }
 }
 
+/// USB descriptor strings go into a markdown table — escape pipes and
+/// strip newlines so a hostile/odd descriptor can't break the row.
+fn sanitize_cell(s: &str) -> String {
+    s.replace(['\r', '\n'], " ").replace('|', "\\|")
+}
+
 /// Markdown device report: app/OS lines, one table row per interface, and
 /// (when applicable) the same unsupported-device summary the connect error
 /// uses.
@@ -87,14 +93,14 @@ pub fn format_device_report(
     out.push_str("|---|---|---|---|---|---|---|---|---|\n");
     for i in interfaces {
         let product = if i.product.is_empty() {
-            "unknown device"
+            "unknown device".to_string()
         } else {
-            &i.product
+            sanitize_cell(&i.product)
         };
         out.push_str(&format!(
             "| {} | {} | 0x{:04X} | {} | 0x{:04X} | 0x{:04X} | {} | {} | {} |\n",
             product,
-            i.manufacturer,
+            sanitize_cell(&i.manufacturer),
             i.product_id,
             i.interface_number,
             i.usage_page,
@@ -269,6 +275,15 @@ Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB
     }
 
     #[test]
+    fn test_format_device_report_sanitizes_product_string() {
+        let ifaces = vec![iface("Weird|Name\nX", 0x1644, 0x000C)];
+        let report = format_device_report("0.2.2", "Windows", &ifaces);
+        assert!(report.contains(
+            "| Weird\\|Name X | SteelSeries | 0x1644 | 1 | 0x000C | 0x0001 | yes | no | no |"
+        ));
+    }
+
+    #[test]
     fn test_encode_uri_component() {
         assert_eq!(encode_uri_component("abc-XYZ_0.9~"), "abc-XYZ_0.9~");
         assert_eq!(
@@ -327,6 +342,9 @@ Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB
         assert!(!is_allowed_external_url("https://example.com/"));
         assert!(!is_allowed_external_url(
             "file:///C:/Windows/System32/calc.exe"
+        ));
+        assert!(!is_allowed_external_url(
+            "https://github.com/ForbesGRyan/HWiNFO-SteelSeries"
         ));
     }
 }
