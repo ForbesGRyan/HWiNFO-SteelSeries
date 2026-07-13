@@ -130,13 +130,17 @@ fn encode_uri_component(s: &str) -> String {
 
 /// Prefilled new-issue URL. Returns (url, truncated). When the full report
 /// pushes the URL past ISSUE_URL_MAX, the body becomes `fallback_body` plus
-/// a paste instruction, and `truncated` is true.
+/// a paste instruction, and `truncated` is true. The `<= ISSUE_URL_MAX`
+/// ceiling holds by construction regardless of input size: the label is
+/// capped before it reaches the title, and if the stubbed body still
+/// overflows, the body collapses to a fixed, minimal instruction.
 pub fn device_report_issue_url(
     report: &str,
     device_label: &str,
     fallback_body: &str,
 ) -> (String, bool) {
-    let title = format!("[Device support] {}", device_label);
+    let capped_label: String = device_label.chars().take(120).collect();
+    let title = format!("[Device support] {}", capped_label);
     let base = format!(
         "{}/issues/new?labels=device-support&title={}",
         REPO_URL,
@@ -147,8 +151,16 @@ pub fn device_report_issue_url(
         return (full, false);
     }
     let stub = format!("{}\n\nPaste the copied device report here.", fallback_body);
+    let stub_url = format!("{}&body={}", base, encode_uri_component(&stub));
+    if stub_url.len() <= ISSUE_URL_MAX {
+        return (stub_url, true);
+    }
     (
-        format!("{}&body={}", base, encode_uri_component(&stub)),
+        format!(
+            "{}&body={}",
+            base,
+            encode_uri_component("Paste the copied device report here.")
+        ),
         true,
     )
 }
@@ -284,6 +296,19 @@ Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB
         assert!(url.len() <= ISSUE_URL_MAX);
         assert!(url.contains("Paste%20the%20copied%20device%20report%20here."));
         assert!(!url.contains("xxxx"));
+    }
+
+    #[test]
+    fn test_issue_url_pathological_label_and_fallback_stays_under_max() {
+        let report = "x".repeat(8000);
+        let device_label = "y".repeat(500);
+        let fallback_body = "z".repeat(8000);
+        let (url, truncated) = device_report_issue_url(&report, &device_label, &fallback_body);
+        assert!(truncated);
+        assert!(url.len() <= ISSUE_URL_MAX);
+        assert!(url.starts_with(
+            "https://github.com/ForbesGRyan/HWiNFO-SteelSeries/issues/new?labels=device-support&title="
+        ));
     }
 
     #[test]
