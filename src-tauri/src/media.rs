@@ -32,6 +32,12 @@ impl MediaReader {
         }
     }
 
+    /// Clone the current cached media info. The daemon publishes this into shared
+    /// state each tick so the GUI preview can seed a reader via `with_cached_info`.
+    pub fn snapshot(&self) -> MediaInfo {
+        self.cached_info.clone()
+    }
+
     /// Initialize the media session manager (blocking)
     /// Should be called once during app initialization
     pub fn initialize(&mut self) -> Result<(), anyhow::Error> {
@@ -203,10 +209,11 @@ impl Default for MediaReader {
     }
 }
 
-#[cfg(test)]
 impl MediaReader {
-    /// Test-only constructor with a pre-populated cache.
-    /// `last_read` is set to now so `get_media_field` returns from cache without touching Windows APIs.
+    /// Constructor with a pre-populated cache and no live manager. `last_read` is
+    /// set to now so `get_media_field` serves the seeded data from cache without
+    /// touching the (absent) Windows API. Used by the settings preview to render
+    /// `MEDIA_*` sensors with the daemon's live data.
     pub fn with_cached_info(info: MediaInfo) -> Self {
         Self {
             cached_info: info,

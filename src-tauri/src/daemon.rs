@@ -102,8 +102,8 @@ fn value_to_text(value: &Value) -> String {
     text
 }
 
-fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize]) -> OledBuffer {
-    render_text_to_oled(&value_to_text(value), 0, font_sizes)
+fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize], size: (u32, u32)) -> OledBuffer {
+    render_text_to_oled(&value_to_text(value), 0, font_sizes, size.0, size.1)
 }
 
 fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
@@ -122,49 +122,15 @@ fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
     out
 }
 
-fn buffer_to_rgba_grayscale(buf: &OledBuffer) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(128 * 64);
-    for y in 0..64u32 {
-        for x in 0..128u32 {
-            let col = x as usize;
-            let byte_row = (y / 8) as usize;
-            let bit = (y % 8) as u8;
-            let idx = col * 8 + byte_row;
-            let on = (buf.data[idx] & (1 << bit)) != 0;
-            pixels.push(if on { 255 } else { 0 });
-        }
-    }
-    pixels
-}
-
-/// Pure helper: build a single HID feature-report packet for a 64-px-tall column slice.
-fn build_hid_packet(chunk_x: u8, chunk_width: u8, screen_height: u8, bitmap: &[u8]) -> Vec<u8> {
-    let mut packet = vec![0x06u8, 0x93, chunk_x, 0, chunk_width, screen_height];
-    packet.extend_from_slice(bitmap);
-    packet.resize(1024, 0);
-    packet
-}
-
 /// Pure helper: create an OledBuffer with every pixel turned on ("white" screen).
-fn white_buffer() -> OledBuffer {
-    let mut buffer = OledBuffer::new();
-    for x in 0..128 {
-        for y in 0..64 {
+fn white_buffer(width: u32, height: u32) -> OledBuffer {
+    let mut buffer = OledBuffer::new(width, height);
+    for x in 0..width {
+        for y in 0..height {
             buffer.set_pixel(x, y, true);
         }
     }
     buffer
-}
-
-/// Pure helper: build the two HID packets that cover the entire 128×64 OLED.
-fn build_hid_packets_for_buffer(buffer: &OledBuffer) -> Vec<Vec<u8>> {
-    [0u8, 64u8]
-        .iter()
-        .map(|&chunk_x| {
-            let chunk_bitmap = buffer.get_chunk(chunk_x, 64);
-            build_hid_packet(chunk_x, 64, 64, &chunk_bitmap)
-        })
-        .collect()
 }
 
 /// Display driver abstraction so the daemon can be tested with mocks.
@@ -195,7 +161,10 @@ impl HidSender for hidapi::HidDevice {
 
 enum OledClient {
     GameSense(GameSenseClient),
-    Hid(Box<dyn HidSender>),
+    Hid {
+        sender: Box<dyn HidSender>,
+        device: &'static crate::devices::SupportedDevice,
+    },
 }
 
 impl DisplayDriver for OledClient {
@@ -231,8 +200,8 @@ impl OledClient {
             OledClient::GameSense(client) => {
                 client.trigger_event_frame(event, i, value.clone())?;
             }
-            OledClient::Hid(sender) => {
-                for packet in build_hid_packets_for_buffer(buffer) {
+            OledClient::Hid { sender, device } => {
+                for packet in device.protocol.build_packets(buffer) {
                     if let Err(e) = sender.send_feature_report(&packet) {
                         error!("Failed to send HID frame: {}", e);
                         return Err(anyhow!("HID send failed: {}", e));
@@ -249,8 +218,9 @@ impl OledClient {
                 let v = json!({ "line1": "", "line2": "", "line3": "" });
                 client.trigger_event_frame("BLANK", 0, v)?;
             }
-            OledClient::Hid(sender) => {
-                for packet in build_hid_packets_for_buffer(&OledBuffer::new()) {
+            OledClient::Hid { sender, device } => {
+                let blank = OledBuffer::new(device.width, device.height);
+                for packet in device.protocol.build_packets(&blank) {
                     let _ = sender.send_feature_report(&packet);
                 }
             }
@@ -268,9 +238,9 @@ impl OledClient {
                 });
                 client.trigger_event_frame("WHITE", 0, v)?;
             }
-            OledClient::Hid(sender) => {
-                let buffer = white_buffer();
-                for packet in build_hid_packets_for_buffer(&buffer) {
+            OledClient::Hid { sender, device } => {
+                let buffer = white_buffer(device.width, device.height);
+                for packet in device.protocol.build_packets(&buffer) {
                     let _ = sender.send_feature_report(&packet);
                 }
             }
@@ -376,11 +346,19 @@ fn build_display_value(
             hid_api,
         )?;
 
+        // Per-sensor icon names (direct-USB bitmap path). Read straight from the
+        // page properties, parallel to labels/units, so `run_sensors` stays
+        // unchanged.
+        let icons: Vec<&str> = (0..CUSTOM_SENSORS)
+            .map(|k| pages_sensors.get(format!("icon_{}", k)).unwrap_or_default())
+            .collect();
+
         Ok(format_custom_value(
             config.sensors_per_line,
             labels,
             values,
             units,
+            icons,
         ))
     }
 }
@@ -400,6 +378,10 @@ struct Daemon<R: Runtime = tauri::Wry> {
     i: Wrapping<isize>,
     disconnect_count: usize,
     page_counter: usize,
+
+    /// Active OLED dimensions: registry entry's size in direct-USB mode,
+    /// 128×64 for GameSense.
+    display_size: (u32, u32),
 
     mouse_battery_reader: MouseBatteryReader,
     media_reader: MediaReader,
@@ -424,6 +406,7 @@ impl<R: Runtime> Daemon<R> {
             i: Wrapping(0),
             disconnect_count: 0,
             page_counter: 0,
+            display_size: (128, 64),
             mouse_battery_reader: MouseBatteryReader::new(),
             media_reader: MediaReader::new(),
             weather_reader,
@@ -447,8 +430,7 @@ impl<R: Runtime> Daemon<R> {
     }
 
     fn push_frame(&self, buf: &OledBuffer) {
-        let pixels = buffer_to_rgba_grayscale(buf);
-        let _ = self.app.emit("frame", pixels);
+        let _ = self.app.emit("frame", crate::gui::buffer_to_frame(buf));
     }
 
     fn announce_connecting_hwinfo(&self) {
@@ -525,12 +507,32 @@ impl<R: Runtime> Daemon<R> {
             self.announce_connecting_direct_usb();
 
             let api = hidapi::HidApi::new().map_err(|e| anyhow!("HID API init failed: {}", e))?;
-            let device = connect_hid(&self.term, &api, &self.config.direct_usb_serial)?;
-            self.oled = Some(Box::new(OledClient::Hid(Box::new(device))));
+            let (device, supported) =
+                connect_hid(&self.term, &api, &self.config.direct_usb_serial)?;
+            info!(
+                "Direct USB device: {} ({}x{})",
+                supported.name, supported.width, supported.height
+            );
+            self.display_size = (supported.width, supported.height);
+            let size = self.display_size;
+            self.write_state(|s| {
+                s.display_size = size;
+                s.oled_buffer = OledBuffer::new(size.0, size.1);
+            });
+            self.oled = Some(Box::new(OledClient::Hid {
+                sender: Box::new(device),
+                device: supported,
+            }));
             self.hid_api = Some(api);
 
             self.after_direct_usb_connected();
         } else {
+            self.display_size = (128, 64);
+            let size = self.display_size;
+            self.write_state(|s| {
+                s.display_size = size;
+                s.oled_buffer = OledBuffer::new(size.0, size.1);
+            });
             self.announce_connecting_gamesense();
 
             let mut gg = connect_steelseries(&self.term)?;
@@ -652,12 +654,12 @@ impl<R: Runtime> Daemon<R> {
         if disconnected {
             warn!("HWiNFO disconnected");
             let value = disconnected_value();
-            let buffer = value_to_oled_buffer(&value, &self.config.font_sizes);
+            let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, self.display_size);
             let _ = oled.trigger_frame("ERROR", self.i.0, &value, &buffer);
 
             self.write_state(|s| {
                 s.hwinfo_connected = false;
-                s.oled_buffer = OledBuffer { data: buffer.data };
+                s.oled_buffer = buffer.clone();
                 s.sensor_values = value_to_sensor_values(&value);
                 s.last_error = Some("HWiNFO disconnected".to_string());
             });
@@ -692,15 +694,23 @@ impl<R: Runtime> Daemon<R> {
             self.hid_api.as_ref(),
         )?;
 
-        let buffer = value_to_oled_buffer(&value, &self.config.font_sizes);
+        let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, self.display_size);
         let event_name = page_event_name(self.page_counter);
         oled.trigger_frame(&event_name, self.i.0, &value, &buffer)?;
 
+        // Publish live dynamic-sensor snapshots so the settings preview can render
+        // MEDIA_*/WEATHER_* with the same data the OLED shows (the GUI preview has
+        // no access to the daemon's live readers otherwise).
+        let media_snapshot = self.media_reader.snapshot();
+        let weather_snapshot = self.weather_reader.current_info();
+
         self.write_state(|s| {
             s.hwinfo_connected = true;
-            s.oled_buffer = OledBuffer { data: buffer.data };
+            s.oled_buffer = buffer.clone();
             s.sensor_values = value_to_sensor_values(&value);
             s.last_error = None;
+            s.media_info = media_snapshot;
+            s.weather_info = weather_snapshot;
         });
         self.push_status();
         self.push_frame(&buffer);
@@ -1017,7 +1027,7 @@ mod tests {
     #[test]
     fn test_value_to_oled_buffer_populates_text() {
         let v = json!({ "line1": "Hi", "line2": "There", "line3": "" });
-        let buf = value_to_oled_buffer(&v, &[]);
+        let buf = value_to_oled_buffer(&v, &[], (128, 64));
         // Some pixels should be lit
         assert!(buf.data.iter().any(|&b| b != 0));
     }
@@ -1115,7 +1125,7 @@ mod tests {
     #[test]
     fn test_value_to_oled_buffer_with_non_object_value() {
         let v = json!("not an object");
-        let buf = value_to_oled_buffer(&v, &[]);
+        let buf = value_to_oled_buffer(&v, &[], (128, 64));
         // Should produce an empty buffer (no text rendered)
         assert!(buf.data.iter().all(|b| *b == 0));
     }
@@ -1248,7 +1258,7 @@ mod tests {
     #[test]
     fn test_daemon_push_frame_runs() {
         let d = daemon_for_tests();
-        d.push_frame(&OledBuffer::new());
+        d.push_frame(&OledBuffer::new(128, 64));
     }
 
     #[test]
@@ -1629,22 +1639,35 @@ mod tests {
         _arc_assert(Arc::new(()));
     }
 
+    /// Registry entry for the Nova Pro Wireless, the default device used by
+    /// the OledClient::Hid test fixtures.
+    fn nova_device() -> &'static crate::devices::SupportedDevice {
+        crate::devices::find_supported(0x12E0).expect("Nova Pro in registry")
+    }
+
     struct FakeHidSender {
         fail: bool,
-        calls: std::sync::Mutex<Vec<Vec<u8>>>,
+        calls: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     }
     impl FakeHidSender {
         fn new() -> Self {
             Self {
                 fail: false,
-                calls: std::sync::Mutex::new(Vec::new()),
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
         fn failing() -> Self {
             Self {
                 fail: true,
-                calls: std::sync::Mutex::new(Vec::new()),
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
+        }
+        /// Like `new()`, but also hands back the call log so tests can assert
+        /// on packets after the sender is boxed as `dyn HidSender`.
+        fn with_shared_calls() -> (Self, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+            let sender = Self::new();
+            let calls = Arc::clone(&sender.calls);
+            (sender, calls)
         }
     }
     impl HidSender for FakeHidSender {
@@ -1660,22 +1683,27 @@ mod tests {
 
     #[test]
     fn test_oled_client_hid_trigger_frame_sends_two_packets() {
-        let mut oled = OledClient::Hid(Box::new(FakeHidSender::new()));
-        let buf = OledBuffer::new();
+        let (sender, calls) = FakeHidSender::with_shared_calls();
+        let mut oled = OledClient::Hid {
+            sender: Box::new(sender),
+            device: nova_device(),
+        };
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         oled.trigger_frame("E", 0, &val, &buf).unwrap();
-        // FakeHidSender should have received 2 packets
-        if let OledClient::Hid(sender) = &oled {
-            // Downcast not possible without Any, but we know FakeHidSender stores calls.
-            // We'll test via a separate route below.
-            let _ = sender;
-        }
+        // Nova Pro frames are two 1024-byte feature reports.
+        let packets = calls.lock().unwrap();
+        assert_eq!(packets.len(), 2);
+        assert!(packets.iter().all(|p| p.len() == 1024));
     }
 
     #[test]
     fn test_oled_client_hid_trigger_frame_returns_err_when_sender_fails() {
-        let mut oled = OledClient::Hid(Box::new(FakeHidSender::failing()));
-        let buf = OledBuffer::new();
+        let mut oled = OledClient::Hid {
+            sender: Box::new(FakeHidSender::failing()),
+            device: nova_device(),
+        };
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         let r = oled.trigger_frame("E", 0, &val, &buf);
         assert!(r.is_err());
@@ -1684,22 +1712,30 @@ mod tests {
 
     #[test]
     fn test_oled_client_hid_send_blank_writes_packets() {
-        let mut oled = OledClient::Hid(Box::new(FakeHidSender::new()));
+        let mut oled = OledClient::Hid {
+            sender: Box::new(FakeHidSender::new()),
+            device: nova_device(),
+        };
         oled.send_blank().unwrap();
     }
 
     #[test]
     fn test_oled_client_hid_send_white_writes_packets() {
-        let mut oled = OledClient::Hid(Box::new(FakeHidSender::new()));
+        let mut oled = OledClient::Hid {
+            sender: Box::new(FakeHidSender::new()),
+            device: nova_device(),
+        };
         oled.send_white().unwrap();
     }
 
     #[test]
     fn test_oled_client_hid_via_display_driver_trait() {
         // Exercise OledClient's DisplayDriver impl via dyn dispatch (covers the trait wrapper methods).
-        let mut drv: Box<dyn DisplayDriver> =
-            Box::new(OledClient::Hid(Box::new(FakeHidSender::new())));
-        let buf = OledBuffer::new();
+        let mut drv: Box<dyn DisplayDriver> = Box::new(OledClient::Hid {
+            sender: Box::new(FakeHidSender::new()),
+            device: nova_device(),
+        });
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         assert!(drv.trigger_frame("E", 0, &val, &buf).is_ok());
         assert!(drv.send_blank().is_ok());
@@ -1709,7 +1745,10 @@ mod tests {
 
     #[test]
     fn test_oled_client_hid_stop_heartbeat_noop() {
-        let mut oled = OledClient::Hid(Box::new(FakeHidSender::new()));
+        let mut oled = OledClient::Hid {
+            sender: Box::new(FakeHidSender::new()),
+            device: nova_device(),
+        };
         // stop_heartbeat is a noop for Hid variant
         oled.stop_heartbeat().unwrap();
     }
@@ -1717,51 +1756,41 @@ mod tests {
     #[test]
     fn test_oled_client_hid_send_blank_ignores_sender_err() {
         // send_blank ignores send errors (best-effort)
-        let mut oled = OledClient::Hid(Box::new(FakeHidSender::failing()));
+        let mut oled = OledClient::Hid {
+            sender: Box::new(FakeHidSender::failing()),
+            device: nova_device(),
+        };
         oled.send_blank().unwrap(); // still Ok even though sender fails
     }
 
     #[test]
     fn test_oled_client_hid_send_white_ignores_sender_err() {
-        let mut oled = OledClient::Hid(Box::new(FakeHidSender::failing()));
+        let mut oled = OledClient::Hid {
+            sender: Box::new(FakeHidSender::failing()),
+            device: nova_device(),
+        };
         oled.send_white().unwrap();
     }
 
     #[test]
-    fn test_build_hid_packet_header_layout() {
-        let bitmap = vec![0xAB; 100];
-        let p = build_hid_packet(64, 32, 48, &bitmap);
-        assert_eq!(p[0], 0x06);
-        assert_eq!(p[1], 0x93);
-        assert_eq!(p[2], 64); // chunk_x
-        assert_eq!(p[3], 0);
-        assert_eq!(p[4], 32); // chunk_width
-        assert_eq!(p[5], 48); // screen_height
-                              // Bitmap follows
-        assert_eq!(p[6], 0xAB);
-        assert_eq!(p[105], 0xAB);
-        // Padded to 1024
-        assert_eq!(p.len(), 1024);
-        assert_eq!(p[1023], 0);
-    }
-
-    #[test]
-    fn test_build_hid_packets_for_buffer_produces_two_packets() {
-        let buf = OledBuffer::new();
-        let packets = build_hid_packets_for_buffer(&buf);
-        assert_eq!(packets.len(), 2);
-        assert_eq!(packets[0][2], 0); // chunk_x = 0
-        assert_eq!(packets[1][2], 64); // chunk_x = 64
-        for p in &packets {
-            assert_eq!(p.len(), 1024);
-            assert_eq!(p[0], 0x06);
-            assert_eq!(p[1], 0x93);
-        }
+    fn test_oled_client_hid_apex_sends_single_642_byte_packet() {
+        let (sender, calls) = FakeHidSender::with_shared_calls();
+        let mut oled = OledClient::Hid {
+            sender: Box::new(sender),
+            device: crate::devices::find_supported(0x1610).expect("Apex Pro in registry"),
+        };
+        let buf = OledBuffer::new(128, 40);
+        let val = json!({"line1": "x"});
+        oled.trigger_frame("E", 0, &val, &buf).unwrap();
+        let packets = calls.lock().unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].len(), 642);
+        assert_eq!(packets[0][0], 0x61);
     }
 
     #[test]
     fn test_white_buffer_all_pixels_on() {
-        let buf = white_buffer();
+        let buf = white_buffer(128, 64);
         // Every byte should be 0xFF
         assert!(buf.data.iter().all(|b| *b == 0xFF));
     }
@@ -1770,23 +1799,11 @@ mod tests {
     fn test_oled_client_dyn_dispatch_via_mock() {
         // Exercise the trait methods through dyn dispatch.
         let mut drv: Box<dyn DisplayDriver> = Box::new(MockDriver::new());
-        let buf = OledBuffer::new();
+        let buf = OledBuffer::new(128, 64);
         let val = json!({});
         assert!(drv.trigger_frame("e", 0, &val, &buf).is_ok());
         assert!(drv.send_blank().is_ok());
         assert!(drv.send_white().is_ok());
         assert!(drv.stop_heartbeat().is_ok());
-    }
-
-    #[test]
-    fn test_buffer_to_rgba_grayscale_size_and_mapping() {
-        let mut buf = OledBuffer::new();
-        buf.set_pixel(0, 0, true);
-        buf.set_pixel(127, 63, true);
-        let px = buffer_to_rgba_grayscale(&buf);
-        assert_eq!(px.len(), 128 * 64);
-        assert_eq!(px[0], 255); // (0,0)
-        assert_eq!(px[63 * 128 + 127], 255); // (127,63)
-        assert_eq!(px[1], 0); // (1,0) unlit
     }
 }

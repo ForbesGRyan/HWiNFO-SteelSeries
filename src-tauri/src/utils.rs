@@ -160,6 +160,7 @@ pub fn format_custom_value(
     labels: Vec<&str>,
     values: Vec<String>,
     units: Vec<&str>,
+    icons: Vec<&str>,
 ) -> Value {
     let mut value = json!({});
 
@@ -170,12 +171,21 @@ pub fn format_custom_value(
                 let idx = start_idx + i;
                 let label = labels[idx].trim();
                 let unit = units[idx].trim();
+                let icon = icons[idx].trim();
+
+                // Leading icon token (rendered only on the direct-USB bitmap
+                // path; ignored as a harmless control char by GameSense text).
+                let prefix = if icon.is_empty() {
+                    String::new()
+                } else {
+                    crate::render::icon_token(icon)
+                };
 
                 // Format with proper spacing: add space between label and value only if label exists
                 if label.is_empty() {
-                    format!("{}{}", values[idx], unit)
+                    format!("{}{}{}", prefix, values[idx], unit)
                 } else {
-                    format!("{} {}{}", label, values[idx], unit)
+                    format!("{}{} {}{}", prefix, label, values[idx], unit)
                 }
             })
             .collect();
@@ -997,6 +1007,37 @@ mod tests {
     }
 
     #[test]
+    fn test_format_custom_value_prepends_icon_token_when_set() {
+        let mut labels = vec![""; 15];
+        labels[0] = "CPU";
+        let mut values = vec![String::new(); 15];
+        values[0] = "42".to_string();
+        let units = vec![""; 15];
+        let mut icons = vec![""; 15];
+        icons[0] = "cpu";
+
+        let result = format_custom_value(1, labels, values, units, icons);
+
+        let line1 = result["line1"].as_str().unwrap();
+        assert!(line1.starts_with(&crate::render::icon_token("cpu")));
+        assert!(line1.contains("CPU 42"));
+    }
+
+    #[test]
+    fn test_format_custom_value_no_token_when_icon_empty() {
+        let mut labels = vec![""; 15];
+        labels[0] = "CPU";
+        let mut values = vec![String::new(); 15];
+        values[0] = "42".to_string();
+        let units = vec![""; 15];
+        let icons = vec![""; 15];
+
+        let result = format_custom_value(1, labels, values, units, icons);
+
+        assert_eq!(result["line1"], "CPU 42");
+    }
+
+    #[test]
     fn test_format_custom_value_one_sensor_per_line() {
         let labels = ["L1", "L2", "L3", "L4", "L5"];
         let mut all_labels = vec![""; 15];
@@ -1020,7 +1061,7 @@ mod tests {
             all_units[i] = u;
         }
 
-        let result = format_custom_value(1, all_labels, all_values, all_units);
+        let result = format_custom_value(1, all_labels, all_values, all_units, vec![""; 15]);
 
         assert_eq!(result["line1"], "L1 1U1");
         assert_eq!(result["line2"], "L2 2U2");
@@ -1039,7 +1080,7 @@ mod tests {
             *v = i.to_string();
         }
 
-        let result = format_custom_value(3, labels, values, units);
+        let result = format_custom_value(3, labels, values, units, vec![""; 15]);
 
         assert_eq!(result["line1"], "0 1 2");
         assert_eq!(result["line2"], "3 4 5");

@@ -105,6 +105,7 @@ fn build_preview_props(page_sensors: &[crate::settings::CustomSensor]) -> ini::P
         props.insert(format!("label_{}", k), sensor.label.clone());
         props.insert(format!("unit_{}", k), sensor.unit.clone());
         props.insert(format!("convert_{}", k), sensor.convert.clone());
+        props.insert(format!("icon_{}", k), sensor.icon.clone());
     }
     props
 }
@@ -218,6 +219,7 @@ fn apply_pages_sections(ini: &mut Ini, config: &AppConfig) {
             section.set(format!("label_{}", k), &sensor.label);
             section.set(format!("unit_{}", k), &sensor.unit);
             section.set(format!("convert_{}", k), &sensor.convert);
+            section.set(format!("icon_{}", k), &sensor.icon);
         }
     }
 }
@@ -245,6 +247,13 @@ pub struct HidDeviceInfo {
     /// Platform HID device path. Stable identifier used to target a
     /// specific device interface when no USB serial is exposed.
     pub path: String,
+    /// True when the device is in the direct-USB supported-device registry.
+    pub supported: bool,
+    /// Registry display name when supported, empty otherwise.
+    pub device_name: String,
+    /// Screen size when supported, 0 otherwise.
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -287,9 +296,9 @@ fn save_config_impl(path: &str, shared: &Shared, config: AppConfig) -> Result<()
     Ok(())
 }
 
-fn get_live_preview_impl(shared: &Shared) -> Result<Vec<u8>, String> {
+fn get_live_preview_impl(shared: &Shared) -> Result<crate::state::OledFrame, String> {
     let g = shared.lock().map_err(|e| e.to_string())?;
-    Ok(buffer_to_pixels(&g.oled_buffer))
+    Ok(buffer_to_frame(&g.oled_buffer))
 }
 
 #[command]
@@ -308,7 +317,7 @@ pub fn save_config(state: State<Shared>, config: AppConfig) -> Result<(), String
 }
 
 #[command]
-pub fn get_live_preview(state: State<Shared>) -> Result<Vec<u8>, String> {
+pub fn get_live_preview(state: State<Shared>) -> Result<crate::state::OledFrame, String> {
     get_live_preview_impl(&state)
 }
 
@@ -318,14 +327,21 @@ pub fn list_hid_devices() -> Result<Vec<HidDeviceInfo>, String> {
     let devices = list_oled_devices(&api);
     Ok(devices
         .iter()
-        .map(|d| HidDeviceInfo {
-            serial: d.serial_number().unwrap_or("").to_string(),
-            product: d.product_string().unwrap_or("").to_string(),
-            manufacturer: d.manufacturer_string().unwrap_or("").to_string(),
-            vendor_id: d.vendor_id(),
-            product_id: d.product_id(),
-            interface_number: d.interface_number(),
-            path: d.path().to_string_lossy().into_owned(),
+        .map(|d| {
+            let entry = crate::connect::supported_device(d);
+            HidDeviceInfo {
+                serial: d.serial_number().unwrap_or("").to_string(),
+                product: d.product_string().unwrap_or("").to_string(),
+                manufacturer: d.manufacturer_string().unwrap_or("").to_string(),
+                vendor_id: d.vendor_id(),
+                product_id: d.product_id(),
+                interface_number: d.interface_number(),
+                path: d.path().to_string_lossy().into_owned(),
+                supported: entry.is_some(),
+                device_name: entry.map(|e| e.name.to_string()).unwrap_or_default(),
+                width: entry.map(|e| e.width).unwrap_or(0),
+                height: entry.map(|e| e.height).unwrap_or(0),
+            }
         })
         .collect())
 }
@@ -344,10 +360,19 @@ pub fn list_sensors(state: State<Shared>) -> Result<Vec<SensorOption>, String> {
     list_sensors_impl(&state)
 }
 
-fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Result<Vec<u8>, String> {
-    let hwinfo_opt = {
+fn preview_config_impl(
+    shared: &Shared,
+    config: AppConfig,
+    page: usize,
+) -> Result<crate::state::OledFrame, String> {
+    let (hwinfo_opt, media_info, weather_info, (w, h)) = {
         let g = shared.lock().map_err(|e| e.to_string())?;
-        g.hwinfo_snapshot.clone()
+        (
+            g.hwinfo_snapshot.clone(),
+            g.media_info.clone(),
+            g.weather_info.clone(),
+            g.display_size,
+        )
     };
 
     let value: Value = if config.is_summary {
@@ -356,8 +381,8 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
         let hwinfo = match hwinfo_opt.as_ref() {
             Some(h) => h,
             None => {
-                let buf = render_text_to_oled("HWiNFO not\nconnected", 0, &[]);
-                return Ok(buffer_to_pixels(&buf));
+                let buf = render_text_to_oled("HWiNFO not\nconnected", 0, &[], w, h);
+                return Ok(buffer_to_frame(&buf));
             }
         };
 
@@ -369,8 +394,13 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
         let mut values = vec![String::new(); CUSTOM_SENSORS];
 
         let mut mb = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
+        // Seed the preview readers with the daemon's live snapshots so MEDIA_*/
+        // WEATHER_* sensors render real data instead of always-blank placeholders.
+        let mut media = MediaReader::with_cached_info(media_info);
+        let weather = match weather_info {
+            Some(info) => crate::weather::WeatherReader::with_cached_info(info),
+            None => crate::weather::WeatherReader::disabled(),
+        };
 
         if let Err(e) = run_sensors(
             &props,
@@ -384,15 +414,19 @@ fn preview_config_impl(shared: &Shared, config: AppConfig, page: usize) -> Resul
             &weather,
             None,
         ) {
-            let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0, &[]);
-            return Ok(buffer_to_pixels(&buf));
+            let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0, &[], w, h);
+            return Ok(buffer_to_frame(&buf));
         }
 
-        format_custom_value(config.sensors_per_line, labels, values, units)
+        let icons: Vec<&str> = (0..CUSTOM_SENSORS)
+            .map(|k| props.get(format!("icon_{}", k)).unwrap_or_default())
+            .collect();
+
+        format_custom_value(config.sensors_per_line, labels, values, units, icons)
     };
 
-    let buf = render_text_to_oled(&value_to_preview_text(&value), 0, &config.font_sizes);
-    Ok(buffer_to_pixels(&buf))
+    let buf = render_text_to_oled(&value_to_preview_text(&value), 0, &config.font_sizes, w, h);
+    Ok(buffer_to_frame(&buf))
 }
 
 #[command]
@@ -400,23 +434,25 @@ pub fn preview_config(
     state: State<Shared>,
     config: AppConfig,
     page: usize,
-) -> Result<Vec<u8>, String> {
+) -> Result<crate::state::OledFrame, String> {
     preview_config_impl(&state, config, page)
 }
 
-fn buffer_to_pixels(buf: &crate::render::OledBuffer) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(128 * 64);
-    for y in 0..64u32 {
-        for x in 0..128u32 {
-            let col = x as usize;
-            let byte_row = (y / 8) as usize;
-            let bit = (y % 8) as u8;
-            let idx = col * 8 + byte_row;
-            let on = (buf.data[idx] & (1 << bit)) != 0;
+pub(crate) fn buffer_to_frame(buf: &crate::render::OledBuffer) -> crate::state::OledFrame {
+    let mut pixels = Vec::with_capacity((buf.width * buf.height) as usize);
+    let pages = (buf.height / 8) as usize;
+    for y in 0..buf.height {
+        for x in 0..buf.width {
+            let idx = x as usize * pages + (y / 8) as usize;
+            let on = (buf.data[idx] & (1 << (y % 8))) != 0;
             pixels.push(if on { 255 } else { 0 });
         }
     }
-    pixels
+    crate::state::OledFrame {
+        width: buf.width,
+        height: buf.height,
+        pixels,
+    }
 }
 
 fn set_sleep_command(shared: &Shared, cmd: SleepCommand) -> Result<(), String> {
@@ -473,6 +509,7 @@ mod tests {
             label: format!("L_{}", name),
             unit: "U".to_string(),
             convert: String::new(),
+            icon: String::new(),
         }
     }
 
@@ -524,6 +561,20 @@ mod tests {
         assert_eq!(p.get("label_0"), Some("L_CPU;Temp"));
         assert_eq!(p.get("unit_0"), Some("U"));
         assert_eq!(p.get("convert_0"), Some(""));
+        assert_eq!(p.get("icon_0"), Some(""));
+    }
+
+    #[test]
+    fn test_build_preview_props_writes_icon() {
+        let page = vec![CustomSensor {
+            sensor: "CPU;Temp".to_string(),
+            label: String::new(),
+            unit: String::new(),
+            convert: String::new(),
+            icon: "cpu".to_string(),
+        }];
+        let p = build_preview_props(&page);
+        assert_eq!(p.get("icon_0"), Some("cpu"));
     }
 
     #[test]
@@ -722,6 +773,23 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_pages_sections_writes_icon() {
+        let mut ini = Ini::new();
+        let mut c = base_config();
+        c.is_summary = false;
+        c.custom_sensors = vec![vec![CustomSensor {
+            sensor: "CPU;Temp".to_string(),
+            label: String::new(),
+            unit: String::new(),
+            convert: String::new(),
+            icon: "cpu".to_string(),
+        }]];
+        apply_pages_sections(&mut ini, &c);
+        let sec = ini.section(Some("PAGE1.Sensors")).unwrap();
+        assert_eq!(sec.get("icon_0"), Some("cpu"));
+    }
+
+    #[test]
     fn test_apply_pages_sections_deletes_stale_pages() {
         let mut ini = Ini::new();
         ini.with_section(Some("PAGE5.Sensors"))
@@ -803,7 +871,7 @@ mod tests {
         );
     }
 
-    // ==================== buffer_to_pixels ====================
+    // ==================== command impls / buffer_to_frame ====================
 
     use crate::state::{ActiveMode, SharedState};
     use std::sync::{Arc, Mutex};
@@ -829,12 +897,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_live_preview_impl_returns_pixels() {
+    fn test_get_live_preview_impl_returns_frame() {
         let shared = mock_shared(base_config());
-        let pixels = get_live_preview_impl(&shared).unwrap();
-        assert_eq!(pixels.len(), 128 * 64);
+        let frame = get_live_preview_impl(&shared).unwrap();
+        assert_eq!(frame.width, 128);
+        assert_eq!(frame.height, 64);
+        assert_eq!(frame.pixels.len(), 128 * 64);
         // Empty buffer → all zero
-        assert!(pixels.iter().all(|p| *p == 0));
+        assert!(frame.pixels.iter().all(|p| *p == 0));
     }
 
     #[test]
@@ -1021,10 +1091,12 @@ mod tests {
     fn test_preview_config_impl_summary_renders_pixels() {
         let shared = mock_shared(base_config());
         let cfg = base_config();
-        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
-        assert_eq!(pixels.len(), 128 * 64);
+        let frame = preview_config_impl(&shared, cfg, 0).unwrap();
+        assert_eq!(frame.width, 128);
+        assert_eq!(frame.height, 64);
+        assert_eq!(frame.pixels.len(), 128 * 64);
         // Summary preview text "CPU GPU MEM" should light some pixels.
-        assert!(pixels.iter().any(|p| *p != 0));
+        assert!(frame.pixels.iter().any(|p| *p != 0));
     }
 
     #[test]
@@ -1034,10 +1106,10 @@ mod tests {
         cfg.is_summary = false;
         cfg.custom_sensors = vec![vec![sensor("CPU;Temp")]];
 
-        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        let frame = preview_config_impl(&shared, cfg, 0).unwrap();
         // "HWiNFO not connected" rendered → some pixels lit
-        assert_eq!(pixels.len(), 128 * 64);
-        assert!(pixels.iter().any(|p| *p != 0));
+        assert_eq!(frame.pixels.len(), 128 * 64);
+        assert!(frame.pixels.iter().any(|p| *p != 0));
     }
 
     #[test]
@@ -1050,8 +1122,8 @@ mod tests {
         let mut cfg = base_config();
         cfg.is_summary = false;
         // No custom_sensors for page 0 → empty page → renders blank text
-        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
-        assert_eq!(pixels.len(), 128 * 64);
+        let frame = preview_config_impl(&shared, cfg, 0).unwrap();
+        assert_eq!(frame.pixels.len(), 128 * 64);
     }
 
     #[test]
@@ -1065,9 +1137,58 @@ mod tests {
         cfg.is_summary = false;
         cfg.custom_sensors = vec![vec![sensor("Nonexistent;Sensor")]];
 
-        let pixels = preview_config_impl(&shared, cfg, 0).unwrap();
+        let frame = preview_config_impl(&shared, cfg, 0).unwrap();
         // Preview error rendered to pixels
-        assert!(pixels.iter().any(|p| *p != 0));
+        assert!(frame.pixels.iter().any(|p| *p != 0));
+    }
+
+    #[test]
+    fn test_preview_config_impl_renders_live_media() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")]));
+            g.media_info = crate::media::MediaInfo {
+                title: "NowPlaying".to_string(),
+                is_playing: true,
+                ..Default::default()
+            };
+        }
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![vec![sensor("MEDIA_TITLE")]];
+
+        let frame = preview_config_impl(&shared, cfg, 0).unwrap();
+        // The live media title must render → some pixels lit. With the old
+        // throwaway MediaReader, nothing was playing → blank frame.
+        assert!(
+            frame.pixels.iter().any(|p| *p != 0),
+            "live MEDIA_TITLE should render in preview"
+        );
+    }
+
+    #[test]
+    fn test_preview_config_impl_renders_live_weather() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.hwinfo_snapshot = Some(build_hwinfo(&[("CPU", "Temp")]));
+            g.weather_info = Some(crate::weather::WeatherInfo {
+                temp: Some("72".to_string()),
+                ..Default::default()
+            });
+        }
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![vec![sensor("WEATHER_TEMP")]];
+
+        let frame = preview_config_impl(&shared, cfg, 0).unwrap();
+        // The live weather temp must render → some pixels lit. With the old
+        // disabled WeatherReader, the field was None → blank frame.
+        assert!(
+            frame.pixels.iter().any(|p| *p != 0),
+            "live WEATHER_TEMP should render in preview"
+        );
     }
 
     #[test]
@@ -1090,19 +1211,53 @@ mod tests {
         if let Ok(v) = list_hid_devices() {
             for d in &v {
                 assert_eq!(d.vendor_id, crate::connect::HID_VENDOR_ID);
+                if d.supported {
+                    assert!(!d.device_name.is_empty());
+                    assert!(d.width > 0);
+                    assert!(d.height > 0);
+                } else {
+                    assert!(d.device_name.is_empty());
+                    assert_eq!(d.width, 0);
+                    assert_eq!(d.height, 0);
+                }
             }
         }
     }
 
     #[test]
-    fn test_buffer_to_pixels_size_and_mapping() {
-        let mut buf = OledBuffer::new();
+    fn test_buffer_to_frame_uses_buffer_dimensions() {
+        let mut buf = OledBuffer::new(128, 40);
+        buf.set_pixel(0, 0, true);
+        let frame = buffer_to_frame(&buf);
+        assert_eq!(frame.width, 128);
+        assert_eq!(frame.height, 40);
+        assert_eq!(frame.pixels.len(), 128 * 40);
+        assert_eq!(frame.pixels[0], 255);
+        assert_eq!(frame.pixels[1], 0);
+    }
+
+    #[test]
+    fn test_buffer_to_frame_128x64_mapping() {
+        let mut buf = OledBuffer::new(128, 64);
         buf.set_pixel(0, 0, true);
         buf.set_pixel(127, 63, true);
-        let px = buffer_to_pixels(&buf);
+        let px = buffer_to_frame(&buf).pixels;
         assert_eq!(px.len(), 128 * 64);
         assert_eq!(px[0], 255);
         assert_eq!(px[63 * 128 + 127], 255);
         assert_eq!(px[1], 0);
+    }
+
+    #[test]
+    fn test_preview_config_impl_uses_live_display_size() {
+        let shared = mock_shared(base_config());
+        {
+            let mut g = shared.lock().unwrap();
+            g.display_size = (128, 40);
+        }
+        let frame = preview_config_impl(&shared, base_config(), 0).unwrap();
+        assert_eq!(frame.width, 128);
+        assert_eq!(frame.height, 40);
+        assert_eq!(frame.pixels.len(), 128 * 40);
     }
 }

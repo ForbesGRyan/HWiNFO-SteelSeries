@@ -8,6 +8,8 @@ use settings::{settings_create_config, AppConfig};
 
 mod consts;
 
+mod devices;
+
 mod connect;
 use connect::connect_hwinfo;
 
@@ -311,6 +313,13 @@ fn main() -> Result<(), anyhow::Error> {
             let icon = build_tray_icon_image()
                 .or_else(|| app.default_window_icon().cloned())
                 .ok_or_else(|| anyhow::anyhow!("Failed to load tray icon"))?;
+
+            // Use the same icon for the main window titlebar/taskbar.
+            if let (Some(win), Some(win_icon)) =
+                (app.get_webview_window("main"), build_tray_icon_image())
+            {
+                let _ = win.set_icon(win_icon);
+            }
 
             let settings_item =
                 MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;

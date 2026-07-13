@@ -18,6 +18,15 @@ pub struct SensorValue {
     pub value: String,
 }
 
+/// One rendered OLED frame for the GUI: grayscale pixel bytes (0 or 255),
+/// row-major, length = width * height.
+#[derive(Debug, Clone, Serialize)]
+pub struct OledFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusPayload {
     pub hwinfo_connected: bool,
@@ -36,10 +45,19 @@ pub struct SharedState {
     pub last_error: Option<String>,
     pub sensor_values: Vec<SensorValue>,
     pub oled_buffer: OledBuffer,
+    /// Active OLED dimensions (set by the daemon on connect; 128×64 default).
+    pub display_size: (u32, u32),
     pub config: AppConfig,
     pub reload_requested: bool,
     pub sleep_requested: Option<SleepCommand>,
     pub hwinfo_snapshot: Option<Hwinfo>,
+    /// Latest media snapshot from the daemon's live `MediaReader`, published each
+    /// tick so the settings preview can render `MEDIA_*` sensors with real data.
+    pub media_info: crate::media::MediaInfo,
+    /// Latest weather snapshot from the daemon's live `WeatherReader`, published
+    /// each tick so the settings preview can render `WEATHER_*` sensors. `None`
+    /// when weather is disabled or no fetch has completed yet.
+    pub weather_info: Option<crate::weather::WeatherInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,11 +76,14 @@ impl SharedState {
             active_mode: ActiveMode::Disconnected,
             last_error: None,
             sensor_values: Vec::new(),
-            oled_buffer: OledBuffer::new(),
+            oled_buffer: OledBuffer::new(128, 64),
+            display_size: (128, 64),
             config,
             reload_requested: false,
             sleep_requested: None,
             hwinfo_snapshot: None,
+            media_info: crate::media::MediaInfo::default(),
+            weather_info: None,
         }
     }
 
@@ -152,6 +173,25 @@ mod tests {
         assert_eq!(SleepCommand::Sleep, SleepCommand::Sleep);
         assert_ne!(SleepCommand::Sleep, SleepCommand::Wake);
         assert_ne!(SleepCommand::Wake, SleepCommand::White);
+    }
+
+    #[test]
+    fn test_new_initializes_display_size() {
+        let state = SharedState::new(mock_config());
+        assert_eq!(state.display_size, (128, 64));
+    }
+
+    #[test]
+    fn test_oled_frame_serializes() {
+        let f = OledFrame {
+            width: 128,
+            height: 40,
+            pixels: vec![0; 3],
+        };
+        let s = serde_json::to_string(&f).unwrap();
+        assert!(s.contains("\"width\":128"));
+        assert!(s.contains("\"height\":40"));
+        assert!(s.contains("\"pixels\""));
     }
 
     #[test]

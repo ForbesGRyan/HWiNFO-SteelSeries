@@ -127,7 +127,7 @@
 
         #oled-preview {
             width: 384px;
-            height: 192px;
+            height: auto;
             image-rendering: pixelated;
             background-color: #111;
         }
@@ -449,16 +449,31 @@
         let editingDraft = null;           // {sensor, label, unit, convert}
 
         const UNIT_SUGGESTIONS = ['°', '°C', '%', 'G', 'GB', 'MB', 'W', 'RPM', 'V', 'MHz', 'rpm'];
+        // Builtin icons drawn before the value in Direct USB mode. Values must
+        // match render::icon_by_name on the backend.
+        const ICON_OPTIONS = [
+            ['', 'None'], ['cpu', 'CPU'], ['gpu', 'GPU'], ['mem', 'Memory'],
+            ['temp', 'Temperature'], ['fan', 'Fan'], ['clock', 'Clock'],
+            ['disk', 'Disk'], ['power', 'Power'], ['usage', 'Usage'], ['net', 'Network'],
+        ];
 
         const previewCanvas = document.getElementById('oled-preview');
         const previewCtx = previewCanvas.getContext('2d');
 
         // --- Preview rendering ---
-        function renderFrame(pixels) {
-            if (!pixels || pixels.length !== 128 * 64) return;
-            const imgData = previewCtx.createImageData(128, 64);
-            for (let i = 0; i < pixels.length; i++) {
-                const v = pixels[i];
+        function renderFrame(frame) {
+            if (!frame || !frame.pixels || frame.pixels.length !== frame.width * frame.height) return;
+            if (previewCanvas.width !== frame.width) previewCanvas.width = frame.width;
+            if (previewCanvas.height !== frame.height) previewCanvas.height = frame.height;
+            // Refresh the trailing (W×H) suffix without clobbering the
+            // caller-set caption ("Editing preview (page N)" / live text).
+            const caption = document.getElementById('preview-caption');
+            caption.textContent =
+                caption.textContent.replace(/\s*\(\d+×\d+\)$/, '') +
+                ` (${frame.width}×${frame.height})`;
+            const imgData = previewCtx.createImageData(frame.width, frame.height);
+            for (let i = 0; i < frame.pixels.length; i++) {
+                const v = frame.pixels[i];
                 imgData.data[i * 4] = v;
                 imgData.data[i * 4 + 1] = v;
                 imgData.data[i * 4 + 2] = v;
@@ -516,7 +531,7 @@
             ensurePage(page);
             const idx = line * (config.sensors_per_line || 1) + slot;
             while (config.custom_sensors[page].length <= idx) {
-                config.custom_sensors[page].push({ sensor: '', label: '', unit: '', convert: '' });
+                config.custom_sensors[page].push({ sensor: '', label: '', unit: '', convert: '', icon: '' });
             }
             config.custom_sensors[page][idx] = value;
         }
@@ -524,7 +539,7 @@
             ensurePage(page);
             const idx = line * (config.sensors_per_line || 1) + slot;
             if (config.custom_sensors[page][idx]) {
-                config.custom_sensors[page][idx] = { sensor: '', label: '', unit: '', convert: '' };
+                config.custom_sensors[page][idx] = { sensor: '', label: '', unit: '', convert: '', icon: '' };
             }
         }
 
@@ -609,8 +624,8 @@
         async function openSlotForm(line, slot) {
             const existing = getSlot(activePage, line, slot);
             editingDraft = existing
-                ? { sensor: existing.sensor, label: existing.label, unit: existing.unit, convert: existing.convert }
-                : { sensor: '', label: '', unit: '', convert: '' };
+                ? { sensor: existing.sensor, label: existing.label, unit: existing.unit, convert: existing.convert, icon: existing.icon || '' }
+                : { sensor: '', label: '', unit: '', convert: '', icon: '' };
             editingSlot = { line, slot };
             // Always refresh catalog when opening form
             await loadSensorCatalog();
@@ -698,6 +713,24 @@
             cSelect.onchange = (e) => { editingDraft.convert = e.target.value; };
             convRow.appendChild(cSelect);
             form.appendChild(convRow);
+
+            // Icon (direct-USB bitmap path only; ignored in SteelSeries GG mode)
+            const iconRow = document.createElement('div');
+            iconRow.className = 'slot-form-row';
+            const iLabel = document.createElement('label');
+            iLabel.textContent = 'Icon';
+            iconRow.appendChild(iLabel);
+            const iSelect = document.createElement('select');
+            ICON_OPTIONS.forEach(([val, lab]) => {
+                const opt = document.createElement('option');
+                opt.value = val;
+                opt.textContent = lab;
+                if ((editingDraft.icon || '') === val) opt.selected = true;
+                iSelect.appendChild(opt);
+            });
+            iSelect.onchange = (e) => { editingDraft.icon = e.target.value; };
+            iconRow.appendChild(iSelect);
+            form.appendChild(iconRow);
 
             // Actions
             const actions = document.createElement('div');
@@ -977,7 +1010,9 @@
                 // platform HID path (prefixed so the backend can tell them apart)
                 // when the device does not expose a serial.
                 opt.value = d.serial ? d.serial : (d.path ? `path:${d.path}` : '');
-                const label = d.product || `Unknown device ${d.product_id.toString(16)}`;
+                const label = (d.supported && d.device_name)
+                    ? d.device_name
+                    : (d.product || `Unknown device ${d.product_id.toString(16)}`);
                 let tail;
                 if (d.serial) {
                     tail = ` — ${d.serial.slice(0, 12)}`;
@@ -988,14 +1023,20 @@
                     tail = ' — (no serial)';
                 }
                 opt.textContent = `${label} [PID 0x${d.product_id.toString(16).padStart(4, '0')}, if ${d.interface_number}]${tail}`;
+                if (!d.supported) {
+                    opt.disabled = true;
+                    opt.textContent += ' — not yet supported';
+                }
                 if (!d.serial && !d.path) opt.disabled = true;
                 select.appendChild(opt);
             }
 
-            // Select the currently configured serial if it's in the list
+            // Select the currently configured serial if it's in the list and
+            // selectable; a disabled option (unsupported device) falls back to
+            // Auto rather than programmatically selecting an unpickable entry.
             const wanted = config.direct_usb_serial || '';
             const found = Array.from(select.options).find(o => o.value === wanted);
-            select.value = found ? wanted : '';
+            select.value = (found && !found.disabled) ? wanted : '';
         }
 
         document.getElementById('pages').addEventListener('change', () => {

@@ -14,6 +14,11 @@ pub struct CustomSensor {
     pub label: String,
     pub unit: String,
     pub convert: String,
+    /// Builtin icon name drawn before this sensor on the direct-USB OLED
+    /// bitmap (e.g. "cpu", "gpu", "temp"). Empty = no icon. Ignored in
+    /// SteelSeries GG mode. See [`crate::render::icon_by_name`].
+    #[serde(default)]
+    pub icon: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -204,6 +209,8 @@ impl AppConfig {
                                     .get(format!("convert_{}", k))
                                     .unwrap_or("")
                                     .to_string();
+                                let icon =
+                                    section.get(format!("icon_{}", k)).unwrap_or("").to_string();
                                 // Preserve index gaps: empty slots between
                                 // sensors map to flat positions (line * spl +
                                 // slot), so pad up to k before inserting.
@@ -213,6 +220,7 @@ impl AppConfig {
                                         label: String::new(),
                                         unit: String::new(),
                                         convert: String::new(),
+                                        icon: String::new(),
                                     });
                                 }
                                 page_sensors.push(CustomSensor {
@@ -220,6 +228,7 @@ impl AppConfig {
                                     label,
                                     unit,
                                     convert,
+                                    icon,
                                 });
                             }
                         }
@@ -827,6 +836,23 @@ mod tests {
         assert_eq!(config.custom_sensors[1].len(), 1);
         assert_eq!(config.custom_sensors[1][0].sensor, "MEM;Used");
         assert_eq!(config.custom_sensors[1][0].convert, "MB/GB");
+    }
+
+    #[test]
+    fn test_appconfig_loads_icon_from_pages() {
+        let mut conf = Ini::new();
+        conf.with_section(Some("Main"))
+            .set("style", "Custom")
+            .set("pages", "1");
+        conf.with_section(Some("PAGE1.Sensors"))
+            .set("sensor_0", "CPU [#0];Temperature")
+            .set("icon_0", "cpu")
+            .set("sensor_1", "GPU [#0];Temperature"); // no icon_1
+
+        let config = AppConfig::from_ini(&conf).unwrap();
+
+        assert_eq!(config.custom_sensors[0][0].icon, "cpu");
+        assert_eq!(config.custom_sensors[0][1].icon, "");
     }
 
     #[test]
