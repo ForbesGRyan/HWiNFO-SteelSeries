@@ -65,6 +65,50 @@ pub fn device_label(interfaces: &[ReportInterface]) -> String {
     }
 }
 
+/// Markdown device report: app/OS lines, one table row per interface, and
+/// (when applicable) the same unsupported-device summary the connect error
+/// uses.
+pub fn format_device_report(
+    app_version: &str,
+    os_info: &str,
+    interfaces: &[ReportInterface],
+) -> String {
+    let mut out = String::new();
+    out.push_str("### Device report\n\n");
+    out.push_str(&format!("- App version: {}\n", app_version));
+    out.push_str(&format!("- OS: {}\n\n", os_info));
+    out.push_str(
+        "| Product | Manufacturer | PID | Interface | Usage page | Usage | Serial? | OLED-capable | Supported |\n",
+    );
+    out.push_str("|---|---|---|---|---|---|---|---|---|\n");
+    for i in interfaces {
+        let product = if i.product.is_empty() {
+            "unknown device"
+        } else {
+            &i.product
+        };
+        out.push_str(&format!(
+            "| {} | {} | 0x{:04X} | {} | 0x{:04X} | 0x{:04X} | {} | {} | {} |\n",
+            product,
+            i.manufacturer,
+            i.product_id,
+            i.interface_number,
+            i.usage_page,
+            i.usage,
+            if i.has_serial { "yes" } else { "no" },
+            if i.oled_capable { "yes" } else { "no" },
+            i.supported.unwrap_or("no"),
+        ));
+    }
+    let detected = unsupported_detected(interfaces);
+    if !detected.is_empty() {
+        out.push('\n');
+        out.push_str(&crate::connect::unsupported_devices_error(&detected));
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +158,44 @@ mod tests {
 
         let all_supported = vec![iface("Nova Pro", 0x12E0, 0xFFC0)];
         assert_eq!(device_label(&all_supported), "unknown device");
+    }
+
+    #[test]
+    fn test_format_device_report_golden() {
+        let ifaces = vec![
+            iface("Apex Gen3 TKL", 0x1640, 0xFFC0),
+            iface("Nova Pro", 0x12E0, 0xFFC0),
+        ];
+        let report = format_device_report("0.2.2", "Windows", &ifaces);
+        let expected = "\
+### Device report
+
+- App version: 0.2.2
+- OS: Windows
+
+| Product | Manufacturer | PID | Interface | Usage page | Usage | Serial? | OLED-capable | Supported |
+|---|---|---|---|---|---|---|---|---|
+| Apex Gen3 TKL | SteelSeries | 0x1640 | 1 | 0xFFC0 | 0x0001 | yes | yes | no |
+| Nova Pro | SteelSeries | 0x12E0 | 1 | 0xFFC0 | 0x0001 | yes | yes | Arctis Nova Pro Wireless |
+
+Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB
+";
+        assert_eq!(report, expected);
+    }
+
+    #[test]
+    fn test_format_device_report_no_unsupported_omits_summary() {
+        let ifaces = vec![iface("Nova Pro", 0x12E0, 0xFFC0)];
+        let report = format_device_report("0.2.2", "Windows", &ifaces);
+        assert!(!report.contains("not yet supported"));
+        assert!(report.ends_with("Arctis Nova Pro Wireless |\n"));
+    }
+
+    #[test]
+    fn test_format_device_report_empty_product_shows_unknown() {
+        let ifaces = vec![iface("", 0x1644, 0x000C)];
+        let report = format_device_report("0.2.2", "Windows", &ifaces);
+        assert!(report.contains("| unknown device | SteelSeries | 0x1644 | 1 | 0x000C | 0x0001 | yes | no | no |"));
+        assert!(report.contains("Detected unknown device (PID 0x1644) — not yet supported for direct USB"));
     }
 }
