@@ -109,6 +109,56 @@ pub fn format_device_report(
     out
 }
 
+/// Ceiling for the prefilled-issue URL; beyond it the body is stubbed and
+/// the UI copies the full report to the clipboard instead.
+pub const ISSUE_URL_MAX: usize = 7000;
+pub const REPO_URL: &str = "https://github.com/ForbesGRyan/HWiNFO-SteelSeries";
+
+/// RFC 3986 percent-encoding: everything except unreserved characters.
+fn encode_uri_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Prefilled new-issue URL. Returns (url, truncated). When the full report
+/// pushes the URL past ISSUE_URL_MAX, the body becomes `fallback_body` plus
+/// a paste instruction, and `truncated` is true.
+pub fn device_report_issue_url(
+    report: &str,
+    device_label: &str,
+    fallback_body: &str,
+) -> (String, bool) {
+    let title = format!("[Device support] {}", device_label);
+    let base = format!(
+        "{}/issues/new?labels=device-support&title={}",
+        REPO_URL,
+        encode_uri_component(&title)
+    );
+    let full = format!("{}&body={}", base, encode_uri_component(report));
+    if full.len() <= ISSUE_URL_MAX {
+        return (full, false);
+    }
+    let stub = format!("{}\n\nPaste the copied device report here.", fallback_body);
+    (
+        format!("{}&body={}", base, encode_uri_component(&stub)),
+        true,
+    )
+}
+
+/// Only this repo's GitHub pages may be opened via the open_url command,
+/// so it cannot be used as a generic launcher.
+pub fn is_allowed_external_url(url: &str) -> bool {
+    url.starts_with("https://github.com/ForbesGRyan/HWiNFO-SteelSeries/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +247,52 @@ Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB
         let report = format_device_report("0.2.2", "Windows", &ifaces);
         assert!(report.contains("| unknown device | SteelSeries | 0x1644 | 1 | 0x000C | 0x0001 | yes | no | no |"));
         assert!(report.contains("Detected unknown device (PID 0x1644) — not yet supported for direct USB"));
+    }
+
+    #[test]
+    fn test_encode_uri_component() {
+        assert_eq!(encode_uri_component("abc-XYZ_0.9~"), "abc-XYZ_0.9~");
+        assert_eq!(
+            encode_uri_component("[Device support] Apex (PID 0x1640)"),
+            "%5BDevice%20support%5D%20Apex%20%28PID%200x1640%29"
+        );
+        assert_eq!(encode_uri_component("a\nb&c=d"), "a%0Ab%26c%3Dd");
+    }
+
+    #[test]
+    fn test_issue_url_short_report_not_truncated() {
+        let (url, truncated) =
+            device_report_issue_url("short report", "Apex Gen3 TKL (PID 0x1640)", "fallback");
+        assert!(!truncated);
+        assert!(url.starts_with(
+            "https://github.com/ForbesGRyan/HWiNFO-SteelSeries/issues/new?labels=device-support&title="
+        ));
+        assert!(url.contains("%5BDevice%20support%5D%20Apex%20Gen3%20TKL"));
+        assert!(url.ends_with("&body=short%20report"));
+        assert!(url.len() <= ISSUE_URL_MAX);
+    }
+
+    #[test]
+    fn test_issue_url_long_report_truncates_to_fallback() {
+        let long_report = "x".repeat(ISSUE_URL_MAX);
+        let (url, truncated) = device_report_issue_url(
+            &long_report,
+            "Apex Gen3 TKL (PID 0x1640)",
+            "Detected Apex Gen3 TKL (PID 0x1640) — not yet supported for direct USB",
+        );
+        assert!(truncated);
+        assert!(url.len() <= ISSUE_URL_MAX);
+        assert!(url.contains("Paste%20the%20copied%20device%20report%20here."));
+        assert!(!url.contains("xxxx"));
+    }
+
+    #[test]
+    fn test_is_allowed_external_url() {
+        assert!(is_allowed_external_url(
+            "https://github.com/ForbesGRyan/HWiNFO-SteelSeries/issues/new?labels=device-support"
+        ));
+        assert!(!is_allowed_external_url("https://github.com/evil/repo"));
+        assert!(!is_allowed_external_url("https://example.com/"));
+        assert!(!is_allowed_external_url("file:///C:/Windows/System32/calc.exe"));
     }
 }
