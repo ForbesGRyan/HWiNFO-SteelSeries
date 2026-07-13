@@ -346,6 +346,58 @@ pub fn list_hid_devices() -> Result<Vec<HidDeviceInfo>, String> {
         .collect())
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceReportPayload {
+    pub report: String,
+    pub issue_url: String,
+    pub has_unsupported: bool,
+    pub url_truncated: bool,
+}
+
+#[command]
+pub fn get_device_report() -> Result<DeviceReportPayload, String> {
+    let api = hidapi::HidApi::new().map_err(|e| format!("HID API init failed: {}", e))?;
+    let interfaces: Vec<crate::report::ReportInterface> =
+        crate::connect::list_steelseries_interfaces(&api)
+            .iter()
+            .map(|d| {
+                crate::report::report_interface_from_parts(
+                    d.product_string().unwrap_or(""),
+                    d.manufacturer_string().unwrap_or(""),
+                    d.product_id(),
+                    d.interface_number(),
+                    d.usage_page(),
+                    d.usage(),
+                    d.serial_number().is_some_and(|s| !s.is_empty()),
+                )
+            })
+            .collect();
+
+    let report =
+        crate::report::format_device_report(env!("CARGO_PKG_VERSION"), "Windows", &interfaces);
+    let detected = crate::report::unsupported_detected(&interfaces);
+    let fallback = crate::connect::unsupported_devices_error(&detected);
+    let (issue_url, url_truncated) = crate::report::device_report_issue_url(
+        &report,
+        &crate::report::device_label(&interfaces),
+        &fallback,
+    );
+    Ok(DeviceReportPayload {
+        report,
+        issue_url,
+        has_unsupported: !detected.is_empty(),
+        url_truncated,
+    })
+}
+
+#[command]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !crate::report::is_allowed_external_url(&url) {
+        return Err(format!("URL not allowed: {}", url));
+    }
+    open::that(&url).map_err(|e| format!("Failed to open browser: {}", e))
+}
+
 fn list_sensors_impl(shared: &Shared) -> Result<Vec<SensorOption>, String> {
     let g = shared.lock().map_err(|e| e.to_string())?;
     let mut out = special_sensor_options();

@@ -140,6 +140,19 @@ pub fn list_oled_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
     api.device_list().filter(|d| is_oled_capable(d)).collect()
 }
 
+/// Pure vendor predicate — testable without HidApi.
+pub fn is_steelseries_vendor(vendor_id: u16) -> bool {
+    vendor_id == HID_VENDOR_ID
+}
+
+/// Lists ALL SteelSeries HID interfaces (no usage-page filter), for the
+/// device-support report. `list_oled_devices` remains the connect filter.
+pub fn list_steelseries_interfaces(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
+    api.device_list()
+        .filter(|d| is_steelseries_vendor(d.vendor_id()))
+        .collect()
+}
+
 /// Registry entry for a discovered HID interface, if the device is supported.
 pub fn supported_device(d: &hidapi::DeviceInfo) -> Option<&'static SupportedDevice> {
     if !is_oled_capable(d) {
@@ -798,5 +811,11 @@ mod tests {
         let error_string = wrapped_error.to_string();
         assert!(error_string.contains("Failed to connect"));
         assert!(error_string.contains("Permission denied"));
+    }
+
+    #[test]
+    fn test_is_steelseries_vendor() {
+        assert!(is_steelseries_vendor(0x1038));
+        assert!(!is_steelseries_vendor(0x046D));
     }
 }

@@ -299,6 +299,8 @@ fn main() -> Result<(), anyhow::Error> {
             gui::request_sleep,
             gui::request_wake,
             gui::request_white_screen,
+            gui::get_device_report,
+            gui::open_url,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
