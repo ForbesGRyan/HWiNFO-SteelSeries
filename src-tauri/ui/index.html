@@ -333,6 +333,11 @@
 
     <div class="error-banner" id="error-banner"></div>
 
+    <div id="device-report-row" style="display:none; margin-top:6px; gap:8px;">
+        <button id="btn-request-support" type="button">Request device support</button>
+        <button id="btn-copy-report" type="button">Copy device report</button>
+    </div>
+
     <div class="section">
         <span class="section-title">Status</span>
         <div class="status-grid">
@@ -502,6 +507,7 @@
             const banner = document.getElementById('error-banner');
             if (s.last_error) { banner.textContent = s.last_error; banner.classList.add('visible'); }
             else { banner.classList.remove('visible'); }
+            updateDeviceReportRow(!!(s.last_error && s.last_error.includes('not yet supported for direct USB')));
 
             const liveEl = document.getElementById('live-sensors');
             if (s.sensor_values && s.sensor_values.length > 0) {
@@ -1037,7 +1043,66 @@
             const wanted = config.direct_usb_serial || '';
             const found = Array.from(select.options).find(o => o.value === wanted);
             select.value = (found && !found.disabled) ? wanted : '';
+            deviceReportAvailable = devices.some(d => !d.supported);
+            updateDeviceReportRow(false);
         }
+
+        // --- Device-support report (unsupported direct-USB devices) ---
+        let deviceReportAvailable = false;
+
+        function updateDeviceReportRow(fromError) {
+            const row = document.getElementById('device-report-row');
+            row.style.display = (deviceReportAvailable || fromError) ? 'flex' : 'none';
+        }
+
+        async function copyText(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch (_) {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                ta.remove();
+            }
+        }
+
+        function flashButton(btn, label) {
+            const orig = btn.textContent;
+            btn.textContent = label;
+            setTimeout(() => { btn.textContent = orig; }, 2000);
+        }
+
+        document.getElementById('btn-request-support').onclick = async () => {
+            try {
+                const r = await invoke('get_device_report');
+                if (r.url_truncated) {
+                    await copyText(r.report);
+                    flashButton(document.getElementById('btn-copy-report'),
+                        'Report copied — paste into issue body');
+                }
+                await invoke('open_url', { url: r.issue_url });
+            } catch (e) {
+                try {
+                    const r = await invoke('get_device_report');
+                    await copyText(r.report + '\n\n' + r.issue_url);
+                    showError('Could not open browser — report and URL copied to clipboard');
+                } catch (e2) {
+                    showError('Device report failed: ' + e2);
+                }
+            }
+        };
+
+        document.getElementById('btn-copy-report').onclick = async () => {
+            try {
+                const r = await invoke('get_device_report');
+                await copyText(r.report);
+                flashButton(document.getElementById('btn-copy-report'), 'Copied ✓');
+            } catch (e) {
+                showError('Device report failed: ' + e);
+            }
+        };
 
         document.getElementById('pages').addEventListener('change', () => {
             const n = parseInt(document.getElementById('pages').value) || 1;
