@@ -10,6 +10,8 @@ mod consts;
 
 mod devices;
 
+mod report;
+
 mod connect;
 use connect::connect_hwinfo;
 
