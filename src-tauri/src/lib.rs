@@ -1,890 +1,517 @@
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::upper_case_acronyms)]
+//! HWiNFO shared-memory reader.
+//!
+//! HWiNFO publishes its sensors in the `Global\HWiNFO_SENS_SM2` file mapping:
+//! a header, a table of sensor elements and a table of reading elements. The
+//! structs are packed and little-endian, so fields are read from the mapped
+//! bytes at fixed offsets rather than through `#[repr]` structs.
 
-use std::io::{Error, ErrorKind};
+use anyhow::{anyhow, bail, Result};
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::Arc;
-use std::{collections::HashMap, ffi::OsStr, iter::once};
-use strum::FromRepr;
 use winapi::ctypes::c_void;
 use winapi::um::handleapi::CloseHandle;
-use winapi::um::memoryapi::{MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ};
+use winapi::um::memoryapi::{
+    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ,
+};
+use winapi::um::winnt::MEMORY_BASIC_INFORMATION;
 
-const HWINFO_SENSORS_MAP_FILE_NAME2: &str = "Global\\HWiNFO_SENS_SM2";
-// const HWINFO_SENSORS_SM2_MUTEX: &str = "Global\\HWiNFO_SM2_MUTEX";
-const HWINFO_SENSORS_STRING_LEN2: usize = 128;
-const HWINFO_UNIT_STRING_LEN: usize = 16;
+const MAP_NAME: &str = "Global\\HWiNFO_SENS_SM2";
 
-#[allow(dead_code)]
-#[derive(FromRepr, Clone, Copy)]
-pub enum SensorReadingType {
-    SensorTypeNone = 0,
-    SensorTypeTemp,
-    SensorTypeVolt,
-    SensorTypeFan,
-    SensorTypeCurrent,
-    SensorTypePower,
-    SensorTypeClock,
-    SensorTypeUsage,
-    SensorTypeOther,
-}
+// Header: poll time, then (offset, element size, element count) per table.
+const HDR_POLL_TIME: usize = 12;
+const HDR_SENSORS: usize = 20;
+const HDR_READINGS: usize = 32;
+// Sensor element: user-visible name, ANSI and (newer HWiNFO) UTF-8.
+const SENSOR_NAME: usize = 136;
+const SENSOR_NAME_UTF8: usize = 264;
+// Reading element.
+const READING_SENSOR_INDEX: usize = 4;
+const READING_LABEL: usize = 140;
+const READING_VALUE: usize = 284;
+const READING_LABEL_UTF8: usize = 316;
+const STRING_LEN: usize = 128;
 
-#[allow(dead_code)]
-#[repr(C, packed(1))]
-#[derive(Clone)]
-pub struct HwinfoSensorsReadingElement {
-    // Don't Touch
-    pub t_reading: SensorReadingType,
-    pub(crate) _blank: [u8; 3], // For some reason the packing wasn't lining up. This alleviates it
-    pub dw_sensor_index: u32,
-    pub dw_reading_id: u32,
-    pub sz_label_orig: [u8; HWINFO_SENSORS_STRING_LEN2],
-    pub sz_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
-    pub sz_unit: [u8; HWINFO_UNIT_STRING_LEN],
-    pub value: f64,
-    pub value_min: f64,
-    pub value_max: f64,
-    pub value_avg: f64,
-    pub utf_label_user: [u8; HWINFO_SENSORS_STRING_LEN2],
-    pub utf_unit: [u8; HWINFO_UNIT_STRING_LEN],
-}
-impl PartialEq for HwinfoSensorsReadingElement {
-    fn eq(&self, other: &Self) -> bool {
-        self.dw_reading_id == other.dw_reading_id
-            && self.value == other.value
-            && self.value_min == other.value_min
-            && self.value_max == other.value_max
-            && self.value_avg == other.value_avg
-    }
-}
-impl Eq for HwinfoSensorsReadingElement {}
-
-#[allow(dead_code)]
-#[repr(C, align(1))]
-#[derive(Clone, Copy)]
-pub struct HwinfoSensorsSensorElement {
-    // Don't Touch
-    pub dw_sensor_id: u32,
-    pub dw_sensor_inst: u32,
-    pub sz_sensor_name_orig: [u8; HWINFO_SENSORS_STRING_LEN2],
-    pub sz_sensor_name_user: [u8; HWINFO_SENSORS_STRING_LEN2],
-    pub utf_sensor_name_user: [u8; HWINFO_SENSORS_STRING_LEN2],
-}
-impl PartialEq for HwinfoSensorsSensorElement {
-    fn eq(&self, other: &Self) -> bool {
-        self.utf_sensor_name_user == other.utf_sensor_name_user
-    }
-}
-impl Eq for HwinfoSensorsSensorElement {}
-
-#[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
-struct HwinfoSensorsSharedMem2 {
-    // Don't Touch
-    dw_signature: u32,
-    dw_version: u32,
-    dw_revision: u32,
-    poll_time: i64,
-    dw_offset_of_sensor_section: u32,
-    dw_size_of_sensor_element: u32,
-    dw_num_sensor_elements: u32,
-    // descriptors for the Readings section
-    dw_offset_of_reading_section: u32, // Offset of the Reading section from beginning of HWiNFO_SENSORS_SHARED_MEM2
-    dw_size_of_reading_element: u32, // Size of each Reading element = sizeof( HWiNFO_SENSORS_READING_ELEMENT )
-    dw_num_reading_elements: u32,    // Number of Reading elements
+fn bytes_at<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N]> {
+    bytes
+        .get(offset..)
+        .and_then(|rest| rest.get(..N))
+        .and_then(|field| field.try_into().ok())
+        .ok_or_else(|| anyhow!("HWiNFO shared memory truncated at offset {}", offset))
 }
 
-#[derive(Clone)]
-pub struct Sensor {
-    pub info: HwinfoSensorsSensorElement,
-    pub readings: HashMap<String, HwinfoSensorsReadingElement>,
-    pub reading_names: Vec<String>,
-}
-impl PartialEq for Sensor {
-    fn eq(&self, other: &Self) -> bool {
-        self.readings == other.readings
-    }
-}
-impl Eq for Sensor {}
-
-#[derive(Clone)]
-struct SharedMemoryView(*const c_void);
-unsafe impl Send for SharedMemoryView {}
-unsafe impl Sync for SharedMemoryView {}
-
-impl Drop for SharedMemoryView {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                UnmapViewOfFile(self.0 as *mut _);
-            }
-        }
-    }
+fn u32_at(bytes: &[u8], offset: usize) -> Result<usize> {
+    Ok(u32::from_le_bytes(bytes_at(bytes, offset)?) as usize)
 }
 
-#[derive(Clone)]
-pub struct Hwinfo {
-    // shared_memory_handle: Handle,
-    #[allow(dead_code)] // held for its Drop (unmaps view); not read directly
-    pub(crate) shared_memory_view: Arc<SharedMemoryView>,
-    // num_sensors: u32,
-    pub(crate) num_reading_elements: u32,
-    pub(crate) offset_reading_section: u32,
-    pub(crate) size_reading_section: u32,
-    pub(crate) shared_memory_name: Vec<u16>,
-    pub sensors: HashMap<String, Sensor>,
-    pub sensor_names: Vec<String>,
-    /// Test-only: when true, `pull()` returns Ok(()) without touching shared memory.
-    pub bypass_pull_for_test: bool,
+/// One element table inside the mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Section {
+    offset: usize,
+    size: usize,
+    count: usize,
 }
-impl PartialEq for Hwinfo {
-    fn eq(&self, other: &Self) -> bool {
-        self.sensors == other.sensors
-    }
-}
-impl Eq for Hwinfo {}
 
-impl Hwinfo {
-    pub fn new() -> Result<Hwinfo, anyhow::Error> {
-        let hwinfo_memory_size = std::mem::size_of::<HwinfoSensorsSharedMem2>();
-        // Convert the name to a wide string (UTF-16)
-        let shared_memory_name = OsStr::new(HWINFO_SENSORS_MAP_FILE_NAME2)
-            .encode_wide()
-            .chain(once(0))
-            .collect::<Vec<u16>>();
-        let shared_memory_handle = unsafe {
-            // Open the named shared memory object for read access
-            OpenFileMappingW(
-                FILE_MAP_READ,               // Desired access
-                0,                           // Inherit handle flag
-                shared_memory_name.as_ptr(), // Name of the shared memory object
-            )
+impl Section {
+    /// Read a table descriptor and check the whole table lies inside `bytes`
+    /// with elements of at least `min_size`, so later indexing cannot go out
+    /// of bounds.
+    fn parse(bytes: &[u8], offset: usize, min_size: usize) -> Result<Self> {
+        let section = Section {
+            offset: u32_at(bytes, offset)?,
+            size: u32_at(bytes, offset + 4)?,
+            count: u32_at(bytes, offset + 8)?,
         };
-        if shared_memory_handle.is_null() {
-            // println!("Failed to open shared memory object");
-            return Err(anyhow::Error::new(Error::new(
-                ErrorKind::NotFound,
-                "Failed to open shared memory object",
-            )));
-        }
-        let shared_memory_view = unsafe {
-            // Map the shared memory into the process's address space
-            MapViewOfFile(shared_memory_handle, FILE_MAP_READ, 0, 0, 0)
-        };
-        // Close the handle after mapping - the view remains valid until UnmapViewOfFile
-        unsafe {
-            CloseHandle(shared_memory_handle);
-        }
-        if shared_memory_view.is_null() {
-            // println!("Failed to map view of shared memory");
-            return Err(anyhow::Error::new(Error::new(
-                ErrorKind::NotFound,
-                "Failed to map view of shared memory",
-            )));
-        }
-        let start: *const u8 = shared_memory_view as *const u8;
-        let hwinfo_memory: HwinfoSensorsSharedMem2 = unsafe {
-            let shared_memory_content = std::slice::from_raw_parts(start, hwinfo_memory_size);
-            let (_prefix, aligned, _suffix) =
-                shared_memory_content.align_to::<HwinfoSensorsSharedMem2>();
-            if aligned.is_empty() {
-                return Err(anyhow::Error::new(Error::new(
-                    ErrorKind::InvalidData,
-                    "Failed to align shared memory data for HwinfoSensorsSharedMem2",
-                )));
-            }
-            aligned[0]
-        };
-        let num_sensors = hwinfo_memory.dw_num_sensor_elements;
-        let num_reading_elements = hwinfo_memory.dw_num_reading_elements;
-        let offset_sensor_section = hwinfo_memory.dw_offset_of_sensor_section;
-        let size_sensor_element = hwinfo_memory.dw_size_of_sensor_element;
-        let offset_reading_section = hwinfo_memory.dw_offset_of_reading_section;
-        let size_reading_section = hwinfo_memory.dw_size_of_reading_element;
-
-        let mut sensors: HashMap<String, Sensor> = HashMap::new();
-        let mut sensor_names: Vec<String> = Vec::new(); // pre-allocate with num_sensors?
-
-        // Getting Sensor Labels
-        for dw_sensor in 0..num_sensors {
-            let offset = offset_sensor_section + (dw_sensor * size_sensor_element);
-            let sensor = unsafe {
-                let ptr = start.offset(offset as isize);
-                let sensor_element = std::slice::from_raw_parts(ptr, size_sensor_element as usize);
-                let (_prefix, aligned, _suffix) =
-                    sensor_element.align_to::<HwinfoSensorsSensorElement>();
-                if aligned.is_empty() {
-                    return Err(anyhow::Error::new(Error::new(
-                        ErrorKind::InvalidData,
-                        "Failed to align sensor element data",
-                    )));
-                }
-                aligned[0]
-            };
-            let sensor_name = String::from_utf8(sensor.utf_sensor_name_user.to_vec())?
-                .trim_matches(char::from(0))
-                .to_string();
-
-            sensor_names.push(sensor_name.clone());
-
-            sensors.insert(
-                sensor_name,
-                Sensor {
-                    info: sensor,
-                    readings: HashMap::new(),
-                    reading_names: Vec::new(),
-                },
+        let end = section
+            .count
+            .checked_mul(section.size)
+            .and_then(|len| len.checked_add(section.offset));
+        if section.size < min_size || end.is_none_or(|end| end > bytes.len()) {
+            bail!(
+                "HWiNFO shared memory layout invalid: {:?} in {} bytes",
+                section,
+                bytes.len()
             );
         }
+        Ok(section)
+    }
 
-        // unsafe {
-        //     // Unmap the shared memory view when done
-        //     UnmapViewOfFile(shared_memory_view);
-        // }
+    fn elements<'a>(&self, bytes: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
+        bytes[self.offset..self.offset + self.count * self.size].chunks_exact(self.size)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Header {
+    poll_time: i64,
+    sensors: Section,
+    readings: Section,
+}
+
+impl Header {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        Ok(Header {
+            poll_time: i64::from_le_bytes(bytes_at(bytes, HDR_POLL_TIME)?),
+            sensors: Section::parse(bytes, HDR_SENSORS, SENSOR_NAME + STRING_LEN)?,
+            readings: Section::parse(bytes, HDR_READINGS, READING_VALUE + 8)?,
+        })
+    }
+}
+
+/// NUL-terminated string field; prefers the UTF-8 copy when the element is
+/// large enough to have one.
+fn name_at(element: &[u8], utf8: usize, ansi: usize) -> String {
+    let field = element
+        .get(utf8..utf8 + STRING_LEN)
+        .or_else(|| element.get(ansi..ansi + STRING_LEN))
+        .unwrap_or_default();
+    let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..end]).into_owned()
+}
+
+/// Names of every reading, parsed once and shared between snapshots.
+#[derive(Default)]
+struct Layout {
+    /// `(sensor, reading)` per reading, in HWiNFO's order.
+    names: Vec<(String, String)>,
+    /// sensor -> reading -> position in `names`.
+    index: HashMap<String, HashMap<String, usize>>,
+}
+
+impl Layout {
+    fn new(names: Vec<(String, String)>) -> Self {
+        let mut index: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        for (i, (sensor, reading)) in names.iter().enumerate() {
+            index
+                .entry(sensor.clone())
+                .or_default()
+                .insert(reading.clone(), i);
+        }
+        Layout { names, index }
+    }
+
+    fn parse(bytes: &[u8], header: &Header) -> Self {
+        let sensors: Vec<String> = header
+            .sensors
+            .elements(bytes)
+            .map(|e| name_at(e, SENSOR_NAME_UTF8, SENSOR_NAME))
+            .collect();
+        let names = header
+            .readings
+            .elements(bytes)
+            .map(|e| {
+                let field = &e[READING_SENSOR_INDEX..READING_SENSOR_INDEX + 4];
+                let sensor_index = u32::from_le_bytes(field.try_into().unwrap()) as usize;
+                // An out-of-range sensor index keeps the reading's slot (so
+                // values stay aligned) under an empty sensor name.
+                (
+                    sensors.get(sensor_index).cloned().unwrap_or_default(),
+                    name_at(e, READING_LABEL_UTF8, READING_LABEL),
+                )
+            })
+            .collect();
+        Layout::new(names)
+    }
+}
+
+/// Sensor readings at one moment. Cloning is cheap: the names are shared and
+/// only the values are copied.
+#[derive(Clone, Default)]
+pub struct Snapshot {
+    layout: Arc<Layout>,
+    values: Vec<f64>,
+}
+
+impl Snapshot {
+    /// Build a snapshot from `(sensor, reading, value)` triples.
+    pub fn from_readings(readings: &[(&str, &str, f64)]) -> Self {
+        let names = readings
+            .iter()
+            .map(|(sensor, reading, _)| (sensor.to_string(), reading.to_string()))
+            .collect();
+        Snapshot {
+            layout: Arc::new(Layout::new(names)),
+            values: readings.iter().map(|r| r.2).collect(),
+        }
+    }
+
+    pub fn get(&self, sensor: &str, reading: &str) -> Option<f64> {
+        let i = *self.layout.index.get(sensor)?.get(reading)?;
+        self.values.get(i).copied()
+    }
+
+    /// Value of the first reading with this label, in HWiNFO's own order.
+    pub fn find_first(&self, reading: &str) -> Option<f64> {
+        let i = self.layout.names.iter().position(|(_, r)| r == reading)?;
+        self.values.get(i).copied()
+    }
+
+    /// Every `(sensor, reading, value)`, in HWiNFO's own order.
+    pub fn readings(&self) -> impl Iterator<Item = (&str, &str, f64)> + '_ {
+        self.layout
+            .names
+            .iter()
+            .zip(&self.values)
+            .map(|((sensor, reading), value)| (sensor.as_str(), reading.as_str(), *value))
+    }
+}
+
+fn read_values(bytes: &[u8], readings: Section, out: &mut Vec<f64>) {
+    out.clear();
+    out.extend(
+        readings
+            .elements(bytes)
+            .map(|e| f64::from_le_bytes(e[READING_VALUE..READING_VALUE + 8].try_into().unwrap())),
+    );
+}
+
+/// Parse a full snapshot from the mapped bytes.
+fn load(bytes: &[u8]) -> Result<(Header, Snapshot)> {
+    let header = Header::parse(bytes)?;
+    let mut snapshot = Snapshot {
+        layout: Arc::new(Layout::parse(bytes, &header)),
+        values: Vec::new(),
+    };
+    read_values(bytes, header.readings, &mut snapshot.values);
+    Ok((header, snapshot))
+}
+
+/// Update `snapshot` in place. Returns true when HWiNFO has polled since
+/// `header` was read; the values are refreshed either way.
+fn refresh(bytes: &[u8], header: &mut Header, snapshot: &mut Snapshot) -> Result<bool> {
+    let new = Header::parse(bytes)?;
+    if new.sensors != header.sensors || new.readings != header.readings {
+        snapshot.layout = Arc::new(Layout::parse(bytes, &new));
+    }
+    read_values(bytes, new.readings, &mut snapshot.values);
+    let fresh = new.poll_time != header.poll_time;
+    *header = new;
+    Ok(fresh)
+}
+
+/// A read-only view of HWiNFO's file mapping, unmapped on drop.
+struct View {
+    ptr: *mut c_void,
+    len: usize,
+}
+
+// SAFETY: the view is a read-only mapping owned by this struct; nothing ties
+// it to the thread that created it.
+unsafe impl Send for View {}
+
+impl View {
+    fn open() -> Result<Self> {
+        let name: Vec<u16> = OsStr::new(MAP_NAME).encode_wide().chain(once(0)).collect();
+        let handle = unsafe { OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr()) };
+        if handle.is_null() {
+            bail!("Failed to open shared memory object");
+        }
+        let ptr = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0) };
+        // The view stays valid after the handle is closed.
+        unsafe { CloseHandle(handle) };
+        if ptr.is_null() {
+            bail!("Failed to map view of shared memory");
+        }
+        let mut view = View { ptr, len: 0 };
+        let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        let written = unsafe {
+            VirtualQuery(
+                ptr,
+                &mut info,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        if written == 0 {
+            bail!("Failed to query shared memory size");
+        }
+        view.len = info.RegionSize;
+        Ok(view)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: `ptr` is a live mapping of `len` readable bytes until drop.
+        unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
+    }
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        unsafe { UnmapViewOfFile(self.ptr) };
+    }
+}
+
+/// Connection to a running HWiNFO's shared memory.
+pub struct Hwinfo {
+    view: View,
+    header: Header,
+    snapshot: Snapshot,
+}
+
+impl Hwinfo {
+    pub fn new() -> Result<Self> {
+        let view = View::open()?;
+        let (header, snapshot) = load(view.bytes())?;
         Ok(Hwinfo {
-            shared_memory_view: Arc::new(SharedMemoryView(shared_memory_view)),
-            num_reading_elements,
-            offset_reading_section,
-            size_reading_section,
-            shared_memory_name,
-            sensors,
-            sensor_names,
-            bypass_pull_for_test: false,
+            view,
+            header,
+            snapshot,
         })
     }
 
-    pub fn pull(&mut self) -> Result<(), anyhow::Error> {
-        // let mut hwinfo = self.new()?;
-
-        // Clear reading names for fresh rebuild
-        for sensor in self.sensors.values_mut() {
-            sensor.reading_names.clear();
-        }
-
-        if self.bypass_pull_for_test {
-            // Re-populate reading_names from sensor.readings keys so callers see consistent state.
-            for sensor in self.sensors.values_mut() {
-                sensor.reading_names = sensor.readings.keys().cloned().collect();
-            }
-            return Ok(());
-        }
-
-        let shared_memory_handle = unsafe {
-            // Open the named shared memory object for read access
-            OpenFileMappingW(
-                FILE_MAP_READ,                    // Desired access
-                0,                                // Inherit handle flag
-                self.shared_memory_name.as_ptr(), // Name of the shared memory object
-            )
-        };
-        if shared_memory_handle.is_null() {
-            return Err(anyhow::Error::new(Error::new(
-                ErrorKind::NotFound,
-                "Failed to open shared memory object",
-            )));
-        }
-        let shared_memory_view = unsafe {
-            // Map the shared memory into the process's address space
-            MapViewOfFile(shared_memory_handle, FILE_MAP_READ, 0, 0, 0)
-        };
-        // Close the handle after mapping - the view remains valid until UnmapViewOfFile
-        unsafe {
-            CloseHandle(shared_memory_handle);
-        }
-        if shared_memory_view.is_null() {
-            println!("Failed to map view of shared memory");
-            return Err(anyhow::Error::new(Error::new(
-                ErrorKind::NotFound,
-                "Failed to map view of shared memory",
-            )));
-        }
-        let start = shared_memory_view as *const u8;
-        // Getting Sensor Readings
-        for dw_reading in 0..self.num_reading_elements {
-            let offset = self.offset_reading_section + (dw_reading * self.size_reading_section);
-            let ptr = unsafe { start.offset(offset as isize) };
-
-            let sensor_reading =
-                unsafe { std::slice::from_raw_parts(ptr, self.size_reading_section as usize) };
-            // if sensor_reading.len() != 460 {
-            //     panic!();
-            // }
-            let reading = unsafe {
-                let (_prefix, aligned, _suffix) =
-                    sensor_reading.align_to::<HwinfoSensorsReadingElement>();
-                if aligned.is_empty() {
-                    return Err(anyhow::Error::new(Error::new(
-                        ErrorKind::InvalidData,
-                        "Failed to align reading element data",
-                    )));
-                }
-                &aligned[0]
-            };
-            let label = String::from_utf8(reading.utf_label_user.to_vec())?
-                .trim_matches(char::from(0))
-                .to_string();
-
-            let sensor_name = &self.sensor_names[reading.dw_sensor_index as usize];
-
-            if let Some(sensor) = self.sensors.get_mut(sensor_name) {
-                sensor.reading_names.push(label.clone());
-                sensor.readings.insert(label, reading.clone());
-            }
-        }
-
-        unsafe {
-            // Unmap the shared memory view when done
-            UnmapViewOfFile(shared_memory_view);
-        }
-        Ok(())
-        // Ok(Hwinfo {
-        //     num_reading_elements:   self.num_reading_elements,
-        //     offset_reading_section: self.offset_reading_section,
-        //     size_reading_section:   self.size_reading_section,
-        //     shared_memory_name:     self.shared_memory_name.clone(),
-        //     master_sensor_names:    self.master_sensor_names.clone(),
-        //     master_label_user:      self.master_label_user.clone(),
-        //     master_readings:        self.master_readings.clone()
-        // })
+    /// Refresh the readings. Returns true when HWiNFO has polled since the
+    /// previous pull.
+    pub fn pull(&mut self) -> Result<bool> {
+        refresh(self.view.bytes(), &mut self.header, &mut self.snapshot)
     }
 
-    pub fn get(&self, sensor_key: &str, reading_key: &str) -> Option<&HwinfoSensorsReadingElement> {
-        self.sensors
-            .get(sensor_key)
-            .and_then(|sensor| sensor.readings.get(reading_key))
-    }
-
-    pub fn find_first(&self, key: &str) -> Result<&HwinfoSensorsReadingElement, anyhow::Error> {
-        for sensor in self.sensors.values() {
-            if let Some(reading) = sensor.readings.get(key) {
-                return Ok(reading);
-            }
-        }
-        Err(anyhow::Error::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "Not found",
-        )))
-    }
-
-    pub fn find(&self, key: &str) -> Result<Vec<&HwinfoSensorsReadingElement>, anyhow::Error> {
-        let mut results: Vec<&HwinfoSensorsReadingElement> = Vec::new();
-        for sensor in self.sensors.values() {
-            if let Some(reading) = sensor.readings.get(key) {
-                results.push(reading);
-            }
-        }
-
-        if results.is_empty() {
-            Err(anyhow::Error::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Not found",
-            )))
-        } else {
-            Ok(results)
-        }
-    }
-
-    /// Creates a mock Hwinfo instance for testing purposes.
-    /// This bypasses the shared memory initialization and allows direct sensor injection.
-    pub fn new_mock(sensors: HashMap<String, Sensor>, sensor_names: Vec<String>) -> Self {
-        Hwinfo {
-            shared_memory_view: Arc::new(SharedMemoryView(std::ptr::null())),
-            num_reading_elements: 0,
-            offset_reading_section: 0,
-            size_reading_section: 0,
-            shared_memory_name: vec![],
-            sensors,
-            sensor_names,
-            bypass_pull_for_test: false,
-        }
-    }
-
-    /// Test helper: override the shared-memory mapping name so `pull()` opens a known-bad mapping
-    /// and returns a clean Err instead of dereferencing junk when the default empty name is in place.
-    pub fn set_shared_memory_name_for_test(&mut self, name: Vec<u16>) {
-        self.shared_memory_name = name;
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
     }
 }
-
-impl HwinfoSensorsReadingElement {
-    /// Creates a mock reading element for testing purposes.
-    pub fn new_mock(sensor_index: u32, reading_id: u32, label: &str, value: f64) -> Self {
-        let mut label_user = [0u8; HWINFO_SENSORS_STRING_LEN2];
-        label.as_bytes().iter().enumerate().for_each(|(i, &b)| {
-            if i < HWINFO_SENSORS_STRING_LEN2 {
-                label_user[i] = b;
-            }
-        });
-
-        HwinfoSensorsReadingElement {
-            t_reading: SensorReadingType::SensorTypeTemp,
-            _blank: [0; 3],
-            dw_sensor_index: sensor_index,
-            dw_reading_id: reading_id,
-            sz_label_orig: [0; HWINFO_SENSORS_STRING_LEN2],
-            sz_label_user: [0; HWINFO_SENSORS_STRING_LEN2],
-            sz_unit: [0; HWINFO_UNIT_STRING_LEN],
-            value,
-            value_min: value - 10.0,
-            value_max: value + 10.0,
-            value_avg: value,
-            utf_label_user: label_user,
-            utf_unit: [0; HWINFO_UNIT_STRING_LEN],
-        }
-    }
-}
-
-impl HwinfoSensorsSensorElement {
-    /// Creates a mock sensor element for testing purposes.
-    pub fn new_mock(sensor_id: u32, sensor_name: &str) -> Self {
-        let mut name_user = [0u8; HWINFO_SENSORS_STRING_LEN2];
-        sensor_name
-            .as_bytes()
-            .iter()
-            .enumerate()
-            .for_each(|(i, &b)| {
-                if i < HWINFO_SENSORS_STRING_LEN2 {
-                    name_user[i] = b;
-                }
-            });
-
-        HwinfoSensorsSensorElement {
-            dw_sensor_id: sensor_id,
-            dw_sensor_inst: 0,
-            sz_sensor_name_orig: [0; HWINFO_SENSORS_STRING_LEN2],
-            sz_sensor_name_user: [0; HWINFO_SENSORS_STRING_LEN2],
-            utf_sensor_name_user: name_user,
-        }
-    }
-}
-
-// Drop is now handled by SharedMemoryView inside Arc
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn create_test_reading(
-        sensor_index: u32,
-        reading_id: u32,
-        label: &str,
-        value: f64,
-    ) -> HwinfoSensorsReadingElement {
-        let mut label_user = [0u8; 128];
-        label.as_bytes().iter().enumerate().for_each(|(i, &b)| {
-            if i < 128 {
-                label_user[i] = b;
-            }
-        });
+    const HEADER_SIZE: usize = 44;
 
-        HwinfoSensorsReadingElement {
-            t_reading: SensorReadingType::SensorTypeTemp,
-            _blank: [0; 3],
-            dw_sensor_index: sensor_index,
-            dw_reading_id: reading_id,
-            sz_label_orig: [0; 128],
-            sz_label_user: [0; 128],
-            sz_unit: [0; 16],
-            value,
-            value_min: value - 10.0,
-            value_max: value + 10.0,
-            value_avg: value,
-            utf_label_user: label_user,
-            utf_unit: [0; 16],
+    /// Element sizes and name offsets: (sensor size, reading size, sensor name
+    /// offset, reading label offset).
+    type Shape = (usize, usize, usize, usize);
+    const CURRENT: Shape = (392, 460, SENSOR_NAME_UTF8, READING_LABEL_UTF8);
+    /// Older HWiNFO builds without the UTF-8 string copies.
+    const LEGACY: Shape = (264, 316, SENSOR_NAME, READING_LABEL);
+
+    fn put(buf: &mut [u8], offset: usize, bytes: &[u8]) {
+        buf[offset..offset + bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Build a fake HWiNFO mapping. Readings are `(sensor index, label, value)`.
+    fn memory_with(
+        shape: Shape,
+        poll_time: i64,
+        sensors: &[&str],
+        readings: &[(u32, &str, f64)],
+    ) -> Vec<u8> {
+        let (sensor_size, reading_size, sensor_name, reading_label) = shape;
+        let sensor_off = HEADER_SIZE;
+        let reading_off = sensor_off + sensors.len() * sensor_size;
+        let mut buf = vec![0u8; reading_off + readings.len() * reading_size];
+        put(&mut buf, HDR_POLL_TIME, &poll_time.to_le_bytes());
+        let fields = [
+            (HDR_SENSORS, sensor_off),
+            (HDR_SENSORS + 4, sensor_size),
+            (HDR_SENSORS + 8, sensors.len()),
+            (HDR_READINGS, reading_off),
+            (HDR_READINGS + 4, reading_size),
+            (HDR_READINGS + 8, readings.len()),
+        ];
+        for (offset, value) in fields {
+            put(&mut buf, offset, &(value as u32).to_le_bytes());
         }
-    }
-
-    fn create_test_sensor(sensor_id: u32, sensor_name: &str) -> HwinfoSensorsSensorElement {
-        let mut name_user = [0u8; 128];
-        sensor_name
-            .as_bytes()
-            .iter()
-            .enumerate()
-            .for_each(|(i, &b)| {
-                if i < 128 {
-                    name_user[i] = b;
-                }
-            });
-
-        HwinfoSensorsSensorElement {
-            dw_sensor_id: sensor_id,
-            dw_sensor_inst: 0,
-            sz_sensor_name_orig: [0; 128],
-            sz_sensor_name_user: [0; 128],
-            utf_sensor_name_user: name_user,
-        }
-    }
-
-    fn create_mock_hwinfo() -> Hwinfo {
-        let mut sensors = HashMap::new();
-        let mut sensor_names = Vec::new();
-
-        // Create CPU sensor
-        let cpu_name = "CPU [#0]";
-        let cpu_temp_reading = create_test_reading(0, 1, "CPU Temperature", 65.0);
-        let cpu_usage_reading = create_test_reading(0, 2, "Total CPU Usage", 45.0);
-
-        let mut cpu_readings = HashMap::new();
-        cpu_readings.insert("CPU Temperature".to_string(), cpu_temp_reading);
-        cpu_readings.insert("Total CPU Usage".to_string(), cpu_usage_reading);
-
-        sensors.insert(
-            cpu_name.to_string(),
-            Sensor {
-                info: create_test_sensor(0, cpu_name),
-                readings: cpu_readings,
-                reading_names: vec!["CPU Temperature".to_string(), "Total CPU Usage".to_string()],
-            },
-        );
-        sensor_names.push(cpu_name.to_string());
-
-        // Create GPU sensor
-        let gpu_name = "GPU [#0]";
-        let gpu_temp_reading = create_test_reading(1, 3, "GPU Temperature", 72.0);
-        let gpu_usage_reading = create_test_reading(1, 4, "GPU Core Load", 88.0);
-
-        let mut gpu_readings = HashMap::new();
-        gpu_readings.insert("GPU Temperature".to_string(), gpu_temp_reading);
-        gpu_readings.insert("GPU Core Load".to_string(), gpu_usage_reading);
-
-        sensors.insert(
-            gpu_name.to_string(),
-            Sensor {
-                info: create_test_sensor(1, gpu_name),
-                readings: gpu_readings,
-                reading_names: vec!["GPU Temperature".to_string(), "GPU Core Load".to_string()],
-            },
-        );
-        sensor_names.push(gpu_name.to_string());
-
-        Hwinfo {
-            shared_memory_view: Arc::new(SharedMemoryView(std::ptr::null())),
-            num_reading_elements: 4,
-            offset_reading_section: 0,
-            size_reading_section: 0,
-            shared_memory_name: vec![],
-            sensors,
-            sensor_names,
-            bypass_pull_for_test: false,
-        }
-    }
-
-    #[test]
-    fn test_get_existing_sensor_and_reading() {
-        let hwinfo = create_mock_hwinfo();
-        let result = hwinfo.get("CPU [#0]", "CPU Temperature");
-
-        assert!(result.is_some());
-        let value = result.unwrap().value;
-        assert_eq!(value, 65.0);
-    }
-
-    #[test]
-    fn test_get_nonexistent_sensor() {
-        let hwinfo = create_mock_hwinfo();
-        let result = hwinfo.get("Nonexistent Sensor", "CPU Temperature");
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_get_nonexistent_reading() {
-        let hwinfo = create_mock_hwinfo();
-        let result = hwinfo.get("CPU [#0]", "Nonexistent Reading");
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_find_first_existing_reading() {
-        let hwinfo = create_mock_hwinfo();
-        let result = hwinfo.find_first("GPU Temperature");
-
-        assert!(result.is_ok());
-        let value = result.unwrap().value;
-        assert_eq!(value, 72.0);
-    }
-
-    #[test]
-    fn test_find_first_nonexistent_reading() {
-        let hwinfo = create_mock_hwinfo();
-        let result = hwinfo.find_first("Nonexistent Reading");
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_find_single_match() {
-        let hwinfo = create_mock_hwinfo();
-        let result = hwinfo.find("Total CPU Usage");
-
-        assert!(result.is_ok());
-        let readings = result.unwrap();
-        assert_eq!(readings.len(), 1);
-        let value = readings[0].value;
-        assert_eq!(value, 45.0);
-    }
-
-    #[test]
-    fn test_find_multiple_matches() {
-        let hwinfo = create_mock_hwinfo();
-        // Both CPU and GPU have "GPU Temperature" reading in our mock
-        let result = hwinfo.find("GPU Temperature");
-
-        assert!(result.is_ok());
-        let readings = result.unwrap();
-        assert_eq!(readings.len(), 1);
-    }
-
-    #[test]
-    fn test_find_no_matches() {
-        let hwinfo = create_mock_hwinfo();
-        let result = hwinfo.find("Nonexistent Reading");
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_sensor_equality() {
-        let reading1 = create_test_reading(0, 1, "Test", 50.0);
-        let reading2 = create_test_reading(0, 1, "Test", 50.0);
-        let reading3 = create_test_reading(0, 1, "Test", 60.0);
-
-        assert!(reading1 == reading2);
-        assert!(reading1 != reading3);
-    }
-
-    #[test]
-    fn test_hwinfo_equality() {
-        let hwinfo1 = create_mock_hwinfo();
-        let hwinfo2 = create_mock_hwinfo();
-
-        assert!(hwinfo1 == hwinfo2);
-    }
-
-    #[test]
-    fn test_hwinfo_inequality_when_sensors_differ() {
-        let a = create_mock_hwinfo();
-        let mut b = create_mock_hwinfo();
-        // Mutate one reading value → readings differ → sensors differ → Hwinfo differs.
-        if let Some(s) = b.sensors.get_mut("CPU [#0]") {
-            if let Some(r) = s.readings.get_mut("CPU Temperature") {
-                r.value = 99.0;
-            }
-        }
-        assert!(a != b);
-    }
-
-    #[test]
-    fn test_sensor_element_equality() {
-        let a = create_test_sensor(0, "CPU [#0]");
-        let b = create_test_sensor(0, "CPU [#0]");
-        let c = create_test_sensor(1, "GPU [#0]");
-        assert!(a == b);
-        assert!(a != c);
-    }
-
-    #[test]
-    fn test_sensor_struct_equality() {
-        let s1 = Sensor {
-            info: create_test_sensor(0, "X"),
-            readings: HashMap::new(),
-            reading_names: vec![],
-        };
-        let s2 = Sensor {
-            info: create_test_sensor(0, "X"),
-            readings: HashMap::new(),
-            reading_names: vec![],
-        };
-        assert!(s1 == s2);
-    }
-
-    #[test]
-    fn test_sensor_reading_type_from_repr() {
-        // FromRepr covers all variants
-        assert!(matches!(
-            SensorReadingType::from_repr(0),
-            Some(SensorReadingType::SensorTypeNone)
-        ));
-        assert!(matches!(
-            SensorReadingType::from_repr(1),
-            Some(SensorReadingType::SensorTypeTemp)
-        ));
-        assert!(matches!(
-            SensorReadingType::from_repr(2),
-            Some(SensorReadingType::SensorTypeVolt)
-        ));
-        assert!(matches!(
-            SensorReadingType::from_repr(7),
-            Some(SensorReadingType::SensorTypeUsage)
-        ));
-        assert!(matches!(
-            SensorReadingType::from_repr(8),
-            Some(SensorReadingType::SensorTypeOther)
-        ));
-        assert!(SensorReadingType::from_repr(99).is_none());
-    }
-
-    #[test]
-    fn test_hwinfo_new_errors_when_hwinfo_not_running() {
-        // CI envs don't have HWiNFO running → OpenFileMappingW returns null → Err.
-        let result = Hwinfo::new();
-        assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(e
-                .to_string()
-                .contains("Failed to open shared memory object"));
-        }
-    }
-
-    #[test]
-    fn test_hwinfo_pull_errors_when_no_shared_memory() {
-        // new_mock leaves shared_memory_name empty, so OpenFileMappingW fails.
-        let mut hwinfo = create_mock_hwinfo();
-        hwinfo.shared_memory_name = OsStr::new("Global\\NoSuchMappingXYZ_HWiNFO_Test")
-            .encode_wide()
-            .chain(once(0))
-            .collect();
-        let r = hwinfo.pull();
-        assert!(r.is_err());
-        assert!(r
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to open shared memory object"));
-    }
-
-    #[test]
-    fn test_pull_clears_reading_names_even_on_error() {
-        let mut hwinfo = create_mock_hwinfo();
-        // Force OpenFileMappingW to fail
-        hwinfo.shared_memory_name = OsStr::new("Global\\NoSuchMappingXYZ_HWiNFO_Test2")
-            .encode_wide()
-            .chain(once(0))
-            .collect();
-        for sensor in hwinfo.sensors.values_mut() {
-            assert!(!sensor.reading_names.is_empty()); // precondition
-        }
-        let _ = hwinfo.pull();
-        // pull() clears reading_names before opening shared memory → still cleared after err
-        for sensor in hwinfo.sensors.values() {
-            assert!(
-                sensor.reading_names.is_empty(),
-                "pull should clear reading_names"
+        for (i, name) in sensors.iter().enumerate() {
+            put(
+                &mut buf,
+                sensor_off + i * sensor_size + sensor_name,
+                name.as_bytes(),
             );
         }
-    }
-
-    #[test]
-    fn test_new_mock_initializes_fields() {
-        let hwinfo = Hwinfo::new_mock(HashMap::new(), vec!["X".into()]);
-        assert_eq!(hwinfo.num_reading_elements, 0);
-        assert_eq!(hwinfo.offset_reading_section, 0);
-        assert_eq!(hwinfo.size_reading_section, 0);
-        assert_eq!(hwinfo.sensor_names, vec!["X".to_string()]);
-        assert!(hwinfo.sensors.is_empty());
-    }
-
-    #[test]
-    fn test_reading_element_new_mock() {
-        let r = HwinfoSensorsReadingElement::new_mock(1, 2, "Temp", 50.0);
-        // Copy packed fields to locals before asserting (avoid unaligned-ref UB)
-        let sensor_index = r.dw_sensor_index;
-        let reading_id = r.dw_reading_id;
-        let value = r.value;
-        let value_min = r.value_min;
-        let value_max = r.value_max;
-        assert_eq!(sensor_index, 1);
-        assert_eq!(reading_id, 2);
-        assert_eq!(value, 50.0);
-        assert_eq!(value_min, 40.0);
-        assert_eq!(value_max, 60.0);
-        let label_bytes: Vec<u8> = r
-            .utf_label_user
-            .iter()
-            .take_while(|b| **b != 0)
-            .copied()
-            .collect();
-        assert_eq!(String::from_utf8(label_bytes).unwrap(), "Temp");
-    }
-
-    #[test]
-    fn test_sensor_element_new_mock_long_name_truncated() {
-        let long = "x".repeat(200); // > HWINFO_SENSORS_STRING_LEN2 (128)
-        let s = HwinfoSensorsSensorElement::new_mock(0, &long);
-        // utf_sensor_name_user has fixed length 128 — overflow bytes dropped
-        assert_eq!(s.utf_sensor_name_user.len(), 128);
-        // All 128 slots filled with 'x'
-        assert!(s.utf_sensor_name_user.iter().all(|b| *b == b'x'));
-    }
-
-    #[test]
-    fn test_reading_element_new_mock_long_label_truncated() {
-        let long = "x".repeat(200);
-        let r = HwinfoSensorsReadingElement::new_mock(0, 0, &long, 0.0);
-        assert!(r.utf_label_user.iter().all(|b| *b == b'x'));
-    }
-
-    #[test]
-    fn test_shared_memory_view_drop_null() {
-        // Dropping a SharedMemoryView with null pointer should not call UnmapViewOfFile
-        let view = SharedMemoryView(std::ptr::null());
-        drop(view); // must not panic
-    }
-
-    #[test]
-    fn test_shared_memory_view_drop_with_real_mapping() {
-        // Create a real, named file mapping so Drop's UnmapViewOfFile path actually runs.
-        use std::ffi::OsStr;
-        use std::iter::once;
-        use std::os::windows::ffi::OsStrExt;
-        use winapi::um::handleapi::INVALID_HANDLE_VALUE;
-        use winapi::um::memoryapi::CreateFileMappingW;
-        use winapi::um::winnt::PAGE_READWRITE;
-
-        let name: Vec<u16> = OsStr::new("HwinfoSteelseriesUnitTestMapping")
-            .encode_wide()
-            .chain(once(0))
-            .collect();
-        unsafe {
-            let handle = CreateFileMappingW(
-                INVALID_HANDLE_VALUE,
-                std::ptr::null_mut(),
-                PAGE_READWRITE,
-                0,
-                4096,
-                name.as_ptr(),
+        for (i, (sensor, label, value)) in readings.iter().enumerate() {
+            let element = reading_off + i * reading_size;
+            put(
+                &mut buf,
+                element + READING_SENSOR_INDEX,
+                &sensor.to_le_bytes(),
             );
-            if handle.is_null() {
-                return; // CI might not have permission; skip silently.
-            }
-            let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
-            CloseHandle(handle);
-            if view.is_null() {
-                return;
-            }
-            // Wrapping in SharedMemoryView and dropping calls UnmapViewOfFile (lines 116-118).
-            let smv = SharedMemoryView(view);
-            drop(smv);
+            put(&mut buf, element + reading_label, label.as_bytes());
+            put(&mut buf, element + READING_VALUE, &value.to_le_bytes());
         }
+        buf
+    }
+
+    fn memory(poll_time: i64, sensors: &[&str], readings: &[(u32, &str, f64)]) -> Vec<u8> {
+        memory_with(CURRENT, poll_time, sensors, readings)
     }
 
     #[test]
-    fn test_pull_bypass_for_test_returns_ok() {
-        let mut hwinfo = create_mock_hwinfo();
-        hwinfo.bypass_pull_for_test = true;
-        // Mutate reading_names so we can verify they got reset to keys from sensor.readings
-        for sensor in hwinfo.sensors.values_mut() {
-            sensor.reading_names = vec!["STALE".to_string()];
-        }
-        hwinfo.pull().unwrap();
-        // After bypass pull, reading_names should be re-derived from readings keys
-        for sensor in hwinfo.sensors.values() {
-            assert!(!sensor.reading_names.contains(&"STALE".to_string()));
-            for key in sensor.readings.keys() {
-                assert!(sensor.reading_names.contains(key));
-            }
-        }
+    fn load_reads_names_and_values() {
+        let buf = memory(
+            100,
+            &["CPU [#0]", "GPU [#0]"],
+            &[(0, "Total CPU Usage", 45.5), (1, "GPU Temperature", 72.0)],
+        );
+        let (header, snap) = load(&buf).unwrap();
+        assert_eq!(header.poll_time, 100);
+        assert_eq!(snap.get("CPU [#0]", "Total CPU Usage"), Some(45.5));
+        assert_eq!(snap.get("GPU [#0]", "GPU Temperature"), Some(72.0));
+        assert_eq!(snap.get("GPU [#0]", "Total CPU Usage"), None);
+        assert_eq!(snap.get("Nope", "GPU Temperature"), None);
+    }
+
+    #[test]
+    fn load_reads_non_ascii_names() {
+        let buf = memory(1, &["Carte mère"], &[(0, "Température °C", 40.0)]);
+        let (_, snap) = load(&buf).unwrap();
+        assert_eq!(snap.get("Carte mère", "Température °C"), Some(40.0));
+    }
+
+    #[test]
+    fn load_reads_legacy_layout_without_utf8_fields() {
+        let buf = memory_with(LEGACY, 1, &["CPU"], &[(0, "Core Temp", 55.0)]);
+        let (_, snap) = load(&buf).unwrap();
+        assert_eq!(snap.get("CPU", "Core Temp"), Some(55.0));
+    }
+
+    #[test]
+    fn find_first_uses_hwinfo_order() {
+        let buf = memory(
+            1,
+            &["GPU [#0]", "GPU [#1]"],
+            &[
+                (1, "Fan", 1.0),
+                (0, "GPU Temperature", 60.0),
+                (1, "GPU Temperature", 70.0),
+            ],
+        );
+        let (_, snap) = load(&buf).unwrap();
+        assert_eq!(snap.find_first("GPU Temperature"), Some(60.0));
+        assert_eq!(snap.find_first("Missing"), None);
+    }
+
+    #[test]
+    fn readings_iterates_in_order() {
+        let buf = memory(1, &["A", "B"], &[(1, "y", 2.0), (0, "x", 1.0)]);
+        let (_, snap) = load(&buf).unwrap();
+        let all: Vec<_> = snap.readings().collect();
+        assert_eq!(all, vec![("B", "y", 2.0), ("A", "x", 1.0)]);
+    }
+
+    #[test]
+    fn refresh_is_fresh_only_when_poll_time_changes_but_always_updates_values() {
+        let (mut header, mut snap) = load(&memory(100, &["S"], &[(0, "R", 1.0)])).unwrap();
+
+        // Same poll time, new value: not fresh, value still updated.
+        let fresh = refresh(
+            &memory(100, &["S"], &[(0, "R", 2.0)]),
+            &mut header,
+            &mut snap,
+        )
+        .unwrap();
+        assert!(!fresh);
+        assert_eq!(snap.get("S", "R"), Some(2.0));
+
+        let fresh = refresh(
+            &memory(101, &["S"], &[(0, "R", 3.0)]),
+            &mut header,
+            &mut snap,
+        )
+        .unwrap();
+        assert!(fresh);
+        assert_eq!(snap.get("S", "R"), Some(3.0));
+    }
+
+    #[test]
+    fn refresh_rebuilds_layout_when_reading_added() {
+        let (mut header, mut snap) = load(&memory(1, &["S"], &[(0, "R", 1.0)])).unwrap();
+        let grown = memory(2, &["S", "T"], &[(0, "R", 1.0), (1, "New", 9.0)]);
+        refresh(&grown, &mut header, &mut snap).unwrap();
+        assert_eq!(snap.get("T", "New"), Some(9.0));
+        assert_eq!(snap.readings().count(), 2);
+    }
+
+    #[test]
+    fn snapshot_clone_keeps_old_values_after_refresh() {
+        let (mut header, mut snap) = load(&memory(1, &["S"], &[(0, "R", 1.0)])).unwrap();
+        let before = snap.clone();
+        refresh(&memory(2, &["S"], &[(0, "R", 5.0)]), &mut header, &mut snap).unwrap();
+        assert_eq!(before.get("S", "R"), Some(1.0));
+        assert_eq!(snap.get("S", "R"), Some(5.0));
+    }
+
+    #[test]
+    fn load_rejects_truncated_memory() {
+        let mut buf = memory(1, &["S"], &[(0, "R", 1.0)]);
+        buf.truncate(buf.len() - 10);
+        assert!(load(&buf).is_err());
+        assert!(load(&buf[..20]).is_err());
+        assert!(load(&[]).is_err());
+    }
+
+    #[test]
+    fn load_rejects_garbage_counts() {
+        let mut buf = memory(1, &["S"], &[(0, "R", 1.0)]);
+        put(&mut buf, HDR_READINGS + 8, &u32::MAX.to_le_bytes());
+        assert!(load(&buf).is_err());
+
+        // Zero-sized elements must not be accepted either.
+        let mut buf = memory(1, &["S"], &[(0, "R", 1.0)]);
+        put(&mut buf, HDR_SENSORS + 4, &0u32.to_le_bytes());
+        assert!(load(&buf).is_err());
+    }
+
+    #[test]
+    fn reading_with_out_of_range_sensor_index_does_not_panic() {
+        let buf = memory(1, &["S"], &[(7, "Orphan", 3.0), (0, "R", 1.0)]);
+        let (_, snap) = load(&buf).unwrap();
+        assert_eq!(snap.get("", "Orphan"), Some(3.0));
+        assert_eq!(snap.get("S", "R"), Some(1.0));
+    }
+
+    #[test]
+    fn empty_tables_load_as_empty_snapshot() {
+        let (_, snap) = load(&memory(1, &[], &[])).unwrap();
+        assert_eq!(snap.readings().count(), 0);
+        assert_eq!(snap.find_first("anything"), None);
+    }
+
+    #[test]
+    fn from_readings_builds_lookup() {
+        let snap = Snapshot::from_readings(&[("CPU", "Temp", 65.0), ("GPU", "Temp", 72.0)]);
+        assert_eq!(snap.get("CPU", "Temp"), Some(65.0));
+        assert_eq!(snap.get("GPU", "Temp"), Some(72.0));
+        assert_eq!(snap.find_first("Temp"), Some(65.0));
+        assert_eq!(Snapshot::default().get("CPU", "Temp"), None);
     }
 }

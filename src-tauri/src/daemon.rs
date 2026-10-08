@@ -10,7 +10,7 @@ use crate::utils::{format_custom_value, run_sensors};
 use anyhow::anyhow;
 use console::Term;
 use gamesense::client::GameSenseClient;
-use hwinfo_steelseries_oled::Hwinfo;
+use hwinfo_steelseries_oled::{Hwinfo, Snapshot};
 use ini::Ini;
 use log::{debug, error, info, warn};
 use serde_json::{json, Value};
@@ -30,31 +30,30 @@ struct SummarySensors {
     mem_load: f64,
 }
 
-fn fetch_summary_sensors(hwinfo: &Hwinfo, gpu_name: &str) -> Result<SummarySensors, anyhow::Error> {
-    let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
-    let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
-    let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
-
-    let sensor_gpu_temp = if gpu_name.is_empty() {
-        hwinfo.find_first("GPU Temperature")?
+fn fetch_summary_sensors(
+    hwinfo: &Snapshot,
+    gpu_name: &str,
+) -> Result<SummarySensors, anyhow::Error> {
+    let first = |reading: &str| {
+        hwinfo
+            .find_first(reading)
+            .ok_or_else(|| anyhow!("{} not found", reading))
+    };
+    let gpu_temp = if gpu_name.is_empty() {
+        first("GPU Temperature")?
     } else {
         hwinfo
             .get(gpu_name, "GPU Temperature")
             .ok_or_else(|| anyhow!("GPU Temperature not found"))?
     };
-
-    let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
-    let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
-    let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
-
     Ok(SummarySensors {
-        cpu_temp: sensor_cpu_temp.value,
-        cpu_usage: sensor_cpu_usage.value,
-        gpu_temp: sensor_gpu_temp.value,
-        gpu_usage: sensor_gpu_usage.value,
-        mem_used: sensor_mem_used.value / 1024.0,
-        mem_free: sensor_mem_free.value / 1024.0,
-        mem_load: sensor_mem_load.value,
+        cpu_temp: first("CPU (Tctl/Tdie)")?,
+        cpu_usage: first("Total CPU Usage")?,
+        gpu_temp,
+        gpu_usage: first("GPU Core Load")?,
+        mem_used: first("Physical Memory Used")? / 1024.0,
+        mem_free: first("Physical Memory Available")? / 1024.0,
+        mem_load: first("Physical Memory Load")?,
     })
 }
 
@@ -255,12 +254,12 @@ impl OledClient {
     }
 }
 
-fn check_disconnect(old: &Hwinfo, new: &Hwinfo, count: &mut usize, limit: usize) -> bool {
-    if old == new {
-        *count = (*count + 1).min(limit);
-    } else {
-        *count = 0;
-    }
+/// Ticks without new HWiNFO data before the display shows "Disconnected".
+const STALE_LIMIT: usize = 5;
+
+/// Count consecutive pulls without new HWiNFO data; true once `limit` is reached.
+fn is_stale(fresh: bool, count: &mut usize, limit: usize) -> bool {
+    *count = if fresh { 0 } else { (*count + 1).min(limit) };
     *count >= limit
 }
 
@@ -308,7 +307,7 @@ fn page_event_name(page_counter: usize) -> String {
 
 fn build_display_value(
     config: &AppConfig,
-    hwinfo: &Hwinfo,
+    hwinfo: &Snapshot,
     pages_vec: &[ini::Properties],
     page_counter: usize,
     mouse: &mut MouseBatteryReader,
@@ -490,6 +489,7 @@ impl<R: Runtime> Daemon<R> {
     fn connect_all(&mut self) -> Result<(), anyhow::Error> {
         self.announce_connecting_hwinfo();
 
+        self.hwinfo = Some(connect_hwinfo(&self.term)?);
         let mut hwinfo = connect_hwinfo(&self.term)?;
         hwinfo.pull()?;
         self.hwinfo = Some(hwinfo);
@@ -634,20 +634,31 @@ impl<R: Runtime> Daemon<R> {
             return Ok(());
         }
 
-        let hwinfo = self
+        let mut hwinfo = self
             .hwinfo
-            .as_mut()
+            .take()
             .ok_or_else(|| anyhow!("hwinfo missing"))?;
+        let fresh = hwinfo.pull()?;
+        let result = self.render(hwinfo.snapshot(), fresh);
+        // A stale view never recovers on its own: after HWiNFO restarts, the
+        // old mapping stays frozen. Remap, keeping the old view if HWiNFO is
+        // still gone.
+        self.hwinfo = Some(if self.disconnect_count >= STALE_LIMIT {
+            Hwinfo::new().unwrap_or(hwinfo)
+        } else {
+            hwinfo
+        });
+        result
+    }
+
+    /// Draw one frame from `hwinfo`. `fresh` is false when HWiNFO has not
+    /// polled since the previous tick.
+    fn render(&mut self, hwinfo: &Snapshot, fresh: bool) -> Result<(), anyhow::Error> {
         let oled = self.oled.as_mut().ok_or_else(|| anyhow!("oled missing"))?;
+        let disconnected = is_stale(fresh, &mut self.disconnect_count, STALE_LIMIT);
 
-        let old = hwinfo.clone();
-        hwinfo.pull()?;
-        let disconnected = check_disconnect(&old, hwinfo, &mut self.disconnect_count, 5);
-        drop(old);
-
-        let snapshot = hwinfo.clone();
         if let Ok(mut g) = self.state.lock() {
-            g.hwinfo_snapshot = Some(snapshot);
+            g.hwinfo_snapshot = Some(hwinfo.clone());
         }
 
         if disconnected {
@@ -790,10 +801,6 @@ pub fn spawn<R: Runtime>(state: Shared, app: AppHandle<R>, config: AppConfig) {
 mod tests {
     use super::*;
     use crate::settings::{AppConfig, WeatherConfig};
-    use hwinfo_steelseries_oled::{
-        HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
-    };
-    use std::collections::HashMap;
 
     fn sample_summary() -> SummarySensors {
         SummarySensors {
@@ -807,28 +814,11 @@ mod tests {
         }
     }
 
-    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Hwinfo {
-        let mut sensors: HashMap<String, Sensor> = HashMap::new();
-        let mut sensor_names: Vec<String> = Vec::new();
-        for (sk, rk, val) in entries {
-            let entry = sensors.entry(sk.to_string()).or_insert_with(|| {
-                sensor_names.push(sk.to_string());
-                Sensor {
-                    info: HwinfoSensorsSensorElement::new_mock(0, sk),
-                    readings: HashMap::new(),
-                    reading_names: Vec::new(),
-                }
-            });
-            entry.readings.insert(
-                rk.to_string(),
-                HwinfoSensorsReadingElement::new_mock(0, 0, rk, *val),
-            );
-            entry.reading_names.push(rk.to_string());
-        }
-        Hwinfo::new_mock(sensors, sensor_names)
+    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Snapshot {
+        Snapshot::from_readings(entries)
     }
 
-    fn full_summary_hwinfo() -> Hwinfo {
+    fn full_summary_hwinfo() -> Snapshot {
         build_hwinfo(&[
             ("CPU", "Total CPU Usage", 50.0),
             ("CPU", "CPU (Tctl/Tdie)", 42.0),
@@ -1062,35 +1052,6 @@ mod tests {
         let svs = value_to_sensor_values(&v);
         assert_eq!(svs.len(), 1);
         assert_eq!(svs[0].value, "Only");
-    }
-
-    #[test]
-    fn test_check_disconnect_increments_on_match() {
-        let hw = build_hwinfo(&[("S", "R", 1.0)]);
-        let mut count = 0;
-        assert!(!check_disconnect(&hw, &hw, &mut count, 3));
-        assert_eq!(count, 1);
-        assert!(!check_disconnect(&hw, &hw, &mut count, 3));
-        assert_eq!(count, 2);
-        assert!(check_disconnect(&hw, &hw, &mut count, 3));
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn test_check_disconnect_resets_on_change() {
-        let a = build_hwinfo(&[("S", "R", 1.0)]);
-        let b = build_hwinfo(&[("S", "R", 2.0)]);
-        let mut count = 2;
-        assert!(!check_disconnect(&a, &b, &mut count, 3));
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_check_disconnect_caps_at_limit() {
-        let hw = build_hwinfo(&[("S", "R", 1.0)]);
-        let mut count = 5;
-        check_disconnect(&hw, &hw, &mut count, 3);
-        assert_eq!(count, 3); // capped to limit
     }
 
     #[test]
@@ -1385,32 +1346,6 @@ mod tests {
         d.oled = Some(Box::new(MockDriver::new()));
     }
 
-    #[allow(dead_code)]
-    fn install_summary_hwinfo(d: &mut Daemon<MockRuntime>) {
-        d.hwinfo = Some(full_summary_hwinfo());
-    }
-
-    #[test]
-    fn test_daemon_tick_handles_disconnect_path() {
-        use std::ffi::OsStr;
-        use std::iter::once;
-        use std::os::windows::ffi::OsStrExt;
-        // Same hwinfo before and after pull. Use a valid (but nonexistent) mapping name so
-        // OpenFileMappingW returns null cleanly instead of dereferencing junk.
-        let mut d = daemon_for_tests();
-        let mut hw = full_summary_hwinfo();
-        let name: Vec<u16> = OsStr::new("Global\\NoSuchMappingDaemonTest")
-            .encode_wide()
-            .chain(once(0))
-            .collect();
-        hw.set_shared_memory_name_for_test(name);
-        d.hwinfo = Some(hw);
-        install_mock_driver(&mut d);
-        // pull() returns Err because the mapping doesn't exist → tick propagates the error.
-        let r = d.tick();
-        assert!(r.is_err());
-    }
-
     #[test]
     fn test_daemon_handle_sleep_command_calls_driver_send_blank() {
         let mut d = daemon_for_tests();
@@ -1430,74 +1365,89 @@ mod tests {
         assert!(d.is_white_screen);
     }
 
-    fn install_bypass_hwinfo(d: &mut Daemon<MockRuntime>) {
-        let mut hw = full_summary_hwinfo();
-        hw.bypass_pull_for_test = true;
-        d.hwinfo = Some(hw);
+    #[test]
+    fn test_is_stale_counts_up_to_limit_and_resets_on_fresh() {
+        let mut count = 0;
+        assert!(!is_stale(false, &mut count, 3));
+        assert!(!is_stale(false, &mut count, 3));
+        assert!(is_stale(false, &mut count, 3));
+        // Capped: stays at the limit, does not overflow.
+        assert!(is_stale(false, &mut count, 3));
+        assert_eq!(count, 3);
+        assert!(!is_stale(true, &mut count, 3));
+        assert_eq!(count, 0);
     }
 
     #[test]
-    fn test_daemon_tick_happy_path_summary_renders_and_emits() {
+    fn test_render_summary_updates_state_and_counter() {
         let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
         install_mock_driver(&mut d);
+        let i_before = d.i.0;
 
-        d.tick().unwrap();
-        // Should have updated state with hwinfo_connected=true and a non-empty buffer
+        d.render(&full_summary_hwinfo(), true).unwrap();
+
+        assert_eq!(d.i.0, i_before + 1);
         let g = d.state.lock().unwrap();
         assert!(g.hwinfo_connected);
-        // Summary mode rendered "CPU GPU MEM" → sensor_values populated
         assert!(!g.sensor_values.is_empty());
-        // hwinfo_snapshot captured
         assert!(g.hwinfo_snapshot.is_some());
+        assert!(g.last_error.is_none());
     }
 
     #[test]
-    fn test_daemon_tick_happy_path_advances_counter() {
+    fn test_render_without_driver_errors() {
         let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
-        install_mock_driver(&mut d);
-
-        let i_before = d.i.0;
-        d.tick().unwrap();
-        assert_eq!(d.i.0, i_before + 1);
+        let err = d.render(&full_summary_hwinfo(), true).unwrap_err();
+        assert!(format!("{}", err).contains("oled missing"));
     }
 
     #[test]
-    fn test_daemon_tick_happy_path_custom_mode_advances_pages() {
+    fn test_render_custom_mode_advances_pages() {
         let mut d = daemon_for_tests();
         d.config.is_summary = false;
         d.config.pages = 2;
-        d.config.page_time = 1; // every 2 ticks → quick advance
-        let mut hw = build_hwinfo(&[("S", "R", 1.0)]);
-        hw.bypass_pull_for_test = true;
-        d.hwinfo = Some(hw);
-        install_mock_driver(&mut d);
-
-        // Provide two pages of empty properties
+        d.config.page_time = 1; // TICK_RATE=500 → 2 ticks per second → switch every 2 ticks
         d.pages_vec = vec![ini::Properties::new(), ini::Properties::new()];
+        install_mock_driver(&mut d);
+        let hw = build_hwinfo(&[("S", "R", 1.0)]);
 
-        // Run a few ticks; page_counter should advance at intervals (TICK_RATE=500 → 2 ticks/sec, page_time=1 → interval=2)
         for _ in 0..3 {
-            let _ = d.tick();
+            d.render(&hw, true).unwrap();
         }
-        // At i=2 the counter switches to 1
-        assert!(d.page_counter <= 1);
+        assert_eq!(d.page_counter, 1);
     }
 
     #[test]
-    fn test_daemon_tick_disconnect_after_many_unchanged_pulls() {
+    fn test_render_shows_disconnected_after_stale_limit() {
         let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
         install_mock_driver(&mut d);
-        // bypass_pull → old==new every tick → disconnect_count increments
-        // limit is 5 (hard-coded in tick), so after 5 ticks tick should hit the disconnected path.
-        for _ in 0..10 {
-            let _ = d.tick();
+        let hw = full_summary_hwinfo();
+
+        for _ in 0..STALE_LIMIT - 1 {
+            d.render(&hw, false).unwrap();
         }
+        assert!(d.state.lock().unwrap().hwinfo_connected);
+
+        d.render(&hw, false).unwrap();
         let g = d.state.lock().unwrap();
-        // hwinfo_connected was flipped to false during disconnect path
-        assert!(!g.hwinfo_connected || g.last_error.as_deref() == Some("HWiNFO disconnected"));
+        assert!(!g.hwinfo_connected);
+        assert_eq!(g.last_error.as_deref(), Some("HWiNFO disconnected"));
+    }
+
+    #[test]
+    fn test_render_recovers_after_stale() {
+        let mut d = daemon_for_tests();
+        install_mock_driver(&mut d);
+        let hw = full_summary_hwinfo();
+        for _ in 0..STALE_LIMIT {
+            d.render(&hw, false).unwrap();
+        }
+        assert!(!d.state.lock().unwrap().hwinfo_connected);
+
+        d.render(&hw, true).unwrap();
+        let g = d.state.lock().unwrap();
+        assert!(g.hwinfo_connected);
+        assert!(g.last_error.is_none());
     }
 
     #[test]
@@ -1613,7 +1563,6 @@ mod tests {
     #[test]
     fn test_disconnect_and_cleanup_clears_everything() {
         let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
         install_mock_driver(&mut d);
         d.state.lock().unwrap().hwinfo_connected = true;
         d.state.lock().unwrap().gg_connected = true;

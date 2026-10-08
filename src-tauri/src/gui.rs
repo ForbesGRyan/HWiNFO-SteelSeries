@@ -155,27 +155,24 @@ fn special_sensor_options() -> Vec<SensorOption> {
     special.chain(weather).collect()
 }
 
-/// Flatten an Hwinfo snapshot into a sorted list of SensorOption rows.
-fn sensors_from_hwinfo(hw: &hwinfo_steelseries_oled::Hwinfo) -> Vec<SensorOption> {
-    let mut out = Vec::new();
-    let mut categories: Vec<&String> = hw.sensors.keys().collect();
-    categories.sort();
-    for cat in categories {
-        if let Some(sensor) = hw.sensors.get(cat) {
-            let mut readings: Vec<&String> = sensor.readings.keys().collect();
-            readings.sort();
-            for reading in readings {
-                out.push(SensorOption {
-                    category: cat.clone(),
-                    reading: reading.clone(),
-                    full_id: format!("{};{}", cat, reading),
-                    is_special: false,
-                    description: None,
-                });
-            }
-        }
-    }
-    out
+/// Flatten a HWiNFO snapshot into a sorted list of SensorOption rows.
+fn sensors_from_hwinfo(hw: &hwinfo_steelseries_oled::Snapshot) -> Vec<SensorOption> {
+    let mut pairs: Vec<(&str, &str)> = hw
+        .readings()
+        .map(|(sensor, reading, _)| (sensor, reading))
+        .collect();
+    pairs.sort_unstable();
+    pairs.dedup();
+    pairs
+        .into_iter()
+        .map(|(category, reading)| SensorOption {
+            category: category.to_string(),
+            reading: reading.to_string(),
+            full_id: format!("{};{}", category, reading),
+            is_special: false,
+            description: None,
+        })
+        .collect()
 }
 
 /// Write the [Main] section keys from an AppConfig into an Ini.
@@ -523,10 +520,6 @@ mod tests {
     use super::*;
     use crate::render::OledBuffer;
     use crate::settings::{CustomSensor, WeatherConfig};
-    use hwinfo_steelseries_oled::{
-        Hwinfo, HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
-    };
-    use std::collections::HashMap;
 
     fn base_config() -> AppConfig {
         AppConfig {
@@ -723,25 +716,9 @@ mod tests {
 
     // ==================== sensors_from_hwinfo ====================
 
-    fn build_hwinfo(entries: &[(&str, &str)]) -> Hwinfo {
-        let mut sensors: HashMap<String, Sensor> = HashMap::new();
-        let mut sensor_names: Vec<String> = Vec::new();
-        for (sk, rk) in entries {
-            let entry = sensors.entry(sk.to_string()).or_insert_with(|| {
-                sensor_names.push(sk.to_string());
-                Sensor {
-                    info: HwinfoSensorsSensorElement::new_mock(0, sk),
-                    readings: HashMap::new(),
-                    reading_names: Vec::new(),
-                }
-            });
-            entry.readings.insert(
-                rk.to_string(),
-                HwinfoSensorsReadingElement::new_mock(0, 0, rk, 1.0),
-            );
-            entry.reading_names.push(rk.to_string());
-        }
-        Hwinfo::new_mock(sensors, sensor_names)
+    fn build_hwinfo(entries: &[(&str, &str)]) -> hwinfo_steelseries_oled::Snapshot {
+        let triples: Vec<(&str, &str, f64)> = entries.iter().map(|(s, r)| (*s, *r, 1.0)).collect();
+        hwinfo_steelseries_oled::Snapshot::from_readings(&triples)
     }
 
     #[test]

@@ -1,11 +1,11 @@
 use chrono::{DateTime, Local};
-use log::{debug, error};
+use log::error;
 use serde_json::{json, Value};
 
 use crate::media::{MediaField, MediaReader};
 use crate::mouse_battery::MouseBatteryReader;
 use crate::weather::WeatherReader;
-use hwinfo_steelseries_oled::Hwinfo;
+use hwinfo_steelseries_oled::Snapshot;
 
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
 
@@ -27,7 +27,7 @@ pub fn run_sensors<'a>(
     labels: &mut Vec<&'a str>,
     units: &mut Vec<&'a str>,
     values: &mut Vec<String>,
-    hwinfo: &Hwinfo,
+    hwinfo: &Snapshot,
     decimal: bool,
     mouse_battery_reader: &mut MouseBatteryReader,
     media_reader: &mut MediaReader,
@@ -122,20 +122,16 @@ pub fn run_sensors<'a>(
             error!("Malformed sensor entry (missing ';'): {}", sensor_str);
             continue;
         }
-        let mut value = match hwinfo.get(sensor[0], sensor[1]) {
-            Some(value) => {
-                debug!("Successfully read sensor: {} / {}", sensor[0], sensor[1]);
-                value
-            }
-            None => {
-                error!("Sensor not found: {} / {}", sensor[0], sensor[1]);
-                return Err(anyhow::Error::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Sensor not found:\n\t{}\n\t{}", sensor[0], sensor[1]),
-                )));
-            }
-        }
-        .value;
+        let mut value = hwinfo.get(sensor[0], sensor[1]).ok_or_else(|| {
+            error!("Sensor not found: {} / {}", sensor[0], sensor[1]);
+            anyhow::anyhow!(
+                "Sensor not found:
+	{}
+	{}",
+                sensor[0],
+                sensor[1]
+            )
+        })?;
         if let Some(convert) = pages_sensors.get(format!("convert_{}", k)) {
             match convert {
                 "MB/GB" => value /= 1024.0,
@@ -201,30 +197,8 @@ pub fn format_custom_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hwinfo_steelseries_oled::{
-        HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
-    };
-    use std::collections::HashMap;
-
-    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Hwinfo {
-        let mut sensors: HashMap<String, Sensor> = HashMap::new();
-        let mut sensor_names: Vec<String> = Vec::new();
-        for (sensor_key, reading_key, value) in entries {
-            let entry = sensors.entry(sensor_key.to_string()).or_insert_with(|| {
-                sensor_names.push(sensor_key.to_string());
-                Sensor {
-                    info: HwinfoSensorsSensorElement::new_mock(0, sensor_key),
-                    readings: HashMap::new(),
-                    reading_names: Vec::new(),
-                }
-            });
-            entry.readings.insert(
-                reading_key.to_string(),
-                HwinfoSensorsReadingElement::new_mock(0, 0, reading_key, *value),
-            );
-            entry.reading_names.push(reading_key.to_string());
-        }
-        Hwinfo::new_mock(sensors, sensor_names)
+    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Snapshot {
+        Snapshot::from_readings(entries)
     }
 
     fn make_props(pairs: &[(&str, &str)]) -> ini::Properties {
