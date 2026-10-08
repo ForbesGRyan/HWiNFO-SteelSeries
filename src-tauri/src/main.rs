@@ -4,7 +4,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
 mod settings;
-use settings::{settings_create_config, AppConfig};
 
 mod consts;
 
@@ -13,7 +12,6 @@ mod devices;
 mod report;
 
 mod connect;
-use connect::connect_hwinfo;
 
 mod console_utils;
 use console_utils::{console_window, Console};
@@ -39,8 +37,7 @@ mod gui;
 
 use console::Term;
 use image::ImageReader;
-use ini::Ini;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -189,27 +186,6 @@ fn handle_discovery_flags(args: &[String]) -> bool {
     false
 }
 
-fn load_or_create_config_at(path: &str, term: &Term) -> Result<AppConfig, anyhow::Error> {
-    info!("Loading configuration from {}", path);
-    let ini = match Ini::load_from_file(path) {
-        Ok(conf) => {
-            info!("Configuration loaded successfully");
-            conf
-        }
-        Err(e) => {
-            warn!("{} not found: {}. Running setup wizard.", path, e);
-            let mut hwinfo = connect_hwinfo(term)?;
-            hwinfo.pull()?;
-            settings_create_config(term, &hwinfo)?
-        }
-    };
-    AppConfig::from_ini(&ini)
-}
-
-fn load_or_create_config(term: &Term) -> Result<AppConfig, anyhow::Error> {
-    load_or_create_config_at("conf.ini", term)
-}
-
 /// Helper used by both menu and tray click handlers: surface the main window.
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     if let Some(win) = app.get_webview_window("main") {
@@ -271,15 +247,16 @@ fn main() -> Result<(), anyhow::Error> {
 
     let args: Vec<String> = std::env::args().collect();
     handle_discovery_flags(&args);
-    let open_settings = wants_open_settings(&args);
 
     info!("Starting HWiNFO-SteelSeries");
     let term = Term::stdout();
 
-    let config = match load_or_create_config(&term) {
-        Ok(c) => c,
+    let (config, first_run) = match settings::load_or_create_config("conf.ini") {
+        Ok(loaded) => loaded,
         Err(e) => return Err(handle_fatal_error(&term, e)),
     };
+    // First run has nothing configured yet: show the settings window.
+    let open_settings = wants_open_settings(&args) || first_run;
 
     let shared: Shared = Arc::new(Mutex::new(SharedState::new(config.clone())));
 
@@ -401,6 +378,7 @@ fn main() -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AppConfig;
 
     #[test]
     fn test_parse_hex_u16_lowercase_prefix() {
@@ -700,46 +678,5 @@ mod tests {
         let lines = format_fatal_error_lines(&err);
         assert!(lines.iter().any(|l| l == "Caused by:"));
         assert!(lines.iter().any(|l| l.contains("inner cause")));
-    }
-
-    #[test]
-    fn test_load_or_create_config_at_loads_existing_ini() {
-        let tmp =
-            std::env::temp_dir().join(format!("hwinfo_ss_main_loadcfg_{}.ini", std::process::id()));
-        let mut ini = Ini::new();
-        ini.with_section(Some("Main"))
-            .set("style", "Horizontal")
-            .set("gpu", "GPU [#0]");
-        ini.write_to_file(&tmp).unwrap();
-
-        let term = console::Term::stdout();
-        let cfg = load_or_create_config_at(tmp.to_str().unwrap(), &term).unwrap();
-        assert!(cfg.is_summary);
-        assert!(!cfg.is_vertical);
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn test_load_or_create_config_reads_existing_ini() {
-        // Write a minimal valid conf.ini to a temp path, then ensure AppConfig::from_ini round-trips
-        // via the same code path load_or_create_config uses.
-        let tmp =
-            std::env::temp_dir().join(format!("hwinfo_ss_main_load_{}.ini", std::process::id()));
-        let mut ini = Ini::new();
-        ini.with_section(Some("Main"))
-            .set("style", "Vertical")
-            .set("gpu", "GPU [#0]")
-            .set("decimal", "false")
-            .set("pages", "1");
-        ini.write_to_file(&tmp).unwrap();
-
-        // load_or_create_config uses fixed "conf.ini" path so we exercise its parser via AppConfig::from_ini directly,
-        // verifying the same fallback chain (load → from_ini) behaves correctly on success.
-        let loaded = Ini::load_from_file(&tmp).unwrap();
-        let cfg = AppConfig::from_ini(&loaded).unwrap();
-        assert!(cfg.is_summary);
-        assert!(cfg.is_vertical);
-
-        let _ = std::fs::remove_file(&tmp);
     }
 }

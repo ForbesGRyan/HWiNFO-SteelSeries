@@ -42,7 +42,7 @@ Any SteelSeries device with an OLED screen supported by SteelSeries GG:
 
 1. Download the latest `hwinfo-steelseries-oled.exe` from the [Releases](../../releases) page
 2. Place it in a folder of your choice
-3. Run the executable - it will guide you through initial setup
+3. Run the executable - it will write a default config and open the settings window
 
 ### Option 2: Build from Source
 
@@ -69,21 +69,7 @@ Make sure SteelSeries GG is running and your device is connected.
 
 ### 3. Run HWiNFO-SteelSeries OLED
 
-Run `hwinfo-steelseries-oled.exe`. On first launch:
-
-1. You'll be prompted to choose a display style:
-   - **Summary Vertical**: 3-column layout (CPU/GPU/MEM)
-   - **Summary Horizontal**: 3-row layout
-   - **Custom**: Choose your own sensors
-
-2. For **Summary** modes with multiple GPUs, you'll be asked to select which GPU to monitor
-
-3. For **Custom** mode, you'll configure:
-   - Number of lines (2-5)
-   - Sensors per line (1-3)
-   - Which specific sensors to display
-
-4. Configuration is saved to `conf.ini` in the same directory
+Run `hwinfo-steelseries-oled.exe`. On first launch the app writes a default `conf.ini` (vertical summary, SteelSeries GG mode) and opens the settings window. Pick your layout, sensors and connection type there and press Save. `conf.ini` can also be edited by hand; use **Reload Config** in the tray menu afterwards.
 
 The application will start displaying data on your SteelSeries OLED screen.
 
@@ -409,7 +395,7 @@ Font size only affects the Direct USB render path. In GameSense mode, SteelSerie
 **Solutions**:
 1. Check the sensor name exactly matches what's shown in HWiNFO
 2. Some sensors only appear when the hardware is active
-3. Run the config wizard again to see available sensors
+3. Open the settings window from the tray menu to see available sensors
 4. Delete `conf.ini` and reconfigure from scratch
 
 ### Configuration File Errors
@@ -477,7 +463,7 @@ HWiNFO-SteelSeries/
 │   ├── lib.rs           # HWiNFO shared memory interface
 │   ├── main.rs          # Application entry point
 │   ├── connect.rs       # Connection handlers
-│   ├── settings.rs      # Configuration wizard
+│   ├── settings.rs      # Configuration loading and parsing
 │   ├── steelseries.rs   # SteelSeries GG API
 │   ├── utils.rs         # Helper functions
 │   ├── console_utils.rs # Console window management
