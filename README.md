@@ -314,6 +314,12 @@ Special sensors don't pull data from HWiNFO - they provide additional functional
   - Useful for multi-sensor layouts
   - Configuration: `sensor_0="BLANK"`
 
+- **MOUSE_BATTERY**: Battery percentage of a supported wireless mouse
+  - Requires direct USB mode (`direct_usb=true`); shows `N/A` otherwise or when no supported mouse answers
+  - Supported: Pulsar X2 CL / X2 V2 Mini, ATK VXE R1 SE+, VXE R1 Pro Max, plus some Logitech, SteelSeries and Razer models
+  - Refreshes every 30 seconds; a wireless mouse that is asleep does not answer, so the last reading stays up (for up to 30 minutes) until it wakes
+  - Configuration: `sensor_0="MOUSE_BATTERY"`, `unit_0="%"`
+
 - **RTSS**: Framerate from RivaTuner Statistics Server (if installed)
   - Not currently implemented
 

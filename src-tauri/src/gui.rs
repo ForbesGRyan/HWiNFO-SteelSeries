@@ -22,6 +22,10 @@ const SPECIAL_SENSORS: &[(&str, &str)] = &[
         "Current date (append ;FORMAT for a custom strftime, e.g. DATE;%m/%d/%Y)",
     ),
     ("BLANK", "Empty spacer"),
+    (
+        "MOUSE_BATTERY",
+        "Wireless mouse battery % (supported Pulsar/ATK/VXE, Logitech, SteelSeries, Razer mice)",
+    ),
     ("MEDIA_TITLE", "Now-playing track title"),
     ("MEDIA_ARTIST", "Now-playing artist"),
     ("MEDIA_ALBUM", "Now-playing album"),
@@ -446,6 +450,13 @@ fn preview_config_impl(
         let mut values = vec![String::new(); CUSTOM_SENSORS];
 
         let mut mb = MouseBatteryReader::new();
+        // Only enumerate HID when the page shows the mouse battery; without it
+        // the preview would always read "N/A".
+        let hid_api = page_sensors
+            .iter()
+            .any(|s| s.sensor == "MOUSE_BATTERY")
+            .then(|| hidapi::HidApi::new().ok())
+            .flatten();
         // Seed the preview readers with the daemon's live snapshots so MEDIA_*/
         // WEATHER_* sensors render real data instead of always-blank placeholders.
         let mut media = MediaReader::with_cached_info(media_info);
@@ -464,7 +475,7 @@ fn preview_config_impl(
             &mut mb,
             &mut media,
             &weather,
-            None,
+            hid_api.as_ref(),
         ) {
             let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0, &[], w, h);
             return Ok(buffer_to_frame(&buf));
@@ -706,6 +717,7 @@ mod tests {
         assert!(names.contains(&"CLOCK"));
         assert!(names.contains(&"DATE"));
         assert!(names.contains(&"BLANK"));
+        assert!(names.contains(&"MOUSE_BATTERY"));
         assert!(names.contains(&"MEDIA_TITLE"));
     }
 
