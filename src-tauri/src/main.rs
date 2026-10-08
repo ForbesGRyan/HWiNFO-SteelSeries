@@ -296,9 +296,6 @@ fn main() -> Result<(), anyhow::Error> {
             gui::list_sensors,
             gui::list_hid_devices,
             gui::preview_config,
-            gui::request_sleep,
-            gui::request_wake,
-            gui::request_white_screen,
             gui::get_device_report,
             gui::open_url,
         ])

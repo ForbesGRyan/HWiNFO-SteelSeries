@@ -101,10 +101,6 @@ pub fn connect_steelseries(term: &Term) -> Result<GameSenseClient, anyhow::Error
 /// HID device identification parameters for SteelSeries OLED devices.
 /// These are extracted as constants to make them testable and configurable.
 pub const HID_VENDOR_ID: u16 = 0x1038;
-#[allow(dead_code)] // historical Arctis Nova Pro Wireless PID, kept for reference
-pub const HID_PRODUCT_ID: u16 = 0x12E0;
-#[allow(dead_code)] // OLED interface number on the original target device
-pub const HID_INTERFACE_NUMBER: i32 = 0x04;
 pub const HID_USAGE_PAGE: u16 = 0xFFC0;
 
 /// Pure-data predicate used by `is_oled_capable` — testable without HidApi.
@@ -278,34 +274,6 @@ pub fn connect_hid(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==========================================================================
-    // HID Constants Tests
-    // ==========================================================================
-
-    #[test]
-    fn test_hid_vendor_id_is_steelseries() {
-        // SteelSeries vendor ID is 0x1038
-        assert_eq!(HID_VENDOR_ID, 0x1038);
-    }
-
-    #[test]
-    fn test_hid_product_id() {
-        // Arctis Nova Pro Wireless product ID
-        assert_eq!(HID_PRODUCT_ID, 0x12E0);
-    }
-
-    #[test]
-    fn test_hid_interface_number() {
-        // Interface 4 is used for OLED communication
-        assert_eq!(HID_INTERFACE_NUMBER, 0x04);
-    }
-
-    #[test]
-    fn test_hid_usage_page() {
-        // Vendor-defined usage page 0xFFC0
-        assert_eq!(HID_USAGE_PAGE, 0xFFC0);
-    }
 
     // ==========================================================================
     // Retry Logic Tests

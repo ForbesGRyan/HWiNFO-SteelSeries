@@ -828,12 +828,6 @@ fn format_report_log(
     }
 }
 
-/// Pure helper: count likely-battery hits across discover results.
-#[allow(dead_code)]
-fn count_likely_battery_results(results: &[(u8, Vec<u8>, Option<u8>)]) -> usize {
-    results.iter().filter(|(_, _, b)| b.is_some()).count()
-}
-
 /// Pure helper: format brute-force match lines for `discover_all_devices_for_battery`.
 fn format_brute_force_match(
     vid: u16,
@@ -1767,17 +1761,6 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("Found 2 device(s)")));
         assert!(lines.iter().any(|l| l.contains("046d:c539")));
         assert!(lines.iter().any(|l| l.contains("1038:1832")));
-    }
-
-    #[test]
-    fn test_count_likely_battery_results() {
-        let results = vec![
-            (0x01u8, vec![0x01, 0x00], None),
-            (0x02u8, vec![0x02, 50], Some(50)),
-            (0x03u8, vec![0x03, 75], Some(75)),
-        ];
-        assert_eq!(count_likely_battery_results(&results), 2);
-        assert_eq!(count_likely_battery_results(&[]), 0);
     }
 
     #[test]

@@ -15,7 +15,6 @@ use ini::Ini;
 use log::{debug, error, info, warn};
 use serde_json::{json, Value};
 use std::num::Wrapping;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -786,10 +785,6 @@ pub fn spawn<R: Runtime>(state: Shared, app: AppHandle<R>, config: AppConfig) {
         d.run();
     });
 }
-
-// Ensure Arc usage compiles regardless of Mutex location elsewhere
-#[allow(dead_code)]
-fn _arc_assert(_: Arc<()>) {}
 
 #[cfg(test)]
 mod tests {
@@ -1631,12 +1626,6 @@ mod tests {
         assert!(!g.gg_connected);
         assert!(!g.usb_connected);
         assert_eq!(g.active_mode, ActiveMode::Disconnected);
-    }
-
-    #[test]
-    fn test_arc_assert_compiles() {
-        // Smoke test for the _arc_assert helper.
-        _arc_assert(Arc::new(()));
     }
 
     /// Registry entry for the Nova Pro Wireless, the default device used by

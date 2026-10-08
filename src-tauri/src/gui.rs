@@ -518,27 +518,6 @@ pub(crate) fn buffer_to_frame(buf: &crate::render::OledBuffer) -> crate::state::
     }
 }
 
-fn set_sleep_command(shared: &Shared, cmd: SleepCommand) -> Result<(), String> {
-    let mut g = shared.lock().map_err(|e| e.to_string())?;
-    g.sleep_requested = Some(cmd);
-    Ok(())
-}
-
-#[command]
-pub fn request_sleep(state: State<Shared>) -> Result<(), String> {
-    set_sleep_command(&state, SleepCommand::Sleep)
-}
-
-#[command]
-pub fn request_wake(state: State<Shared>) -> Result<(), String> {
-    set_sleep_command(&state, SleepCommand::Wake)
-}
-
-#[command]
-pub fn request_white_screen(state: State<Shared>) -> Result<(), String> {
-    set_sleep_command(&state, SleepCommand::White)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -972,26 +951,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_sleep_command_writes_state() {
-        let shared = mock_shared(base_config());
-        set_sleep_command(&shared, SleepCommand::Sleep).unwrap();
-        assert_eq!(
-            shared.lock().unwrap().sleep_requested,
-            Some(SleepCommand::Sleep)
-        );
-        set_sleep_command(&shared, SleepCommand::Wake).unwrap();
-        assert_eq!(
-            shared.lock().unwrap().sleep_requested,
-            Some(SleepCommand::Wake)
-        );
-        set_sleep_command(&shared, SleepCommand::White).unwrap();
-        assert_eq!(
-            shared.lock().unwrap().sleep_requested,
-            Some(SleepCommand::White)
-        );
-    }
-
-    #[test]
     fn test_list_sensors_impl_without_hwinfo_returns_specials_only() {
         let shared = mock_shared(base_config());
         let opts = list_sensors_impl(&shared).unwrap();
@@ -1103,9 +1062,6 @@ mod tests {
         assert!(get_config(state.clone()).is_ok());
         assert!(get_live_preview(state.clone()).is_ok());
         assert!(list_sensors(state.clone()).is_ok());
-        assert!(request_sleep(state.clone()).is_ok());
-        assert!(request_wake(state.clone()).is_ok());
-        assert!(request_white_screen(state.clone()).is_ok());
         // preview_config calls render — works without HWiNFO snapshot
         assert!(preview_config(state.clone(), base_config(), 0).is_ok());
         // save_config writes to conf.ini in cwd. Run it in a temp cwd so it doesn't pollute

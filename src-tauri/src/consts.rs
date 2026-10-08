@@ -50,11 +50,4 @@ mod tests {
         assert_ne!(Style::Vertical, Style::Custom);
         assert_ne!(Style::Horizontal, Style::Custom);
     }
-
-    #[test]
-    fn test_constants() {
-        assert_eq!(CUSTOM_SENSORS, 15);
-        assert_eq!(DISPLAY_LINES, 5);
-        assert_eq!(TICK_RATE, 500);
-    }
 }
