@@ -5,11 +5,10 @@ use crate::mouse_battery::MouseBatteryReader;
 use crate::render::render_text_to_oled;
 use crate::settings::AppConfig;
 use crate::state::{Shared, SleepCommand, StatusPayload};
-use crate::utils::{format_custom_value, run_sensors};
+use crate::utils::{format_custom_lines, run_sensors};
 use ini::Ini;
 use log::{error, info};
 use serde::Serialize;
-use serde_json::Value;
 use tauri::{command, State};
 
 const SPECIAL_SENSORS: &[(&str, &str)] = &[
@@ -79,60 +78,13 @@ fn style_from_config(config: &AppConfig) -> &'static str {
 }
 
 /// Static summary placeholder for the preview pane.
-fn summary_preview_value(is_vertical: bool) -> Value {
-    if is_vertical {
-        serde_json::json!({
-            "line1": "CPU   GPU   MEM",
-            "line2": "00°   00°   00G",
-            "line3": "00%   00%   00G",
-        })
+fn summary_preview_lines(is_vertical: bool) -> Vec<String> {
+    let lines = if is_vertical {
+        ["CPU   GPU   MEM", "00°   00°   00G", "00%   00%   00G"]
     } else {
-        serde_json::json!({
-            "line1": "CPU 00° 00%",
-            "line2": "GPU 00° 00%",
-            "line3": "MEM 00G 00%",
-        })
-    }
-}
-
-/// Build the `ini::Properties` block run_sensors needs from a slice of CustomSensor.
-fn build_preview_props(page_sensors: &[crate::settings::CustomSensor]) -> ini::Properties {
-    let mut props = ini::Properties::new();
-    for (k, sensor) in page_sensors.iter().enumerate() {
-        if k >= CUSTOM_SENSORS {
-            break;
-        }
-        if sensor.sensor.trim().is_empty() {
-            continue;
-        }
-        props.insert(format!("sensor_{}", k), sensor.sensor.clone());
-        props.insert(format!("label_{}", k), sensor.label.clone());
-        props.insert(format!("unit_{}", k), sensor.unit.clone());
-        props.insert(format!("convert_{}", k), sensor.convert.clone());
-        props.insert(format!("icon_{}", k), sensor.icon.clone());
-    }
-    props
-}
-
-/// Convert a line1/line2/.../lineN object back into newline-separated text for rendering.
-/// Keys are sorted lexicographically for deterministic ordering.
-fn value_to_preview_text(value: &Value) -> String {
-    let mut text = String::new();
-    if let Some(obj) = value.as_object() {
-        let mut keys: Vec<&String> = obj.keys().collect();
-        keys.sort();
-        let mut first = true;
-        for key in keys {
-            if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                if !first {
-                    text.push('\n');
-                }
-                text.push_str(s);
-                first = false;
-            }
-        }
-    }
-    text
+        ["CPU 00° 00%", "GPU 00° 00%", "MEM 00G 00%"]
+    };
+    lines.map(String::from).to_vec()
 }
 
 /// Built-in special sensors: CLOCK/BLANK/MEDIA_* grouped under "Special",
@@ -428,8 +380,8 @@ fn preview_config_impl(
         )
     };
 
-    let value: Value = if config.is_summary {
-        summary_preview_value(config.is_vertical)
+    let lines = if config.is_summary {
+        summary_preview_lines(config.is_vertical)
     } else {
         let hwinfo = match hwinfo_opt.as_ref() {
             Some(h) => h,
@@ -440,20 +392,8 @@ fn preview_config_impl(
         };
 
         let page_sensors = config.custom_sensors.get(page).cloned().unwrap_or_default();
-        let props = build_preview_props(&page_sensors);
-
-        let mut labels = vec![""; CUSTOM_SENSORS];
-        let mut units = vec![""; CUSTOM_SENSORS];
-        let mut values = vec![String::new(); CUSTOM_SENSORS];
 
         let mut mb = MouseBatteryReader::new();
-        // Only enumerate HID when the page shows the mouse battery; without it
-        // the preview would always read "N/A".
-        let hid_api = page_sensors
-            .iter()
-            .any(|s| s.sensor == "MOUSE_BATTERY")
-            .then(|| hidapi::HidApi::new().ok())
-            .flatten();
         // Seed the preview readers with the daemon's live snapshots so MEDIA_*/
         // WEATHER_* sensors render real data instead of always-blank placeholders.
         let mut media = MediaReader::with_cached_info(media_info);
@@ -462,30 +402,32 @@ fn preview_config_impl(
             None => crate::weather::WeatherReader::disabled(),
         };
 
-        if let Err(e) = run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            hwinfo,
+        // Only enumerate HID when the page shows the mouse battery; without it
+        // the preview would always read "N/A".
+        let hid_api = page_sensors
+            .iter()
+            .any(|s| s.sensor == "MOUSE_BATTERY")
+            .then(|| hidapi::HidApi::new().ok())
+            .flatten();
+
+        match run_sensors(
+            &page_sensors,
             config.decimal,
+            hwinfo,
             &mut mb,
             &mut media,
             &weather,
             hid_api.as_ref(),
         ) {
-            let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0, &[], w, h);
-            return Ok(buffer_to_frame(&buf));
+            Ok(slots) => format_custom_lines(config.sensors_per_line, &slots),
+            Err(e) => {
+                let buf = render_text_to_oled(&format!("Preview error:\n{}", e), 0, &[], w, h);
+                return Ok(buffer_to_frame(&buf));
+            }
         }
-
-        let icons: Vec<&str> = (0..CUSTOM_SENSORS)
-            .map(|k| props.get(format!("icon_{}", k)).unwrap_or_default())
-            .collect();
-
-        format_custom_value(config.sensors_per_line, labels, values, units, icons)
     };
 
-    let buf = render_text_to_oled(&value_to_preview_text(&value), 0, &config.font_sizes, w, h);
+    let buf = render_text_to_oled(&lines.join("\n"), 0, &config.font_sizes, w, h);
     Ok(buffer_to_frame(&buf))
 }
 
@@ -570,102 +512,11 @@ mod tests {
         assert_eq!(style_from_config(&c), "Horizontal");
     }
 
-    // ==================== summary_preview_value ====================
-
     #[test]
-    fn test_summary_preview_value_vertical() {
-        let v = summary_preview_value(true);
-        assert_eq!(v["line1"], "CPU   GPU   MEM");
-        assert!(v["line2"].as_str().unwrap().contains("00°"));
-    }
-
-    #[test]
-    fn test_summary_preview_value_horizontal() {
-        let v = summary_preview_value(false);
-        assert_eq!(v["line1"], "CPU 00° 00%");
-        assert_eq!(v["line3"], "MEM 00G 00%");
-    }
-
-    // ==================== build_preview_props ====================
-
-    #[test]
-    fn test_build_preview_props_writes_all_fields() {
-        let page = vec![sensor("CPU;Temp")];
-        let p = build_preview_props(&page);
-        assert_eq!(p.get("sensor_0"), Some("CPU;Temp"));
-        assert_eq!(p.get("label_0"), Some("L_CPU;Temp"));
-        assert_eq!(p.get("unit_0"), Some("U"));
-        assert_eq!(p.get("convert_0"), Some(""));
-        assert_eq!(p.get("icon_0"), Some(""));
-    }
-
-    #[test]
-    fn test_build_preview_props_writes_icon() {
-        let page = vec![CustomSensor {
-            sensor: "CPU;Temp".to_string(),
-            label: String::new(),
-            unit: String::new(),
-            convert: String::new(),
-            icon: "cpu".to_string(),
-        }];
-        let p = build_preview_props(&page);
-        assert_eq!(p.get("icon_0"), Some("cpu"));
-    }
-
-    #[test]
-    fn test_build_preview_props_skips_empty_sensor_string() {
-        let page = vec![sensor("   "), sensor("S;R")];
-        let p = build_preview_props(&page);
-        assert!(p.get("sensor_0").is_none());
-        assert_eq!(p.get("sensor_1"), Some("S;R"));
-    }
-
-    #[test]
-    fn test_build_preview_props_caps_at_custom_sensors() {
-        let page: Vec<CustomSensor> = (0..(CUSTOM_SENSORS + 5))
-            .map(|i| sensor(&format!("S{};R", i)))
-            .collect();
-        let p = build_preview_props(&page);
-        // Last in-range index should exist, first out-of-range should not
-        let last = format!("sensor_{}", CUSTOM_SENSORS - 1);
-        let over = format!("sensor_{}", CUSTOM_SENSORS);
-        assert!(p.get(&last).is_some());
-        assert!(p.get(&over).is_none());
-    }
-
-    // ==================== value_to_preview_text ====================
-
-    #[test]
-    fn test_value_to_preview_text_orders_lines() {
-        let v = serde_json::json!({ "line3": "C", "line1": "A", "line2": "B" });
-        assert_eq!(value_to_preview_text(&v), "A\nB\nC");
-    }
-
-    #[test]
-    fn test_value_to_preview_text_preserves_blank_slots() {
-        // Empty lines keep their position instead of shifting later lines up.
-        let v = serde_json::json!({ "line1": "", "line2": "CPU", "line3": "GPU" });
-        assert_eq!(value_to_preview_text(&v), "\nCPU\nGPU");
-        let v2 = serde_json::json!({ "line1": "A", "line2": "", "line3": "C" });
-        assert_eq!(value_to_preview_text(&v2), "A\n\nC");
-    }
-
-    #[test]
-    fn test_value_to_preview_text_skips_non_string() {
-        let v = serde_json::json!({ "line1": "A", "line2": 42, "line3": "C" });
-        assert_eq!(value_to_preview_text(&v), "A\nC");
-    }
-
-    #[test]
-    fn test_value_to_preview_text_empty_object() {
-        let v = serde_json::json!({});
-        assert_eq!(value_to_preview_text(&v), "");
-    }
-
-    #[test]
-    fn test_value_to_preview_text_non_object_returns_empty() {
-        let v = serde_json::json!("not an object");
-        assert_eq!(value_to_preview_text(&v), "");
+    fn test_summary_preview_lines() {
+        assert_eq!(summary_preview_lines(true)[0], "CPU   GPU   MEM");
+        assert_eq!(summary_preview_lines(false)[0], "CPU 00° 00%");
+        assert_eq!(summary_preview_lines(true).len(), 3);
     }
 
     // ==================== special_sensor_options ====================

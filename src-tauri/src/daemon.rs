@@ -1,18 +1,18 @@
 use crate::connect::{connect_hid, connect_steelseries};
-use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES, TICK_RATE};
+use crate::consts::{DISPLAY_LINES, TICK_RATE};
 use crate::media::MediaReader;
 use crate::mouse_battery::MouseBatteryReader;
 use crate::render::{render_text_to_oled, FontSize, OledBuffer};
 use crate::settings::AppConfig;
 use crate::state::{ActiveMode, SensorValue, Shared, SleepCommand};
 use crate::steelseries::page_handler;
-use crate::utils::{format_custom_value, run_sensors};
+use crate::utils::{format_custom_lines, run_sensors};
 use anyhow::anyhow;
 use gamesense::client::GameSenseClient;
 use hwinfo_steelseries_oled::{Hwinfo, Snapshot};
 use ini::Ini;
 use log::{debug, error, info, warn};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::num::Wrapping;
 use std::thread;
 use std::time::Duration;
@@ -56,67 +56,76 @@ fn fetch_summary_sensors(
     })
 }
 
-fn format_vertical_summary(s: &SummarySensors, decimal: bool) -> Value {
+fn format_vertical_summary(s: &SummarySensors, decimal: bool) -> Vec<String> {
     let precision = if decimal { 1 } else { 0 };
     let spacing = if decimal { " " } else { "   " };
     let spacing2 = if decimal { " " } else { "    " };
-    json!({
-        "line1": "CPU   GPU   MEM",
-        "line2": format!("{:.p$}°{}{:.p$}°{}{:.p$}G",
-            s.cpu_temp, spacing, s.gpu_temp, spacing, s.mem_used, p = precision),
-        "line3": format!("{:.p$}%{}{:.p$}%{}{:.p$}G",
-            s.cpu_usage, spacing2, s.gpu_usage, spacing2, s.mem_free, p = precision),
-    })
+    vec![
+        "CPU   GPU   MEM".to_string(),
+        format!(
+            "{:.p$}°{}{:.p$}°{}{:.p$}G",
+            s.cpu_temp,
+            spacing,
+            s.gpu_temp,
+            spacing,
+            s.mem_used,
+            p = precision
+        ),
+        format!(
+            "{:.p$}%{}{:.p$}%{}{:.p$}G",
+            s.cpu_usage,
+            spacing2,
+            s.gpu_usage,
+            spacing2,
+            s.mem_free,
+            p = precision
+        ),
+    ]
 }
 
-fn format_horizontal_summary(s: &SummarySensors, decimal: bool) -> Value {
+fn format_horizontal_summary(s: &SummarySensors, decimal: bool) -> Vec<String> {
     let precision = if decimal { 1 } else { 0 };
-    json!({
-        "line1": format!("CPU {:.p$}° {:.p$}%", s.cpu_temp, s.cpu_usage, p = precision),
-        "line2": format!("GPU {:.p$}° {:.p$}%", s.gpu_temp, s.gpu_usage, p = precision),
-        "line3": format!("MEM {:.p$}G {:.p$}%", s.mem_used, s.mem_load, p = precision),
-    })
+    vec![
+        format!(
+            "CPU {:.p$}° {:.p$}%",
+            s.cpu_temp,
+            s.cpu_usage,
+            p = precision
+        ),
+        format!(
+            "GPU {:.p$}° {:.p$}%",
+            s.gpu_temp,
+            s.gpu_usage,
+            p = precision
+        ),
+        format!("MEM {:.p$}G {:.p$}%", s.mem_used, s.mem_load, p = precision),
+    ]
 }
 
-/// Join `line1..lineN` into newline-separated text, preserving each line's
-/// slot position. An empty line keeps its place (so blank/hidden sensors leave
-/// a gap rather than shifting later lines up).
-fn value_to_text(value: &Value) -> String {
-    let mut text = String::new();
-    if let Some(obj) = value.as_object() {
-        let mut first = true;
-        for i in 1..=DISPLAY_LINES {
-            let key = format!("line{}", i);
-            if let Some(s) = obj.get(&key).and_then(|v| v.as_str()) {
-                if !first {
-                    text.push('\n');
-                }
-                text.push_str(s);
-                first = false;
-            }
-        }
-    }
-    text
+/// GameSense frame payload: `{"line1": ..., "line2": ...}`.
+fn lines_to_frame(lines: &[String]) -> Value {
+    Value::Object(
+        lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| (format!("line{}", i + 1), Value::String(line.clone())))
+            .collect(),
+    )
 }
 
-fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize], size: (u32, u32)) -> OledBuffer {
-    render_text_to_oled(&value_to_text(value), 0, font_sizes, size.0, size.1)
+fn lines_to_oled_buffer(lines: &[String], font_sizes: &[FontSize], size: (u32, u32)) -> OledBuffer {
+    render_text_to_oled(&lines.join("\n"), 0, font_sizes, size.0, size.1)
 }
 
-fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
-    let mut out = Vec::new();
-    if let Some(obj) = value.as_object() {
-        for i in 1..=DISPLAY_LINES {
-            let key = format!("line{}", i);
-            if let Some(s) = obj.get(&key).and_then(|v| v.as_str()) {
-                out.push(SensorValue {
-                    label: format!("Line {}", i),
-                    value: s.to_string(),
-                });
-            }
-        }
-    }
-    out
+fn lines_to_sensor_values(lines: &[String]) -> Vec<SensorValue> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| SensorValue {
+            label: format!("Line {}", i + 1),
+            value: line.clone(),
+        })
+        .collect()
 }
 
 /// Pure helper: create an OledBuffer with every pixel turned on ("white" screen).
@@ -136,7 +145,7 @@ trait DisplayDriver: Send {
         &mut self,
         event: &str,
         i: isize,
-        value: &Value,
+        lines: &[String],
         buffer: &OledBuffer,
     ) -> Result<(), anyhow::Error>;
     fn send_blank(&mut self) -> Result<(), anyhow::Error>;
@@ -169,10 +178,10 @@ impl DisplayDriver for OledClient {
         &mut self,
         event: &str,
         i: isize,
-        value: &Value,
+        lines: &[String],
         buffer: &OledBuffer,
     ) -> Result<(), anyhow::Error> {
-        OledClient::trigger_frame(self, event, i, value, buffer)
+        OledClient::trigger_frame(self, event, i, lines, buffer)
     }
     fn send_blank(&mut self) -> Result<(), anyhow::Error> {
         OledClient::send_blank(self)
@@ -190,12 +199,12 @@ impl OledClient {
         &mut self,
         event: &str,
         i: isize,
-        value: &Value,
+        lines: &[String],
         buffer: &OledBuffer,
     ) -> Result<(), anyhow::Error> {
         match self {
             OledClient::GameSense(client) => {
-                client.trigger_event_frame(event, i, value.clone())?;
+                client.trigger_event_frame(event, i, lines_to_frame(lines))?;
             }
             OledClient::Hid { sender, device } => {
                 for packet in device.protocol.build_packets(buffer) {
@@ -212,8 +221,8 @@ impl OledClient {
     fn send_blank(&mut self) -> Result<(), anyhow::Error> {
         match self {
             OledClient::GameSense(client) => {
-                let v = json!({ "line1": "", "line2": "", "line3": "" });
-                client.trigger_event_frame("BLANK", 0, v)?;
+                let blank = vec![String::new(); 3];
+                client.trigger_event_frame("BLANK", 0, lines_to_frame(&blank))?;
             }
             OledClient::Hid { sender, device } => {
                 let blank = OledBuffer::new(device.width, device.height);
@@ -228,12 +237,8 @@ impl OledClient {
     fn send_white(&mut self) -> Result<(), anyhow::Error> {
         match self {
             OledClient::GameSense(client) => {
-                let v = json!({
-                    "line1": "████████████████",
-                    "line2": "████████████████",
-                    "line3": "████████████████"
-                });
-                client.trigger_event_frame("WHITE", 0, v)?;
+                let white = vec!["████████████████".to_string(); 3];
+                client.trigger_event_frame("WHITE", 0, lines_to_frame(&white))?;
             }
             OledClient::Hid { sender, device } => {
                 let buffer = white_buffer(device.width, device.height);
@@ -275,10 +280,6 @@ fn next_page_counter(i: isize, page_time: isize, pages: usize, current: usize) -
     }
 }
 
-fn disconnected_value() -> Value {
-    json!({ "line1": "Disconnected", "line2": "FROM", "line3": "HWiNFO" })
-}
-
 /// Pure helper: returns (is_sleeping, is_white_screen) flags for the given sleep command.
 fn apply_sleep_flags(cmd: SleepCommand) -> (bool, bool) {
     match cmd {
@@ -288,76 +289,34 @@ fn apply_sleep_flags(cmd: SleepCommand) -> (bool, bool) {
     }
 }
 
-/// Pure helper: load custom-page properties from an Ini given a page count.
-fn load_pages_from_ini(ini: &Ini, pages: usize) -> Vec<ini::Properties> {
-    let mut out = Vec::new();
-    for i in 1..=pages {
-        if let Some(page) = ini.section(Some(format!("PAGE{}.Sensors", i))) {
-            out.push(page.clone());
-        }
-    }
-    out
-}
-
 /// Pure helper: build the GameSense event name for a 1-indexed page counter.
 fn page_event_name(page_counter: usize) -> String {
     format!("PAGE{}", page_counter + 1)
 }
 
-fn build_display_value(
+fn build_display_lines(
     config: &AppConfig,
     hwinfo: &Snapshot,
-    pages_vec: &[ini::Properties],
     page_counter: usize,
     mouse: &mut MouseBatteryReader,
     media: &mut MediaReader,
     weather: &crate::weather::WeatherReader,
     hid_api: Option<&hidapi::HidApi>,
-) -> Result<Value, anyhow::Error> {
+) -> Result<Vec<String>, anyhow::Error> {
     if config.is_summary {
         let sensors = fetch_summary_sensors(hwinfo, &config.gpu)?;
-        if config.is_vertical {
-            Ok(format_vertical_summary(&sensors, config.decimal))
+        return Ok(if config.is_vertical {
+            format_vertical_summary(&sensors, config.decimal)
         } else {
-            Ok(format_horizontal_summary(&sensors, config.decimal))
-        }
-    } else {
-        let pages_sensors = pages_vec
-            .get(page_counter)
-            .ok_or_else(|| anyhow!("Page {} missing", page_counter))?;
-
-        let mut labels = vec![""; CUSTOM_SENSORS];
-        let mut units = vec![""; CUSTOM_SENSORS];
-        let mut values = vec![String::new(); CUSTOM_SENSORS];
-
-        run_sensors(
-            pages_sensors,
-            &mut labels,
-            &mut units,
-            &mut values,
-            hwinfo,
-            config.decimal,
-            mouse,
-            media,
-            weather,
-            hid_api,
-        )?;
-
-        // Per-sensor icon names (direct-USB bitmap path). Read straight from the
-        // page properties, parallel to labels/units, so `run_sensors` stays
-        // unchanged.
-        let icons: Vec<&str> = (0..CUSTOM_SENSORS)
-            .map(|k| pages_sensors.get(format!("icon_{}", k)).unwrap_or_default())
-            .collect();
-
-        Ok(format_custom_value(
-            config.sensors_per_line,
-            labels,
-            values,
-            units,
-            icons,
-        ))
+            format_horizontal_summary(&sensors, config.decimal)
+        });
     }
+    let page = config
+        .custom_sensors
+        .get(page_counter)
+        .ok_or_else(|| anyhow!("Page {} missing", page_counter))?;
+    let slots = run_sensors(page, config.decimal, hwinfo, mouse, media, weather, hid_api)?;
+    Ok(format_custom_lines(config.sensors_per_line, &slots))
 }
 
 struct Daemon<R: Runtime = tauri::Wry> {
@@ -368,7 +327,6 @@ struct Daemon<R: Runtime = tauri::Wry> {
     oled: Option<Box<dyn DisplayDriver>>,
     hid_api: Option<hidapi::HidApi>,
 
-    pages_vec: Vec<ini::Properties>,
     config: AppConfig,
 
     i: Wrapping<isize>,
@@ -396,7 +354,6 @@ impl<R: Runtime> Daemon<R> {
             hwinfo: None,
             oled: None,
             hid_api: None,
-            pages_vec: Vec::new(),
             config,
             i: Wrapping(0),
             disconnect_count: 0,
@@ -441,14 +398,6 @@ impl<R: Runtime> Daemon<R> {
             s.last_error = None;
         });
         self.push_status();
-    }
-
-    fn load_pages_for_config(&mut self) {
-        self.pages_vec.clear();
-        if !self.config.is_summary {
-            let ini = Ini::load_from_file("conf.ini").unwrap_or_else(|_| Ini::new());
-            self.pages_vec = load_pages_from_ini(&ini, self.config.pages);
-        }
     }
 
     fn announce_connecting_direct_usb(&self) {
@@ -498,8 +447,6 @@ impl<R: Runtime> Daemon<R> {
         if let Err(e) = self.media_reader.initialize() {
             warn!("MediaReader init failed: {}. Media sensors unavailable.", e);
         }
-
-        self.load_pages_for_config();
 
         if self.config.direct_usb {
             self.announce_connecting_direct_usb();
@@ -673,14 +620,14 @@ impl<R: Runtime> Daemon<R> {
 
         if disconnected {
             warn!("HWiNFO disconnected");
-            let value = disconnected_value();
-            let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, self.display_size);
-            let _ = oled.trigger_frame("ERROR", self.i.0, &value, &buffer);
+            let lines = ["Disconnected", "FROM", "HWiNFO"].map(String::from);
+            let buffer = lines_to_oled_buffer(&lines, &self.config.font_sizes, self.display_size);
+            let _ = oled.trigger_frame("ERROR", self.i.0, &lines, &buffer);
 
             self.write_state(|s| {
                 s.hwinfo_connected = false;
                 s.oled_buffer = buffer.clone();
-                s.sensor_values = value_to_sensor_values(&value);
+                s.sensor_values = lines_to_sensor_values(&lines);
                 s.last_error = Some("HWiNFO disconnected".to_string());
             });
             self.push_status();
@@ -703,10 +650,9 @@ impl<R: Runtime> Daemon<R> {
             }
         }
 
-        let value = build_display_value(
+        let lines = build_display_lines(
             &self.config,
             hwinfo,
-            &self.pages_vec,
             self.page_counter,
             &mut self.mouse_battery_reader,
             &mut self.media_reader,
@@ -714,9 +660,9 @@ impl<R: Runtime> Daemon<R> {
             self.hid_api.as_ref(),
         )?;
 
-        let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, self.display_size);
+        let buffer = lines_to_oled_buffer(&lines, &self.config.font_sizes, self.display_size);
         let event_name = page_event_name(self.page_counter);
-        oled.trigger_frame(&event_name, self.i.0, &value, &buffer)?;
+        oled.trigger_frame(&event_name, self.i.0, &lines, &buffer)?;
 
         // Publish live dynamic-sensor snapshots so the settings preview can render
         // MEDIA_*/WEATHER_* with the same data the OLED shows (the GUI preview has
@@ -727,7 +673,7 @@ impl<R: Runtime> Daemon<R> {
         self.write_state(|s| {
             s.hwinfo_connected = true;
             s.oled_buffer = buffer.clone();
-            s.sensor_values = value_to_sensor_values(&value);
+            s.sensor_values = lines_to_sensor_values(&lines);
             s.last_error = None;
             s.media_info = media_snapshot;
             s.weather_info = weather_snapshot;
@@ -815,7 +761,7 @@ pub fn spawn<R: Runtime>(state: Shared, app: AppHandle<R>, config: AppConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{AppConfig, WeatherConfig};
+    use crate::settings::{AppConfig, CustomSensor, WeatherConfig};
 
     fn sample_summary() -> SummarySensors {
         SummarySensors {
@@ -890,14 +836,6 @@ mod tests {
     }
 
     #[test]
-    fn test_disconnected_value_has_three_lines() {
-        let v = disconnected_value();
-        assert_eq!(v["line1"], "Disconnected");
-        assert_eq!(v["line2"], "FROM");
-        assert_eq!(v["line3"], "HWiNFO");
-    }
-
-    #[test]
     fn test_fetch_summary_sensors_uses_find_first_when_gpu_empty() {
         let hw = full_summary_hwinfo();
         let s = fetch_summary_sensors(&hw, "").unwrap();
@@ -929,183 +867,112 @@ mod tests {
     #[test]
     fn test_format_vertical_summary_no_decimal() {
         let v = format_vertical_summary(&sample_summary(), false);
-        assert_eq!(v["line1"], "CPU   GPU   MEM");
-        assert_eq!(v["line2"], "42°   60°   8G");
-        assert_eq!(v["line3"], "50%    70%    8G");
+        assert_eq!(v[0], "CPU   GPU   MEM");
+        assert_eq!(v[1], "42°   60°   8G");
+        assert_eq!(v[2], "50%    70%    8G");
     }
 
     #[test]
     fn test_format_vertical_summary_decimal() {
         let v = format_vertical_summary(&sample_summary(), true);
-        assert_eq!(v["line2"], "42.0° 60.0° 8.0G");
-        assert_eq!(v["line3"], "50.0% 70.0% 8.0G");
+        assert_eq!(v[1], "42.0° 60.0° 8.0G");
+        assert_eq!(v[2], "50.0% 70.0% 8.0G");
     }
 
     #[test]
     fn test_format_horizontal_summary_no_decimal() {
         let v = format_horizontal_summary(&sample_summary(), false);
-        assert_eq!(v["line1"], "CPU 42° 50%");
-        assert_eq!(v["line2"], "GPU 60° 70%");
-        assert_eq!(v["line3"], "MEM 8G 50%");
+        assert_eq!(v[0], "CPU 42° 50%");
+        assert_eq!(v[1], "GPU 60° 70%");
+        assert_eq!(v[2], "MEM 8G 50%");
     }
 
     #[test]
     fn test_format_horizontal_summary_decimal() {
         let v = format_horizontal_summary(&sample_summary(), true);
-        assert_eq!(v["line1"], "CPU 42.0° 50.0%");
+        assert_eq!(v[0], "CPU 42.0° 50.0%");
     }
 
-    #[test]
-    fn test_build_display_value_summary_vertical() {
-        let cfg = base_config();
-        let hw = full_summary_hwinfo();
+    fn lines_for(cfg: &AppConfig, hw: &Snapshot) -> Result<Vec<String>, anyhow::Error> {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-
-        let v =
-            build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None).unwrap();
-        assert_eq!(v["line1"], "CPU   GPU   MEM");
+        build_display_lines(cfg, hw, 0, &mut mouse, &mut media, &weather, None)
     }
 
     #[test]
-    fn test_build_display_value_summary_horizontal() {
+    fn test_build_display_lines_summary_vertical() {
+        let lines = lines_for(&base_config(), &full_summary_hwinfo()).unwrap();
+        assert_eq!(lines[0], "CPU   GPU   MEM");
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn test_build_display_lines_summary_horizontal() {
         let mut cfg = base_config();
         cfg.is_vertical = false;
-        let hw = full_summary_hwinfo();
-        let mut mouse = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
-
-        let v =
-            build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None).unwrap();
-        assert_eq!(v["line1"], "CPU 42° 50%");
+        let lines = lines_for(&cfg, &full_summary_hwinfo()).unwrap();
+        assert_eq!(lines[0], "CPU 42° 50%");
     }
 
     #[test]
-    fn test_build_display_value_custom_missing_page_errors() {
+    fn test_build_display_lines_custom_missing_page_errors() {
         let mut cfg = base_config();
         cfg.is_summary = false;
-        let hw = build_hwinfo(&[]);
-        let mut mouse = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
-
-        let err = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None)
-            .unwrap_err();
+        let err = lines_for(&cfg, &build_hwinfo(&[])).unwrap_err();
         assert!(format!("{}", err).contains("Page 0 missing"));
     }
 
     #[test]
-    fn test_build_display_value_custom_renders_blank_sensor() {
+    fn test_build_display_lines_custom_renders_configured_sensor() {
         let mut cfg = base_config();
         cfg.is_summary = false;
-        cfg.sensors_per_line = 1;
-        let hw = build_hwinfo(&[]);
-        let mut props = ini::Properties::new();
-        props.insert("sensor_0", "BLANK");
-        props.insert("label_0", "X");
-
-        let mut mouse = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
-
-        let v = build_display_value(
-            &cfg,
-            &hw,
-            &[props],
-            0,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
-        )
-        .unwrap();
-        assert!(v["line1"].as_str().unwrap().contains("X"));
+        cfg.custom_sensors = vec![vec![CustomSensor {
+            sensor: "CPU;Temp".into(),
+            label: "X".into(),
+            unit: "°".into(),
+            ..Default::default()
+        }]];
+        let lines = lines_for(&cfg, &build_hwinfo(&[("CPU", "Temp", 42.0)])).unwrap();
+        assert_eq!(lines[0], "X 42°");
+        assert_eq!(lines.len(), crate::consts::DISPLAY_LINES);
     }
 
     #[test]
-    fn test_value_to_oled_buffer_populates_text() {
-        let v = json!({ "line1": "Hi", "line2": "There", "line3": "" });
-        let buf = value_to_oled_buffer(&v, &[], (128, 64));
-        // Some pixels should be lit
-        assert!(buf.data.iter().any(|&b| b != 0));
-    }
-
-    #[test]
-    fn test_value_to_text_preserves_leading_blank_line() {
-        // An empty top line must keep its slot, not shift line2/line3 up.
-        let v = json!({ "line1": "", "line2": "CPU", "line3": "GPU" });
-        assert_eq!(value_to_text(&v), "\nCPU\nGPU");
-    }
-
-    #[test]
-    fn test_value_to_text_preserves_middle_blank_slot() {
-        let v = json!({ "line1": "A", "line2": "", "line3": "C" });
-        assert_eq!(value_to_text(&v), "A\n\nC");
-    }
-
-    #[test]
-    fn test_value_to_text_all_present_unchanged() {
-        let v = json!({ "line1": "A", "line2": "B", "line3": "C" });
-        assert_eq!(value_to_text(&v), "A\nB\nC");
-    }
-
-    #[test]
-    fn test_value_to_sensor_values_collects_lines() {
-        let v = json!({ "line1": "A", "line2": "B", "line3": "C" });
-        let svs = value_to_sensor_values(&v);
-        assert_eq!(svs.len(), 3);
-        assert_eq!(svs[0].label, "Line 1");
-        assert_eq!(svs[0].value, "A");
-        assert_eq!(svs[2].value, "C");
-    }
-
-    #[test]
-    fn test_value_to_sensor_values_skips_missing_lines() {
-        let v = json!({ "line1": "Only" });
-        let svs = value_to_sensor_values(&v);
-        assert_eq!(svs.len(), 1);
-        assert_eq!(svs[0].value, "Only");
-    }
-
-    #[test]
-    fn test_build_display_value_custom_run_sensors_propagates_err() {
+    fn test_build_display_lines_custom_propagates_missing_sensor() {
         let mut cfg = base_config();
         cfg.is_summary = false;
-        cfg.sensors_per_line = 1;
-        let hw = build_hwinfo(&[]);
-        let mut props = ini::Properties::new();
-        props.insert("sensor_0", "CPU;Temp");
-        let mut mouse = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
-        let r = build_display_value(
-            &cfg,
-            &hw,
-            &[props],
-            0,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
-        );
-        assert!(r.is_err());
+        cfg.custom_sensors = vec![vec![CustomSensor {
+            sensor: "Nope;Missing".into(),
+            ..Default::default()
+        }]];
+        assert!(lines_for(&cfg, &build_hwinfo(&[])).is_err());
     }
 
     #[test]
-    fn test_value_to_oled_buffer_with_non_object_value() {
-        let v = json!("not an object");
-        let buf = value_to_oled_buffer(&v, &[], (128, 64));
-        // Should produce an empty buffer (no text rendered)
-        assert!(buf.data.iter().all(|b| *b == 0));
+    fn test_lines_to_frame_numbers_keys_from_one() {
+        let frame = lines_to_frame(&["A".to_string(), String::new(), "C".to_string()]);
+        assert_eq!(frame["line1"], "A");
+        assert_eq!(frame["line2"], "");
+        assert_eq!(frame["line3"], "C");
+        assert!(frame.get("line4").is_none());
     }
 
     #[test]
-    fn test_value_to_sensor_values_with_non_object() {
-        let v = json!(42);
-        let svs = value_to_sensor_values(&v);
-        assert!(svs.is_empty());
+    fn test_lines_to_oled_buffer_keeps_blank_line_positions() {
+        let with_gap = lines_to_oled_buffer(&[String::new(), "CPU".to_string()], &[], (128, 64));
+        let without_gap = lines_to_oled_buffer(&["CPU".to_string()], &[], (128, 64));
+        assert!(with_gap.data.iter().any(|&b| b != 0));
+        // A leading blank line pushes the text down: the buffers differ.
+        assert_ne!(with_gap, without_gap);
+    }
+
+    #[test]
+    fn test_lines_to_sensor_values_labels_each_line() {
+        let values = lines_to_sensor_values(&["A".to_string(), "B".to_string()]);
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[1].label, "Line 2");
+        assert_eq!(values[1].value, "B");
     }
 
     #[test]
@@ -1122,38 +989,12 @@ mod tests {
     }
 
     #[test]
-    fn test_load_pages_from_ini_returns_existing_sections() {
-        let mut ini = Ini::new();
-        ini.with_section(Some("PAGE1.Sensors"))
-            .set("sensor_0", "A;1");
-        ini.with_section(Some("PAGE3.Sensors"))
-            .set("sensor_0", "C;3");
-        let pages = load_pages_from_ini(&ini, 3);
-        assert_eq!(pages.len(), 2);
-        assert_eq!(pages[0].get("sensor_0"), Some("A;1"));
-        assert_eq!(pages[1].get("sensor_0"), Some("C;3"));
-    }
-
-    #[test]
-    fn test_load_pages_from_ini_empty_when_no_pages() {
-        let ini = Ini::new();
-        assert!(load_pages_from_ini(&ini, 3).is_empty());
-    }
-
-    #[test]
-    fn test_load_pages_from_ini_zero_pages() {
-        let mut ini = Ini::new();
-        ini.with_section(Some("PAGE1.Sensors")).set("sensor_0", "A");
-        assert!(load_pages_from_ini(&ini, 0).is_empty());
-    }
-
-    #[test]
     fn test_oled_client_send_blank_hid_variant_does_not_panic_on_invalid_device() {
         // We can't easily construct a HidDevice without a real device.
         // Cover the GameSense send_blank by using a real GameSenseClient only if available.
         // Instead exercise via JSON shape: the function body's primary paths run.
         // This test merely confirms the helper functions compile and the json() value shape is correct.
-        let v = json!({ "line1": "", "line2": "", "line3": "" });
+        let v = serde_json::json!({ "line1": "", "line2": "", "line3": "" });
         assert_eq!(v["line1"], "");
     }
 
@@ -1206,7 +1047,6 @@ mod tests {
         assert_eq!(d.page_counter, 0);
         assert!(!d.is_sleeping);
         assert!(!d.is_white_screen);
-        assert!(d.pages_vec.is_empty());
     }
 
     #[test]
@@ -1342,7 +1182,7 @@ mod tests {
             &mut self,
             _event: &str,
             _i: isize,
-            _value: &Value,
+            _lines: &[String],
             _buf: &OledBuffer,
         ) -> Result<(), anyhow::Error> {
             self.trigger_calls += 1;
@@ -1432,7 +1272,7 @@ mod tests {
         d.config.is_summary = false;
         d.config.pages = 2;
         d.config.page_time = 1; // TICK_RATE=500 → 2 ticks per second → switch every 2 ticks
-        d.pages_vec = vec![ini::Properties::new(), ini::Properties::new()];
+        d.config.custom_sensors = vec![Vec::new(), Vec::new()];
         install_mock_driver(&mut d);
         let hw = build_hwinfo(&[("S", "R", 1.0)]);
 
@@ -1493,27 +1333,6 @@ mod tests {
         let g = d.state.lock().unwrap();
         assert!(g.hwinfo_connected);
         assert!(g.last_error.is_none());
-    }
-
-    #[test]
-    fn test_load_pages_for_config_summary_clears_pages() {
-        let mut d = daemon_for_tests();
-        d.pages_vec.push(ini::Properties::new());
-        d.config.is_summary = true;
-        d.load_pages_for_config();
-        assert!(d.pages_vec.is_empty());
-    }
-
-    #[test]
-    fn test_load_pages_for_config_custom_with_no_conf_ini_yields_empty() {
-        let mut d = daemon_for_tests();
-        d.config.is_summary = false;
-        d.config.pages = 2;
-        // No conf.ini in temp cwd typically → Ini::new() → no PAGE sections → empty
-        d.load_pages_for_config();
-        // pages_vec may be empty (no PAGE sections in cwd's conf.ini) or have entries (if some
-        // unrelated conf.ini exists). Either way, this method should not panic.
-        assert!(d.pages_vec.len() <= 2);
     }
 
     #[test]
@@ -1654,7 +1473,7 @@ mod tests {
             device: nova_device(),
         };
         let buf = OledBuffer::new(128, 64);
-        let val = json!({});
+        let val: Vec<String> = Vec::new();
         oled.trigger_frame("E", 0, &val, &buf).unwrap();
         // Nova Pro frames are two 1024-byte feature reports.
         let packets = calls.lock().unwrap();
@@ -1669,7 +1488,7 @@ mod tests {
             device: nova_device(),
         };
         let buf = OledBuffer::new(128, 64);
-        let val = json!({});
+        let val: Vec<String> = Vec::new();
         let r = oled.trigger_frame("E", 0, &val, &buf);
         assert!(r.is_err());
         assert!(r.unwrap_err().to_string().contains("HID send"));
@@ -1701,7 +1520,7 @@ mod tests {
             device: nova_device(),
         });
         let buf = OledBuffer::new(128, 64);
-        let val = json!({});
+        let val: Vec<String> = Vec::new();
         assert!(drv.trigger_frame("E", 0, &val, &buf).is_ok());
         assert!(drv.send_blank().is_ok());
         assert!(drv.send_white().is_ok());
@@ -1745,7 +1564,7 @@ mod tests {
             device: crate::devices::find_supported(0x1610).expect("Apex Pro in registry"),
         };
         let buf = OledBuffer::new(128, 40);
-        let val = json!({"line1": "x"});
+        let val = vec!["x".to_string()];
         oled.trigger_frame("E", 0, &val, &buf).unwrap();
         let packets = calls.lock().unwrap();
         assert_eq!(packets.len(), 1);
@@ -1765,7 +1584,7 @@ mod tests {
         // Exercise the trait methods through dyn dispatch.
         let mut drv: Box<dyn DisplayDriver> = Box::new(MockDriver::new());
         let buf = OledBuffer::new(128, 64);
-        let val = json!({});
+        let val: Vec<String> = Vec::new();
         assert!(drv.trigger_frame("e", 0, &val, &buf).is_ok());
         assert!(drv.send_blank().is_ok());
         assert!(drv.send_white().is_ok());
