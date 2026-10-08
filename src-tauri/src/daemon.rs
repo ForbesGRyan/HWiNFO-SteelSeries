@@ -1,4 +1,4 @@
-use crate::connect::{connect_hid, connect_hwinfo, connect_steelseries};
+use crate::connect::{connect_hid, connect_steelseries};
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES, TICK_RATE};
 use crate::media::MediaReader;
 use crate::mouse_battery::MouseBatteryReader;
@@ -8,7 +8,6 @@ use crate::state::{ActiveMode, SensorValue, Shared, SleepCommand};
 use crate::steelseries::page_handler;
 use crate::utils::{format_custom_value, run_sensors};
 use anyhow::anyhow;
-use console::Term;
 use gamesense::client::GameSenseClient;
 use hwinfo_steelseries_oled::{Hwinfo, Snapshot};
 use ini::Ini;
@@ -364,7 +363,6 @@ fn build_display_value(
 struct Daemon<R: Runtime = tauri::Wry> {
     state: Shared,
     app: AppHandle<R>,
-    term: Term,
 
     hwinfo: Option<Hwinfo>,
     oled: Option<Box<dyn DisplayDriver>>,
@@ -395,7 +393,6 @@ impl<R: Runtime> Daemon<R> {
         Self {
             state,
             app,
-            term: Term::stdout(),
             hwinfo: None,
             oled: None,
             hid_api: None,
@@ -489,7 +486,12 @@ impl<R: Runtime> Daemon<R> {
     fn connect_all(&mut self) -> Result<(), anyhow::Error> {
         self.announce_connecting_hwinfo();
 
-        self.hwinfo = Some(connect_hwinfo(&self.term)?);
+        self.hwinfo = Some(Hwinfo::new().map_err(|e| {
+            anyhow!(
+                "HWiNFO not reachable ({}). Is it running with Shared Memory Support enabled?",
+                e
+            )
+        })?);
 
         self.after_hwinfo_connected();
 
@@ -503,8 +505,7 @@ impl<R: Runtime> Daemon<R> {
             self.announce_connecting_direct_usb();
 
             let api = hidapi::HidApi::new().map_err(|e| anyhow!("HID API init failed: {}", e))?;
-            let (device, supported) =
-                connect_hid(&self.term, &api, &self.config.direct_usb_serial)?;
+            let (device, supported) = connect_hid(&api, &self.config.direct_usb_serial)?;
             info!(
                 "Direct USB device: {} ({}x{})",
                 supported.name, supported.width, supported.height
@@ -531,7 +532,7 @@ impl<R: Runtime> Daemon<R> {
             });
             self.announce_connecting_gamesense();
 
-            let mut gg = connect_steelseries(&self.term)?;
+            let mut gg = connect_steelseries()?;
             for i in 1..=self.config.pages {
                 let line_keys: Vec<String> =
                     (1..=DISPLAY_LINES).map(|j| format!("line{}", j)).collect();
@@ -548,33 +549,45 @@ impl<R: Runtime> Daemon<R> {
         Ok(())
     }
 
-    fn reload(&mut self) -> Result<(), anyhow::Error> {
-        info!("Daemon: reloading config");
+    /// Re-read conf.ini into the daemon and shared state, restarting the
+    /// weather reader so [Weather] changes take effect.
+    fn load_config(&mut self) -> Result<(), anyhow::Error> {
         let ini =
             Ini::load_from_file("conf.ini").map_err(|e| anyhow!("Load conf.ini failed: {}", e))?;
-        let new_config = AppConfig::from_ini(&ini)?;
-        self.config = new_config.clone();
+        self.config = AppConfig::from_ini(&ini)?;
 
-        // Respawn the weather reader so [Weather] changes (location/units/refresh)
-        // take effect without an app restart. Stop the old thread first.
         self.weather_reader.stop();
         self.weather_reader = crate::weather::WeatherReader::spawn(&self.config.weather);
 
-        // Tear down existing OLED connection
+        let config = self.config.clone();
+        self.write_state(|s| s.config = config);
+        Ok(())
+    }
+
+    /// Whether a config reload was requested; clears the request.
+    fn take_reload_request(&self) -> bool {
+        self.state
+            .lock()
+            .map(|mut g| std::mem::take(&mut g.reload_requested))
+            .unwrap_or(false)
+    }
+
+    fn reload(&mut self) -> Result<(), anyhow::Error> {
+        info!("Daemon: reloading config");
+        self.load_config()?;
+
+        // Tear down the existing OLED connection, then reconnect with the new config.
         if let Some(mut oled) = self.oled.take() {
             let _ = oled.stop_heartbeat();
         }
         self.hid_api = None;
-
         self.write_state(|s| {
-            s.config = new_config;
             s.gg_connected = false;
             s.usb_connected = false;
             s.active_mode = ActiveMode::Disconnected;
         });
 
-        self.connect_all()?;
-        Ok(())
+        self.connect_all()
     }
 
     fn handle_sleep_command(&mut self, cmd: SleepCommand) {
@@ -761,6 +774,11 @@ impl<R: Runtime> Daemon<R> {
 
     fn run(&mut self) {
         loop {
+            if self.take_reload_request() {
+                if let Err(e) = self.load_config() {
+                    self.record_connect_failure(&e);
+                }
+            }
             if let Err(e) = self.connect_all() {
                 self.record_connect_failure(&e);
                 thread::sleep(Duration::from_secs(3));
@@ -1279,6 +1297,16 @@ mod tests {
         assert!(r.is_ok()); // is_sleeping=true short-circuits after reload-fail
                             // reload_requested cleared even on failure
         assert!(!d.state.lock().unwrap().reload_requested);
+    }
+
+    #[test]
+    fn test_take_reload_request_returns_and_clears_flag() {
+        let d = daemon_for_tests();
+        assert!(!d.take_reload_request());
+        d.state.lock().unwrap().reload_requested = true;
+        assert!(d.take_reload_request());
+        assert!(!d.state.lock().unwrap().reload_requested);
+        assert!(!d.take_reload_request());
     }
 
     #[test]
