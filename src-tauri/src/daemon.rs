@@ -490,9 +490,6 @@ impl<R: Runtime> Daemon<R> {
         self.announce_connecting_hwinfo();
 
         self.hwinfo = Some(connect_hwinfo(&self.term)?);
-        let mut hwinfo = connect_hwinfo(&self.term)?;
-        hwinfo.pull()?;
-        self.hwinfo = Some(hwinfo);
 
         self.after_hwinfo_connected();
 
@@ -1567,6 +1564,8 @@ mod tests {
         d.state.lock().unwrap().hwinfo_connected = true;
         d.state.lock().unwrap().gg_connected = true;
         d.disconnect_and_cleanup();
+        // A Hwinfo cannot be constructed without a live HWiNFO mapping, so the
+        // test cannot install one first.
         assert!(d.hwinfo.is_none());
         assert!(d.oled.is_none());
         assert!(d.hid_api.is_none());
