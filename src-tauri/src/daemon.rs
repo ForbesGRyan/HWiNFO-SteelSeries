@@ -550,9 +550,12 @@ impl<R: Runtime> Daemon<R> {
 
         if disconnected {
             warn!("HWiNFO disconnected");
+            // Only the PAGE events are bound to a screen handler in GG mode, so
+            // the message goes out on the current page's event.
+            let event_name = format!("PAGE{}", self.page_counter + 1);
             let lines = ["Disconnected", "FROM", "HWiNFO"].map(String::from);
             let buffer = lines_to_oled_buffer(&lines, &self.config.font_sizes, self.display_size);
-            let _ = oled.trigger_frame("ERROR", self.i.0, &lines, &buffer);
+            let _ = oled.trigger_frame(&event_name, self.i.0, &lines, &buffer);
 
             self.write_state(|s| {
                 s.hwinfo_connected = false;
@@ -1087,6 +1090,7 @@ mod tests {
         blank: AtomicUsize,
         white: AtomicUsize,
         stop: AtomicUsize,
+        events: Mutex<Vec<String>>,
     }
 
     struct CountingDriver(Arc<Calls>);
@@ -1094,11 +1098,12 @@ mod tests {
     impl DisplayDriver for CountingDriver {
         fn trigger_frame(
             &mut self,
-            _event: &str,
+            event: &str,
             _i: isize,
             _lines: &[String],
             _buffer: &OledBuffer,
         ) -> Result<(), anyhow::Error> {
+            self.0.events.lock().unwrap().push(event.to_string());
             self.0.frames.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -1201,6 +1206,23 @@ mod tests {
         let g = d.state.lock().unwrap();
         assert!(!g.hwinfo_connected);
         assert_eq!(g.last_error.as_deref(), Some("HWiNFO disconnected"));
+    }
+
+    #[test]
+    fn test_render_sends_disconnected_frame_on_bound_page_event() {
+        let calls = Arc::new(Calls::default());
+        let mut d = daemon_for_tests();
+        d.oled = Some(Box::new(CountingDriver(calls.clone())));
+        let hw = full_summary_hwinfo();
+
+        for _ in 0..STALE_LIMIT {
+            d.render(&hw, false).unwrap();
+        }
+
+        assert!(!d.state.lock().unwrap().hwinfo_connected);
+        let events = calls.events.lock().unwrap();
+        assert_eq!(events.len(), STALE_LIMIT);
+        assert_eq!(events.last().map(String::as_str), Some("PAGE1"));
     }
 
     #[test]
