@@ -166,19 +166,22 @@ impl DisplayDriver for GameSenseDisplay {
         lines: &[String],
         _buffer: &OledBuffer,
     ) -> Result<(), anyhow::Error> {
-        self.0.trigger_event_frame(event, i, lines_to_frame(lines))?;
+        self.0
+            .trigger_event_frame(event, i, lines_to_frame(lines))?;
         Ok(())
     }
 
     fn send_blank(&mut self) -> Result<(), anyhow::Error> {
         let blank = vec![String::new(); 3];
-        self.0.trigger_event_frame("BLANK", 0, lines_to_frame(&blank))?;
+        self.0
+            .trigger_event_frame("BLANK", 0, lines_to_frame(&blank))?;
         Ok(())
     }
 
     fn send_white(&mut self) -> Result<(), anyhow::Error> {
         let white = vec!["████████████████".to_string(); 3];
-        self.0.trigger_event_frame("WHITE", 0, lines_to_frame(&white))?;
+        self.0
+            .trigger_event_frame("WHITE", 0, lines_to_frame(&white))?;
         Ok(())
     }
 
