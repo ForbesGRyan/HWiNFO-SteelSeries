@@ -23,10 +23,21 @@ const MOUSE_PROFILES: &[(u16, u16, u8, &str)] = &[
     (0x1532, 0x00aa, 0x02, "Razer Basilisk Ultimate"),
 ];
 
-/// Pulsar mice that use USB control transfers for battery (not HID reports)
+/// Mice that speak the Pulsar/ATK/VXE vendor protocol: 17-byte frames on
+/// report 0x08, sent as an output report and answered as an input report on
+/// the vendor collection (usage page 0xFF02, usage 0x0002).
+/// Protocol and 3554/373B ids from andrewrabert/python-pulsar-mouse-tool;
+/// 3710:3414 verified on hardware.
 /// Format: (VendorID, ProductID, Name)
 const PULSAR_MICE: &[(u16, u16, &str)] = &[
-    (0x3710, 0x5406, "Pulsar 8Kdx Dongle"), // Your mouse!
+    (0x3710, 0x3414, "Pulsar X2 CL"),
+    (0x3710, 0x5406, "Pulsar 8Kdx Dongle"),
+    (0x3554, 0xf508, "Pulsar X2 V2 Mini Dongle"),
+    (0x3554, 0xf507, "Pulsar X2 V2 Mini"),
+    (0x373b, 0x1085, "ATK VXE R1 SE+ Dongle"),
+    (0x3554, 0xf58f, "ATK VXE R1 SE+"),
+    (0x3554, 0xf58a, "VXE R1 Pro Max Dongle"),
+    (0x3554, 0xf58c, "VXE R1 Pro Max"),
     (0x0e7e, 0x2011, "Pulsar X2V2 Mini Wireless"),
     (0x0e7e, 0x2012, "Pulsar X2H Wireless"),
     (0x0e7e, 0x2013, "Pulsar X2 Wireless"),
@@ -58,19 +69,69 @@ fn match_pulsar_mouse(vid: u16, pid: u16) -> Option<&'static str> {
         .map(|(_, _, name)| *name)
 }
 
-/// Build the 17-byte Pulsar POWER feature-report request.
-fn build_pulsar_power_request() -> [u8; 17] {
-    let mut request = [0u8; 17];
-    request[0] = 0x08; // Report ID / payload header
-    request[1] = 0x04; // POWER command
-    request[16] = 0x49; // checksum: 0x55 - (0x08 + 0x04)
+const PULSAR_REPORT_ID: u8 = 0x08;
+const PULSAR_CMD_POWER: u8 = 0x04;
+const PULSAR_FRAME_LEN: usize = 17;
+const PULSAR_USAGE_PAGE: u16 = 0xff02;
+const PULSAR_USAGE: u16 = 0x0002;
+/// How many times the POWER request is sent before giving up.
+const PULSAR_ATTEMPTS: u32 = 2;
+/// How long to wait for the answer to one POWER request.
+const PULSAR_REPLY_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Decoded Pulsar POWER response.
+#[derive(Debug, PartialEq, Eq)]
+struct PulsarPower {
+    percentage: u8,
+    charging: bool,
+    millivolts: u16,
+}
+
+/// Pulsar frame checksum: 0x55 minus the sum of the first 16 bytes.
+fn pulsar_checksum(frame: &[u8]) -> u8 {
+    let sum = frame[..PULSAR_FRAME_LEN - 1]
+        .iter()
+        .fold(0u8, |acc, b| acc.wrapping_add(*b));
+    0x55u8.wrapping_sub(sum)
+}
+
+/// Build the 17-byte Pulsar POWER request frame.
+fn build_pulsar_power_request() -> [u8; PULSAR_FRAME_LEN] {
+    let mut request = [0u8; PULSAR_FRAME_LEN];
+    request[0] = PULSAR_REPORT_ID;
+    request[1] = PULSAR_CMD_POWER;
+    request[16] = pulsar_checksum(&request);
     request
 }
 
-/// Parse Pulsar POWER response: battery percentage at byte index 6, valid if ≤ 100.
-fn parse_pulsar_power_response(response: &[u8]) -> Option<u8> {
-    if response.len() >= 7 && response[6] <= 100 {
-        Some(response[6])
+/// Parse Pulsar POWER response: percentage at byte 6, on-cable flag at byte 7,
+/// big-endian millivolts at bytes 8-9. A frame for another command, with a bad
+/// checksum, or with a percentage above 100 is refused.
+fn parse_pulsar_power_response(response: &[u8]) -> Option<PulsarPower> {
+    if response.len() < PULSAR_FRAME_LEN
+        || response[0] != PULSAR_REPORT_ID
+        || response[1] != PULSAR_CMD_POWER
+        || response[16] != pulsar_checksum(response)
+        || response[6] > 100
+    {
+        return None;
+    }
+    Some(PulsarPower {
+        percentage: response[6],
+        charging: response[7] != 0,
+        millivolts: u16::from_be_bytes([response[8], response[9]]),
+    })
+}
+
+/// Order in which a Pulsar HID collection should be tried, or None to skip it.
+/// The 0xFF02:0x0002 collection is the one that answers; other vendor
+/// collections are a fallback, and standard ones (keyboard, mouse, consumer
+/// control) are never written to.
+fn pulsar_collection_rank(usage_page: u16, usage: u16) -> Option<u8> {
+    if usage_page == PULSAR_USAGE_PAGE && usage == PULSAR_USAGE {
+        Some(0)
+    } else if usage_page >= 0xff00 {
+        Some(1)
     } else {
         None
     }
@@ -114,6 +175,33 @@ pub struct MouseBatteryReader {
     last_read: Option<Instant>,
     cached_device: Option<CachedMouseDevice>,
     last_successful_read: Option<Instant>,
+    /// Own HID context, re-enumerated before every read. The caller's context
+    /// is a snapshot from connect time and misses a mouse that appears later
+    /// or swaps between its cable and dongle ids.
+    own_api: Option<HidApi>,
+    /// Whether the most recent read attempt got an answer.
+    last_read_ok: bool,
+}
+
+/// How long a successful reading is reused.
+const CACHE_TTL: Duration = Duration::from_secs(30);
+/// How long a failed reading is reused; short so a cable/dongle swap is picked up quickly.
+const FAILED_CACHE_TTL: Duration = Duration::from_secs(5);
+/// How long the last good value stays on screen while a still-attached mouse
+/// does not answer (asleep, or a dropped wireless request).
+const STALE_VALUE_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Whether the last good value may stand in for a failed read.
+fn keep_stale_value(mouse_attached: bool, since_last_success: Option<Duration>) -> bool {
+    mouse_attached && since_last_success.is_some_and(|age| age < STALE_VALUE_TTL)
+}
+
+/// Whether any supported mouse is in the HID device list.
+fn supported_mouse_attached(api: &HidApi) -> bool {
+    api.device_list().any(|d| {
+        match_pulsar_mouse(d.vendor_id(), d.product_id()).is_some()
+            || match_mouse_profile(d.vendor_id(), d.product_id()).is_some()
+    })
 }
 
 impl MouseBatteryReader {
@@ -124,11 +212,28 @@ impl MouseBatteryReader {
             last_read: None,
             cached_device: None,
             last_successful_read: None,
+            own_api: None,
+            last_read_ok: false,
+        }
+    }
+
+    /// Take the reader's own HID context with a fresh device list, creating
+    /// it on first use. None if HID cannot be initialised.
+    fn take_fresh_api(&mut self) -> Option<HidApi> {
+        match self.own_api.take() {
+            Some(mut api) => match api.refresh_devices() {
+                Ok(()) => Some(api),
+                Err(e) => {
+                    debug!("HID re-enumeration failed: {}", e);
+                    HidApi::new().ok()
+                }
+            },
+            None => HidApi::new().ok(),
         }
     }
 
     /// Get battery percentage as a formatted string
-    /// Returns cached value if less than 30 seconds old
+    /// Returns cached value if less than 30 seconds old (5 seconds for "N/A")
     /// Returns "N/A" if mouse not found, HID API not available, or error occurs
     pub fn get_battery_percentage(&mut self, api: Option<&HidApi>) -> String {
         // If no HID API is available (e.g., using GameSense mode), return N/A
@@ -139,9 +244,14 @@ impl MouseBatteryReader {
                 return String::from("N/A");
             }
         };
-        // Check cache expiration (30 seconds)
+        // Check cache expiration
         if let Some(last_read) = self.last_read {
-            if last_read.elapsed() < Duration::from_secs(30) {
+            let ttl = if self.last_read_ok {
+                CACHE_TTL
+            } else {
+                FAILED_CACHE_TTL
+            };
+            if last_read.elapsed() < ttl {
                 debug!("Using cached mouse battery value: {}", self.cached_value);
                 return self.cached_value.clone();
             }
@@ -155,42 +265,50 @@ impl MouseBatteryReader {
             }
         }
 
-        // Try to read battery
-        match self.try_read_battery(api) {
-            Ok(percentage) => {
-                self.cached_value = format!("{}", percentage);
-                self.last_read = Some(Instant::now());
-                self.last_successful_read = Some(Instant::now());
-                debug!("Mouse battery: {}%", percentage);
-                self.cached_value.clone()
-            }
-            Err(e) => {
-                debug!("Mouse battery read failed: {}", e);
+        // Prefer a freshly enumerated device list over the caller's snapshot
+        let own_api = self.take_fresh_api();
+        let value = self.read_uncached(own_api.as_ref().unwrap_or(api));
+        self.own_api = own_api;
+        value
+    }
 
-                // If we have a cached device, try re-enumerating once
-                if self.cached_device.is_some() {
-                    warn!("Cached mouse device failed, re-enumerating...");
-                    self.cached_device = None;
+    /// Read the battery now and update the cached value.
+    fn read_uncached(&mut self, api: &HidApi) -> String {
+        let mut result = self.try_read_battery(api);
+        if let Err(e) = &result {
+            debug!("Mouse battery read failed: {}", e);
 
-                    if let Ok(percentage) = self.try_read_battery(api) {
-                        self.cached_value = format!("{}", percentage);
-                        self.last_read = Some(Instant::now());
-                        self.last_successful_read = Some(Instant::now());
-                        return self.cached_value.clone();
-                    }
-                }
-
-                // Give up and return N/A
-                self.cached_value = String::from("N/A");
-                self.last_read = Some(Instant::now());
-                self.cached_value.clone()
+            // If we have a cached device, try re-enumerating once
+            if self.cached_device.is_some() {
+                warn!("Cached mouse device failed, re-enumerating...");
+                self.cached_device = None;
+                result = self.try_read_battery(api);
             }
         }
+
+        self.last_read = Some(Instant::now());
+        self.last_read_ok = result.is_ok();
+        match result {
+            Ok(percentage) => {
+                self.cached_value = format!("{}", percentage);
+                self.last_successful_read = Some(Instant::now());
+                debug!("Mouse battery: {}%", percentage);
+            }
+            Err(_) => {
+                let since_last_success = self.last_successful_read.map(|t| t.elapsed());
+                if keep_stale_value(supported_mouse_attached(api), since_last_success) {
+                    debug!("Mouse silent, keeping last value: {}", self.cached_value);
+                } else {
+                    self.cached_value = String::from("N/A");
+                }
+            }
+        }
+        self.cached_value.clone()
     }
 
     /// Try to read battery from mouse device
     fn try_read_battery(&mut self, api: &HidApi) -> Result<u8, anyhow::Error> {
-        // First, check if this is a Pulsar mouse using HID feature reports
+        // First, check if this is a Pulsar mouse using its vendor protocol
         match Self::try_read_pulsar_battery_hidapi(api) {
             Ok(percentage) => {
                 debug!("Read battery from Pulsar mouse: {}%", percentage);
@@ -229,34 +347,46 @@ impl MouseBatteryReader {
         self.read_battery_from_device(api, &device)
     }
 
-    /// Try to read battery from Pulsar mice using HID feature reports
+    /// Try to read battery from Pulsar mice using their vendor HID protocol
     fn try_read_pulsar_battery_hidapi(api: &HidApi) -> Result<u8, anyhow::Error> {
         debug!("Looking for Pulsar mice via HID...");
 
-        // Check all HID devices for Pulsar mice
-        for device_info in api.device_list() {
-            let vid = device_info.vendor_id();
-            let pid = device_info.product_id();
+        // Collect the vendor collections of known mice, preferred one first
+        let mut candidates: Vec<_> = api
+            .device_list()
+            .filter_map(|d| {
+                let name = match_pulsar_mouse(d.vendor_id(), d.product_id())?;
+                let rank = pulsar_collection_rank(d.usage_page(), d.usage())?;
+                Some((rank, name, d))
+            })
+            .collect();
+        candidates.sort_by_key(|(rank, _, _)| *rank);
 
-            if let Some(name) = match_pulsar_mouse(vid, pid) {
-                info!(
-                    "Found Pulsar mouse via HID: {} ({:04x}:{:04x})",
-                    name, vid, pid
-                );
+        for (_, name, device_info) in candidates {
+            debug!(
+                "Trying Pulsar mouse {} ({:04x}:{:04x}, usage {:04x}:{:04x})",
+                name,
+                device_info.vendor_id(),
+                device_info.product_id(),
+                device_info.usage_page(),
+                device_info.usage()
+            );
 
-                match device_info.open_device(api) {
-                    Ok(device) => match Self::read_pulsar_battery_hid(&device) {
-                        Ok(percentage) => {
-                            info!("Pulsar {} battery: {}%", name, percentage);
-                            return Ok(percentage);
-                        }
-                        Err(e) => {
-                            debug!("Failed to read battery from {}: {}", name, e);
-                        }
-                    },
-                    Err(e) => {
-                        debug!("Failed to open Pulsar device {}: {}", name, e);
+            match device_info.open_device(api) {
+                Ok(device) => match Self::read_pulsar_battery_hid(&device) {
+                    Ok(power) => {
+                        debug!(
+                            "Pulsar {} battery: {}% ({} mV, charging: {})",
+                            name, power.percentage, power.millivolts, power.charging
+                        );
+                        return Ok(power.percentage);
                     }
+                    Err(e) => {
+                        debug!("Failed to read battery from {}: {}", name, e);
+                    }
+                },
+                Err(e) => {
+                    debug!("Failed to open Pulsar device {}: {}", name, e);
                 }
             }
         }
@@ -264,27 +394,45 @@ impl MouseBatteryReader {
         Err(anyhow::anyhow!("No Pulsar mouse found"))
     }
 
-    /// Read battery from a Pulsar mouse using HID feature reports
-    fn read_pulsar_battery_hid(device: &hidapi::HidDevice) -> Result<u8, anyhow::Error> {
-        let request = build_pulsar_power_request();
-        device
-            .send_feature_report(&request)
-            .map_err(|e| anyhow::anyhow!("Failed to send feature report: {}", e))?;
+    /// Read battery from a Pulsar mouse: write the POWER request as an output
+    /// report and wait for the matching input report.
+    fn read_pulsar_battery_hid(device: &hidapi::HidDevice) -> Result<PulsarPower, anyhow::Error> {
+        // A wireless dongle occasionally swallows a request, so ask more than once
+        for attempt in 1..=PULSAR_ATTEMPTS {
+            // A collection whose output report cannot carry the frame refuses the write
+            device
+                .write(&build_pulsar_power_request())
+                .map_err(|e| anyhow::anyhow!("Failed to write POWER request: {}", e))?;
 
-        let mut response = [0u8; 17];
-        response[0] = 0x08;
-        let bytes_read = device
-            .get_feature_report(&mut response)
-            .map_err(|e| anyhow::anyhow!("Failed to read feature report: {}", e))?;
+            // Unrelated input reports may be queued ahead of the answer
+            let deadline = Instant::now() + PULSAR_REPLY_TIMEOUT;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let mut response = [0u8; 64];
+                let bytes_read = device
+                    .read_timeout(&mut response, remaining.as_millis() as i32)
+                    .map_err(|e| anyhow::anyhow!("Failed to read POWER response: {}", e))?;
+                if bytes_read == 0 {
+                    break;
+                }
 
-        debug!(
-            "Received {} bytes from Pulsar: {:02x?}",
-            bytes_read,
-            &response[..bytes_read]
-        );
+                debug!(
+                    "Received {} bytes from Pulsar: {:02x?}",
+                    bytes_read,
+                    &response[..bytes_read]
+                );
 
-        parse_pulsar_power_response(&response[..bytes_read])
-            .ok_or_else(|| anyhow::anyhow!("Invalid battery response from Pulsar"))
+                if let Some(power) = parse_pulsar_power_response(&response[..bytes_read]) {
+                    return Ok(power);
+                }
+            }
+            debug!("No POWER response from Pulsar (attempt {})", attempt);
+        }
+
+        Err(anyhow::anyhow!("No valid battery response from Pulsar"))
     }
 
     /// Find a compatible gaming mouse in the HID device list
@@ -680,12 +828,6 @@ fn format_report_log(
     }
 }
 
-/// Pure helper: count likely-battery hits across discover results.
-#[allow(dead_code)]
-fn count_likely_battery_results(results: &[(u8, Vec<u8>, Option<u8>)]) -> usize {
-    results.iter().filter(|(_, _, b)| b.is_some()).count()
-}
-
 /// Pure helper: format brute-force match lines for `discover_all_devices_for_battery`.
 fn format_brute_force_match(
     vid: u16,
@@ -814,6 +956,40 @@ mod tests {
         assert_eq!(reader.cached_value, "N/A");
         assert!(reader.last_read.is_none());
         assert!(reader.cached_device.is_none());
+        assert!(reader.own_api.is_none());
+    }
+
+    #[test]
+    fn test_get_battery_percentage_retries_failed_read_sooner() {
+        let Some(api) = try_hid_api() else { return };
+        let Some(six_secs_ago) = Instant::now().checked_sub(Duration::from_secs(6)) else {
+            return;
+        };
+        // A good value that old is still served from cache...
+        let mut reader = MouseBatteryReader::new();
+        reader.cached_value = "42".to_string();
+        reader.last_read = Some(six_secs_ago);
+        reader.last_read_ok = true;
+        assert_eq!(reader.get_battery_percentage(Some(&api)), "42");
+        assert!(reader.own_api.is_none());
+        // ...but a failed one is read again, through the reader's own context
+        let mut reader = MouseBatteryReader::new();
+        reader.last_read = Some(six_secs_ago);
+        reader.get_battery_percentage(Some(&api));
+        assert!(reader.own_api.is_some());
+        assert!(reader.last_read.unwrap().elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_keep_stale_value() {
+        let recent = Some(Duration::from_secs(60));
+        let old = Some(STALE_VALUE_TTL + Duration::from_secs(1));
+        // Mouse still attached and read recently: silence keeps the value
+        assert!(keep_stale_value(true, recent));
+        // Unplugged, never read, or read too long ago: N/A
+        assert!(!keep_stale_value(false, recent));
+        assert!(!keep_stale_value(true, None));
+        assert!(!keep_stale_value(true, old));
     }
 
     #[test]
@@ -1045,8 +1221,8 @@ mod tests {
 
     #[test]
     fn test_pulsar_mice_known_vendor_ids() {
-        // Pulsar uses multiple vendor IDs
-        let valid_pulsar_vids = [0x3710, 0x0e7e];
+        // Pulsar uses multiple vendor IDs; ATK/VXE share the protocol
+        let valid_pulsar_vids = [0x3710, 0x0e7e, 0x3554, 0x373b];
 
         for (vid, _pid, name) in PULSAR_MICE {
             assert!(
@@ -1102,6 +1278,7 @@ mod tests {
             match_pulsar_mouse(0x3710, 0x5406),
             Some("Pulsar 8Kdx Dongle")
         );
+        assert_eq!(match_pulsar_mouse(0x3710, 0x3414), Some("Pulsar X2 CL"));
         assert!(match_pulsar_mouse(0x0e7e, 0x2011).is_some());
     }
 
@@ -1139,39 +1316,105 @@ mod tests {
         assert_eq!(req[16], 0x55u8.wrapping_sub(req[0] + req[1]));
     }
 
+    /// Build a checksummed POWER response frame.
+    fn pulsar_power_frame(percentage: u8, charging: u8, millivolts: u16) -> [u8; 17] {
+        let mut resp = [0u8; 17];
+        resp[0] = 0x08;
+        resp[1] = 0x04;
+        resp[6] = percentage;
+        resp[7] = charging;
+        resp[8..10].copy_from_slice(&millivolts.to_be_bytes());
+        resp[16] = pulsar_checksum(&resp);
+        resp
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_captured_frame() {
+        // Captured from a Pulsar X2 CL (3710:3414)
+        let resp = [
+            0x08, 0x04, 0x00, 0x00, 0x00, 0x02, 0x32, 0x01, 0x0f, 0x0e, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0xf7,
+        ];
+        assert_eq!(
+            parse_pulsar_power_response(&resp),
+            Some(PulsarPower {
+                percentage: 50,
+                charging: true,
+                millivolts: 3854,
+            })
+        );
+    }
+
     #[test]
     fn test_parse_pulsar_power_response_valid() {
-        let mut resp = [0u8; 17];
-        resp[6] = 85;
-        assert_eq!(parse_pulsar_power_response(&resp), Some(85));
+        let power = parse_pulsar_power_response(&pulsar_power_frame(85, 0, 4012)).unwrap();
+        assert_eq!(power.percentage, 85);
+        assert!(!power.charging);
+        assert_eq!(power.millivolts, 4012);
     }
 
     #[test]
     fn test_parse_pulsar_power_response_zero() {
-        let resp = [0u8; 17];
-        assert_eq!(parse_pulsar_power_response(&resp), Some(0));
+        let power = parse_pulsar_power_response(&pulsar_power_frame(0, 0, 0)).unwrap();
+        assert_eq!(power.percentage, 0);
     }
 
     #[test]
     fn test_parse_pulsar_power_response_full() {
-        let mut resp = [0u8; 17];
-        resp[6] = 100;
-        assert_eq!(parse_pulsar_power_response(&resp), Some(100));
+        let power = parse_pulsar_power_response(&pulsar_power_frame(100, 1, 4200)).unwrap();
+        assert_eq!(power.percentage, 100);
+        assert!(power.charging);
     }
 
     #[test]
     fn test_parse_pulsar_power_response_out_of_range() {
-        let mut resp = [0u8; 17];
-        resp[6] = 101;
-        assert_eq!(parse_pulsar_power_response(&resp), None);
-        resp[6] = 255;
-        assert_eq!(parse_pulsar_power_response(&resp), None);
+        assert_eq!(
+            parse_pulsar_power_response(&pulsar_power_frame(101, 0, 0)),
+            None
+        );
+        assert_eq!(
+            parse_pulsar_power_response(&pulsar_power_frame(255, 0, 0)),
+            None
+        );
     }
 
     #[test]
     fn test_parse_pulsar_power_response_too_short() {
-        let resp = [0u8; 6];
+        let resp = pulsar_power_frame(50, 0, 3800);
+        assert_eq!(parse_pulsar_power_response(&resp[..16]), None);
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_bad_checksum() {
+        let mut resp = pulsar_power_frame(50, 0, 3800);
+        resp[16] = resp[16].wrapping_add(1);
         assert_eq!(parse_pulsar_power_response(&resp), None);
+        // An all-zero buffer is not a frame
+        assert_eq!(parse_pulsar_power_response(&[0u8; 17]), None);
+    }
+
+    #[test]
+    fn test_parse_pulsar_power_response_other_command() {
+        let mut resp = pulsar_power_frame(50, 0, 3800);
+        resp[1] = 0x03;
+        resp[16] = pulsar_checksum(&resp);
+        assert_eq!(parse_pulsar_power_response(&resp), None);
+    }
+
+    // ==================== pulsar_collection_rank tests ====================
+
+    #[test]
+    fn test_pulsar_collection_rank_prefers_ff02_0002() {
+        assert_eq!(pulsar_collection_rank(0xff02, 0x0002), Some(0));
+        assert_eq!(pulsar_collection_rank(0xff05, 0x0000), Some(1));
+        assert_eq!(pulsar_collection_rank(0xff04, 0x0002), Some(1));
+    }
+
+    #[test]
+    fn test_pulsar_collection_rank_skips_standard_collections() {
+        assert_eq!(pulsar_collection_rank(0x0001, 0x0006), None); // keyboard
+        assert_eq!(pulsar_collection_rank(0x0001, 0x0002), None); // mouse
+        assert_eq!(pulsar_collection_rank(0x000c, 0x0001), None); // consumer control
     }
 
     // ==================== classify_report_response tests ====================
@@ -1269,6 +1512,17 @@ mod tests {
         HidApi::new().ok()
     }
 
+    /// Like `try_hid_api`, but also skips when a supported mouse is attached,
+    /// for tests that assert the nothing-found path.
+    fn try_hid_api_without_mouse() -> Option<HidApi> {
+        let api = try_hid_api()?;
+        let attached = api.device_list().any(|d| {
+            match_pulsar_mouse(d.vendor_id(), d.product_id()).is_some()
+                || match_mouse_profile(d.vendor_id(), d.product_id()).is_some()
+        });
+        (!attached).then_some(api)
+    }
+
     #[test]
     fn test_get_battery_percentage_uses_cache_within_30s() {
         let Some(api) = try_hid_api() else { return };
@@ -1282,7 +1536,9 @@ mod tests {
 
     #[test]
     fn test_get_battery_percentage_clears_stale_device_cache() {
-        let Some(api) = try_hid_api() else { return };
+        let Some(api) = try_hid_api_without_mouse() else {
+            return;
+        };
         let mut reader = MouseBatteryReader::new();
         // Stale last_successful_read (>5min ago). Use checked_sub so this still runs
         // on CI runners whose monotonic clock hasn't been alive that long yet.
@@ -1305,7 +1561,9 @@ mod tests {
 
     #[test]
     fn test_get_battery_percentage_with_api_no_mouse_returns_na() {
-        let Some(api) = try_hid_api() else { return };
+        let Some(api) = try_hid_api_without_mouse() else {
+            return;
+        };
         let mut reader = MouseBatteryReader::new();
         // No cached value/device → enumerates → no match → N/A
         let result = reader.get_battery_percentage(Some(&api));
@@ -1315,7 +1573,9 @@ mod tests {
 
     #[test]
     fn test_get_battery_percentage_re_enumerate_on_cached_failure() {
-        let Some(api) = try_hid_api() else { return };
+        let Some(api) = try_hid_api_without_mouse() else {
+            return;
+        };
         let mut reader = MouseBatteryReader::new();
         // cached_device set but path invalid → read fails → re-enumerate path fires (still N/A)
         reader.cached_device = Some(CachedMouseDevice {
@@ -1330,7 +1590,9 @@ mod tests {
 
     #[test]
     fn test_try_read_battery_no_devices_errors() {
-        let Some(api) = try_hid_api() else { return };
+        let Some(api) = try_hid_api_without_mouse() else {
+            return;
+        };
         let mut reader = MouseBatteryReader::new();
         let r = reader.try_read_battery(&api);
         assert!(r.is_err());
@@ -1338,14 +1600,35 @@ mod tests {
 
     #[test]
     fn test_try_read_pulsar_battery_hidapi_no_match_errors() {
-        let Some(api) = try_hid_api() else { return };
+        let Some(api) = try_hid_api_without_mouse() else {
+            return;
+        };
         let r = MouseBatteryReader::try_read_pulsar_battery_hidapi(&api);
         assert!(r.is_err());
     }
 
     #[test]
-    fn test_find_mouse_device_no_match() {
+    fn test_try_read_pulsar_battery_hidapi_attached_mouse() {
         let Some(api) = try_hid_api() else { return };
+        let attached = api
+            .device_list()
+            .any(|d| match_pulsar_mouse(d.vendor_id(), d.product_id()).is_some());
+        if !attached {
+            return;
+        }
+        // A dongle whose mouse is asleep or off legitimately gives no answer
+        let result = MouseBatteryReader::try_read_pulsar_battery_hidapi(&api);
+        println!("attached Pulsar mouse battery: {:?}", result);
+        if let Ok(percentage) = result {
+            assert!(percentage <= 100);
+        }
+    }
+
+    #[test]
+    fn test_find_mouse_device_no_match() {
+        let Some(api) = try_hid_api_without_mouse() else {
+            return;
+        };
         let reader = MouseBatteryReader::new();
         let r = reader.find_mouse_device(&api);
         match r {
@@ -1478,17 +1761,6 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("Found 2 device(s)")));
         assert!(lines.iter().any(|l| l.contains("046d:c539")));
         assert!(lines.iter().any(|l| l.contains("1038:1832")));
-    }
-
-    #[test]
-    fn test_count_likely_battery_results() {
-        let results = vec![
-            (0x01u8, vec![0x01, 0x00], None),
-            (0x02u8, vec![0x02, 50], Some(50)),
-            (0x03u8, vec![0x03, 75], Some(75)),
-        ];
-        assert_eq!(count_likely_battery_results(&results), 2);
-        assert_eq!(count_likely_battery_results(&[]), 0);
     }
 
     #[test]

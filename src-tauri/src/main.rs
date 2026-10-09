@@ -4,7 +4,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
 mod settings;
-use settings::{settings_create_config, AppConfig};
 
 mod consts;
 
@@ -13,7 +12,6 @@ mod devices;
 mod report;
 
 mod connect;
-use connect::connect_hwinfo;
 
 mod console_utils;
 use console_utils::{console_window, Console};
@@ -39,8 +37,7 @@ mod gui;
 
 use console::Term;
 use image::ImageReader;
-use ini::Ini;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -107,36 +104,21 @@ fn parse_expected_battery(s: Option<&str>) -> Option<u8> {
     s.and_then(|v| v.parse::<u8>().ok()).filter(|v| *v <= 100)
 }
 
-/// Position of the named flag in the argv slice (if present).
-fn find_flag_position(args: &[String], flag: &str) -> Option<usize> {
-    args.iter().position(|a| a == flag)
-}
-
 /// Whether argv requests opening the settings window on launch (`--settings`).
 fn wants_open_settings(args: &[String]) -> bool {
-    find_flag_position(args, "--settings").is_some()
+    args.iter().any(|a| a == "--settings")
 }
 
-/// Validate that argv contains at least one more arg after the given flag position.
-fn has_required_arg_after(args: &[String], flag_pos: usize) -> bool {
-    args.len() >= flag_pos + 2
-}
-
-/// Validate "expected battery" value parsed from a string, 0..=100 only. Used by --discover-all-battery.
-fn validate_expected_battery_strict(s: &str) -> Option<u8> {
-    s.parse::<u8>().ok().filter(|v| *v <= 100)
-}
-
-/// Pure helper: execute "--discover-all-battery" given the argv and the flag's position.
+/// Execute "--discover-all-battery" given argv and the flag's position.
 /// On success returns the expected battery value used (for testing).
 fn run_discover_all_battery(args: &[String], pos: usize) -> Result<u8, String> {
-    if !has_required_arg_after(args, pos) {
-        return Err(format!(
+    let raw = args.get(pos + 1).ok_or_else(|| {
+        format!(
             "Usage: {} --discover-all-battery <EXPECTED_BATTERY>",
             args[0]
-        ));
-    }
-    let expected = validate_expected_battery_strict(&args[pos + 1])
+        )
+    })?;
+    let expected = parse_expected_battery(Some(raw))
         .ok_or_else(|| "Expected battery must be 0-100".to_string())?;
     let hid_api =
         hidapi::HidApi::new().map_err(|e| format!("Failed to initialize HID API: {}", e))?;
@@ -145,18 +127,18 @@ fn run_discover_all_battery(args: &[String], pos: usize) -> Result<u8, String> {
     Ok(expected)
 }
 
-/// Pure helper: execute "--discover-mouse-battery" given argv and flag position.
+/// Execute "--discover-mouse-battery" given argv and the flag's position.
 fn run_discover_mouse_battery(
     args: &[String],
     pos: usize,
 ) -> Result<(u16, Option<u16>, Option<u8>), String> {
-    if !has_required_arg_after(args, pos) {
-        return Err(format!(
+    let raw_vid = args.get(pos + 1).ok_or_else(|| {
+        format!(
             "Usage: {} --discover-mouse-battery <VID> [PID] [EXPECTED]",
             args[0]
-        ));
-    }
-    let vid = parse_hex_u16(&args[pos + 1]).ok_or_else(|| "Invalid VID format".to_string())?;
+        )
+    })?;
+    let vid = parse_hex_u16(raw_vid).ok_or_else(|| "Invalid VID format".to_string())?;
     let pid = parse_optional_pid(args.get(pos + 2).map(String::as_str));
     let expected = parse_expected_battery(args.get(pos + 3).map(String::as_str));
     let hid_api = hidapi::HidApi::new().map_err(|e| format!("Failed to init HID API: {}", e))?;
@@ -165,49 +147,23 @@ fn run_discover_mouse_battery(
         .map_err(|e| e.to_string())
 }
 
-fn handle_discovery_flags(args: &[String]) -> bool {
-    if let Some(pos) = find_flag_position(args, "--discover-all-battery") {
-        match run_discover_all_battery(args, pos) {
-            Ok(_) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if let Some(pos) = find_flag_position(args, "--discover-mouse-battery") {
-        match run_discover_mouse_battery(args, pos) {
-            Ok(_) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    false
-}
-
-fn load_or_create_config_at(path: &str, term: &Term) -> Result<AppConfig, anyhow::Error> {
-    info!("Loading configuration from {}", path);
-    let ini = match Ini::load_from_file(path) {
-        Ok(conf) => {
-            info!("Configuration loaded successfully");
-            conf
-        }
-        Err(e) => {
-            warn!("{} not found: {}. Running setup wizard.", path, e);
-            let mut hwinfo = connect_hwinfo(term)?;
-            hwinfo.pull()?;
-            settings_create_config(term, &hwinfo)?
-        }
+/// Run a discovery flag if one is present, then exit.
+fn handle_discovery_flags(args: &[String]) {
+    let position = |flag: &str| args.iter().position(|a| a == flag);
+    let result = if let Some(pos) = position("--discover-all-battery") {
+        run_discover_all_battery(args, pos).map(|_| ())
+    } else if let Some(pos) = position("--discover-mouse-battery") {
+        run_discover_mouse_battery(args, pos).map(|_| ())
+    } else {
+        return;
     };
-    AppConfig::from_ini(&ini)
-}
-
-fn load_or_create_config(term: &Term) -> Result<AppConfig, anyhow::Error> {
-    load_or_create_config_at("conf.ini", term)
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Helper used by both menu and tray click handlers: surface the main window.
@@ -271,15 +227,16 @@ fn main() -> Result<(), anyhow::Error> {
 
     let args: Vec<String> = std::env::args().collect();
     handle_discovery_flags(&args);
-    let open_settings = wants_open_settings(&args);
 
     info!("Starting HWiNFO-SteelSeries");
     let term = Term::stdout();
 
-    let config = match load_or_create_config(&term) {
-        Ok(c) => c,
+    let (config, first_run) = match settings::load_or_create_config("conf.ini") {
+        Ok(loaded) => loaded,
         Err(e) => return Err(handle_fatal_error(&term, e)),
     };
+    // First run has nothing configured yet: show the settings window.
+    let open_settings = wants_open_settings(&args) || first_run;
 
     let shared: Shared = Arc::new(Mutex::new(SharedState::new(config.clone())));
 
@@ -296,9 +253,6 @@ fn main() -> Result<(), anyhow::Error> {
             gui::list_sensors,
             gui::list_hid_devices,
             gui::preview_config,
-            gui::request_sleep,
-            gui::request_wake,
-            gui::request_white_screen,
             gui::get_device_report,
             gui::open_url,
         ])
@@ -404,6 +358,7 @@ fn main() -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AppConfig;
 
     #[test]
     fn test_parse_hex_u16_lowercase_prefix() {
@@ -473,31 +428,6 @@ mod tests {
         assert_eq!(parse_expected_battery(Some("abc")), None);
         assert_eq!(parse_expected_battery(None), None);
         assert_eq!(parse_expected_battery(Some("")), None);
-    }
-
-    #[test]
-    fn test_find_flag_position_found_and_not_found() {
-        let args = vec!["prog".to_string(), "--a".to_string(), "--b".to_string()];
-        assert_eq!(find_flag_position(&args, "--a"), Some(1));
-        assert_eq!(find_flag_position(&args, "--b"), Some(2));
-        assert_eq!(find_flag_position(&args, "--c"), None);
-    }
-
-    #[test]
-    fn test_has_required_arg_after() {
-        let args = vec!["prog".into(), "--flag".into(), "val".into()];
-        assert!(has_required_arg_after(&args, 1));
-        // Pos 1 + 2 = 3 > len(3) so missing
-        let short = vec!["prog".into(), "--flag".into()];
-        assert!(!has_required_arg_after(&short, 1));
-    }
-
-    #[test]
-    fn test_validate_expected_battery_strict() {
-        assert_eq!(validate_expected_battery_strict("50"), Some(50));
-        assert_eq!(validate_expected_battery_strict("100"), Some(100));
-        assert_eq!(validate_expected_battery_strict("101"), None);
-        assert_eq!(validate_expected_battery_strict("abc"), None);
     }
 
     #[test]
@@ -574,12 +504,6 @@ mod tests {
         ]));
         assert!(!wants_open_settings(&["prog".into()]));
         assert!(!wants_open_settings(&["prog".into(), "--setting".into()]));
-    }
-
-    #[test]
-    fn test_handle_discovery_flags_no_flags_returns_false() {
-        let args = vec!["prog".into(), "normal-run".into()];
-        assert!(!handle_discovery_flags(&args));
     }
 
     #[test]
@@ -703,46 +627,5 @@ mod tests {
         let lines = format_fatal_error_lines(&err);
         assert!(lines.iter().any(|l| l == "Caused by:"));
         assert!(lines.iter().any(|l| l.contains("inner cause")));
-    }
-
-    #[test]
-    fn test_load_or_create_config_at_loads_existing_ini() {
-        let tmp =
-            std::env::temp_dir().join(format!("hwinfo_ss_main_loadcfg_{}.ini", std::process::id()));
-        let mut ini = Ini::new();
-        ini.with_section(Some("Main"))
-            .set("style", "Horizontal")
-            .set("gpu", "GPU [#0]");
-        ini.write_to_file(&tmp).unwrap();
-
-        let term = console::Term::stdout();
-        let cfg = load_or_create_config_at(tmp.to_str().unwrap(), &term).unwrap();
-        assert!(cfg.is_summary);
-        assert!(!cfg.is_vertical);
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn test_load_or_create_config_reads_existing_ini() {
-        // Write a minimal valid conf.ini to a temp path, then ensure AppConfig::from_ini round-trips
-        // via the same code path load_or_create_config uses.
-        let tmp =
-            std::env::temp_dir().join(format!("hwinfo_ss_main_load_{}.ini", std::process::id()));
-        let mut ini = Ini::new();
-        ini.with_section(Some("Main"))
-            .set("style", "Vertical")
-            .set("gpu", "GPU [#0]")
-            .set("decimal", "false")
-            .set("pages", "1");
-        ini.write_to_file(&tmp).unwrap();
-
-        // load_or_create_config uses fixed "conf.ini" path so we exercise its parser via AppConfig::from_ini directly,
-        // verifying the same fallback chain (load → from_ini) behaves correctly on success.
-        let loaded = Ini::load_from_file(&tmp).unwrap();
-        let cfg = AppConfig::from_ini(&loaded).unwrap();
-        assert!(cfg.is_summary);
-        assert!(cfg.is_vertical);
-
-        let _ = std::fs::remove_file(&tmp);
     }
 }

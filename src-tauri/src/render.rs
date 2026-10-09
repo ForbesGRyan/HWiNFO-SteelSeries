@@ -110,20 +110,6 @@ impl OledBuffer {
 
     // clear is omitted as it is currently unused
 
-    /// Serialize to SSD1306 page-major order: all columns of page 0, then
-    /// page 1, etc. (The internal layout is column-major pages.)
-    #[allow(dead_code)] // wire format for Apex Gen3 (0x1640/0x1644/0x1646), not yet in the registry
-    pub fn to_page_major(&self) -> Vec<u8> {
-        let pages = self.pages();
-        let mut out = Vec::with_capacity(self.data.len());
-        for page in 0..pages {
-            for x in 0..self.width as usize {
-                out.push(self.data[x * pages + page]);
-            }
-        }
-        out
-    }
-
     /// Serialize to row-major MSB-first order: 16 bytes per row for a
     /// 128-wide screen, the MSB of each byte being the leftmost pixel.
     /// Wire bitmap format of the Apex legacy keyboards.
@@ -221,7 +207,7 @@ pub fn icon_by_name(name: &str) -> Option<&'static [u8; 8]> {
 
 /// Delimiter wrapping an inline icon name inside a display line, e.g.
 /// `"\u{1}cpu\u{1}42°C"`. Uses SOH (U+0001) so it can never collide with a
-/// user label, sensor value, or unit. `format_custom_value` emits these; the
+/// user label, sensor value, or unit. `format_custom_lines` emits these; the
 /// renderer parses them out.
 pub const ICON_DELIM: char = '\u{1}';
 
@@ -549,37 +535,6 @@ mod tests {
         assert_eq!(a, b);
         a.set_pixel(2, 2, true);
         assert_ne!(a, b);
-    }
-
-    // ===========================================
-    // OledBuffer::to_page_major() tests
-    // ===========================================
-
-    #[test]
-    fn test_to_page_major_length_and_ordering() {
-        let mut b = OledBuffer::new(128, 40);
-        // (0,0) → page 0, column 0, bit 0 → out[0] = 0x01
-        b.set_pixel(0, 0, true);
-        // (5,9) → page 1, column 5, bit 1 → out[1*128 + 5] = 0x02
-        b.set_pixel(5, 9, true);
-        // (127,39) → page 4, column 127, bit 7 → out[4*128 + 127] = 0x80
-        b.set_pixel(127, 39, true);
-
-        let out = b.to_page_major();
-        assert_eq!(out.len(), 640);
-        assert_eq!(out[0], 0x01);
-        assert_eq!(out[128 + 5], 0x02);
-        assert_eq!(out[4 * 128 + 127], 0x80);
-        // Exactly the three set pixels are non-zero — no smearing/duplication.
-        assert_eq!(out.iter().filter(|&&b| b != 0).count(), 3);
-    }
-
-    #[test]
-    fn test_to_page_major_empty_buffer_is_zeroes() {
-        let b = OledBuffer::new(128, 64);
-        let out = b.to_page_major();
-        assert_eq!(out.len(), 1024);
-        assert!(out.iter().all(|&byte| byte == 0));
     }
 
     // ===========================================

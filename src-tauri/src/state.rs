@@ -1,6 +1,6 @@
 use crate::render::OledBuffer;
 use crate::settings::AppConfig;
-use hwinfo_steelseries_oled::Hwinfo;
+use hwinfo_steelseries_oled::Snapshot;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 
@@ -50,7 +50,7 @@ pub struct SharedState {
     pub config: AppConfig,
     pub reload_requested: bool,
     pub sleep_requested: Option<SleepCommand>,
-    pub hwinfo_snapshot: Option<Hwinfo>,
+    pub hwinfo_snapshot: Option<Snapshot>,
     /// Latest media snapshot from the daemon's live `MediaReader`, published each
     /// tick so the settings preview can render `MEDIA_*` sensors with real data.
     pub media_info: crate::media::MediaInfo,

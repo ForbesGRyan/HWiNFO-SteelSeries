@@ -42,7 +42,7 @@ Any SteelSeries device with an OLED screen supported by SteelSeries GG:
 
 1. Download the latest `hwinfo-steelseries-oled.exe` from the [Releases](../../releases) page
 2. Place it in a folder of your choice
-3. Run the executable - it will guide you through initial setup
+3. Run the executable - it will write a default config and open the settings window
 
 ### Option 2: Build from Source
 
@@ -69,21 +69,7 @@ Make sure SteelSeries GG is running and your device is connected.
 
 ### 3. Run HWiNFO-SteelSeries OLED
 
-Run `hwinfo-steelseries-oled.exe`. On first launch:
-
-1. You'll be prompted to choose a display style:
-   - **Summary Vertical**: 3-column layout (CPU/GPU/MEM)
-   - **Summary Horizontal**: 3-row layout
-   - **Custom**: Choose your own sensors
-
-2. For **Summary** modes with multiple GPUs, you'll be asked to select which GPU to monitor
-
-3. For **Custom** mode, you'll configure:
-   - Number of lines (2-5)
-   - Sensors per line (1-3)
-   - Which specific sensors to display
-
-4. Configuration is saved to `conf.ini` in the same directory
+Run `hwinfo-steelseries-oled.exe`. On first launch the app writes a default `conf.ini` (vertical summary, SteelSeries GG mode) and opens the settings window. Pick your layout, sensors and connection type there and press Save. `conf.ini` can also be edited by hand; use **Reload Config** in the tray menu afterwards.
 
 The application will start displaying data on your SteelSeries OLED screen.
 
@@ -314,6 +300,12 @@ Special sensors don't pull data from HWiNFO - they provide additional functional
   - Useful for multi-sensor layouts
   - Configuration: `sensor_0="BLANK"`
 
+- **MOUSE_BATTERY**: Battery percentage of a supported wireless mouse
+  - Requires direct USB mode (`direct_usb=true`); shows `N/A` otherwise or when no supported mouse answers
+  - Supported: Pulsar X2 CL / X2 V2 Mini, ATK VXE R1 SE+, VXE R1 Pro Max, plus some Logitech, SteelSeries and Razer models
+  - Refreshes every 30 seconds; a wireless mouse that is asleep does not answer, so the last reading stays up (for up to 30 minutes) until it wakes
+  - Configuration: `sensor_0="MOUSE_BATTERY"`, `unit_0="%"`
+
 - **RTSS**: Framerate from RivaTuner Statistics Server (if installed)
   - Not currently implemented
 
@@ -378,13 +370,12 @@ Font size only affects the Direct USB render path. In GameSense mode, SteelSerie
 
 ### "Disconnected from HWiNFO" Error
 
-**Problem**: The OLED displays "Disconnected FROM HWiNFO"
+**Problem**: The OLED displays "Disconnected FROM HWiNFO" because HWiNFO has stopped updating its sensor data. The application recovers by itself once HWiNFO is running again with Shared Memory Support enabled; there is no need to restart it.
 
 **Solutions**:
 1. Verify HWiNFO is running with the Sensors window open
 2. Ensure "Shared Memory Support" is enabled in HWiNFO settings
-3. Restart both HWiNFO and this application
-4. Try running HWiNFO as Administrator
+3. Try running HWiNFO as Administrator
 
 ### OLED Screen Not Updating
 
@@ -403,7 +394,7 @@ Font size only affects the Direct USB render path. In GameSense mode, SteelSerie
 **Solutions**:
 1. Check the sensor name exactly matches what's shown in HWiNFO
 2. Some sensors only appear when the hardware is active
-3. Run the config wizard again to see available sensors
+3. Open the settings window from the tray menu to see available sensors
 4. Delete `conf.ini` and reconfigure from scratch
 
 ### Configuration File Errors
@@ -467,18 +458,30 @@ cargo test
 
 ```
 HWiNFO-SteelSeries/
-├── src/
-│   ├── lib.rs           # HWiNFO shared memory interface
-│   ├── main.rs          # Application entry point
-│   ├── connect.rs       # Connection handlers
-│   ├── settings.rs      # Configuration wizard
-│   ├── steelseries.rs   # SteelSeries GG API
-│   ├── utils.rs         # Helper functions
-│   ├── console_utils.rs # Console window management
-│   └── consts.rs        # Constants
-├── assets/              # Images and icons
-├── conf.ini             # User configuration (generated)
-└── Cargo.toml           # Rust project manifest
+├── src-tauri/
+│   ├── src/
+│   │   ├── lib.rs            # HWiNFO shared memory reader
+│   │   ├── main.rs           # Startup, tray menu, Tauri command registration
+│   │   ├── daemon.rs         # Background loop: pull sensors, render, send to display
+│   │   ├── settings.rs       # conf.ini parsing (AppConfig)
+│   │   ├── utils.rs          # Sensor resolution and text line layout
+│   │   ├── render.rs         # Bitmap and icon rendering for direct USB
+│   │   ├── devices.rs        # Direct-USB device registry and packet protocols
+│   │   ├── connect.rs        # HID device discovery and connection
+│   │   ├── gui.rs            # Tauri commands for the settings window
+│   │   ├── state.rs          # State shared between daemon and UI
+│   │   ├── report.rs         # Device-support report
+│   │   ├── media.rs          # Media sensors (MEDIA_*)
+│   │   ├── weather.rs        # Weather sensors (WEATHER_*)
+│   │   ├── mouse_battery.rs  # MOUSE_BATTERY sensor
+│   │   ├── steelseries.rs    # GameSense screen handler definition
+│   │   ├── console_utils.rs  # Console window management
+│   │   └── consts.rs         # Constants
+│   ├── ui/                   # Settings window front end
+│   ├── assets/               # Images and icons
+│   └── Cargo.toml            # Rust project manifest
+├── conf.ini                  # User configuration (generated)
+└── Cargo.toml                # Workspace manifest
 ```
 
 ## Contributing

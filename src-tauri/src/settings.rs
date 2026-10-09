@@ -1,14 +1,11 @@
-use crate::consts::{Style, CUSTOM_SENSORS, DISPLAY_LINES};
+use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
 use crate::render::FontSize;
 use crate::weather::Units;
 use anyhow::anyhow;
-use console::Term;
-use dialoguer::Input;
-use hwinfo_steelseries_oled::{Hwinfo, SensorReadingType};
 use ini::Ini;
-use log::{error, info, warn};
+use log::{debug, warn};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CustomSensor {
     pub sensor: String,
     pub label: String,
@@ -106,16 +103,7 @@ fn default_font_sizes() -> [FontSize; DISPLAY_LINES] {
 
 impl AppConfig {
     pub fn from_ini(config: &Ini) -> Result<Self, anyhow::Error> {
-        println!("AppConfig: Reading from ini...");
         let main = config.section(Some("Main"));
-
-        if main.is_none() {
-            println!("AppConfig error: 'Main' section not found in INI");
-            // Instead of erroring, let's look for any section to see if we loaded the wrong file
-            for section in config.sections() {
-                println!("AppConfig debug: Found section: {:?}", section);
-            }
-        }
 
         let main = main.ok_or_else(|| anyhow::anyhow!("Main config section not found"))?;
 
@@ -123,7 +111,7 @@ impl AppConfig {
             .get("style")
             .map(|s| s.to_lowercase())
             .unwrap_or_else(|| {
-                println!("AppConfig warning: 'style' key not found, defaulting to 'vertical'");
+                warn!("'style' key not found in conf.ini, defaulting to 'vertical'");
                 "vertical".to_string()
             });
 
@@ -167,8 +155,8 @@ impl AppConfig {
 
         let direct_usb_serial = main.get("direct_usb_serial").unwrap_or("").to_string();
 
-        println!(
-            "AppConfig: Loaded main settings. is_summary={}, direct_usb={}",
+        debug!(
+            "Loaded main settings: is_summary={}, direct_usb={}",
             is_summary, direct_usb
         );
 
@@ -215,13 +203,7 @@ impl AppConfig {
                                 // sensors map to flat positions (line * spl +
                                 // slot), so pad up to k before inserting.
                                 while page_sensors.len() < k {
-                                    page_sensors.push(CustomSensor {
-                                        sensor: String::new(),
-                                        label: String::new(),
-                                        unit: String::new(),
-                                        convert: String::new(),
-                                        icon: String::new(),
-                                    });
+                                    page_sensors.push(CustomSensor::default());
                                 }
                                 page_sensors.push(CustomSensor {
                                     sensor: sensor.to_string(),
@@ -243,301 +225,22 @@ impl AppConfig {
     }
 }
 
-/// Map the "Choose style" menu input (1/2/3) to a Style. Returns None for invalid input.
-fn style_from_choice(input: u8) -> Option<Style> {
-    match input {
-        1 => Some(Style::Vertical),
-        2 => Some(Style::Horizontal),
-        3 => Some(Style::Custom),
-        _ => None,
-    }
-}
-
-/// Map the "Connection Type" menu input (1/2) to direct_usb bool. Anything else → false.
-fn direct_usb_from_choice(input: u8) -> bool {
-    matches!(input, 2)
-}
-
-/// Clamp the "lines" input to the allowed 2..=5 range; out-of-range inputs default to 3.
-fn validate_lines(input: u8) -> u8 {
-    if (2..=5).contains(&input) {
-        input
-    } else {
-        3
-    }
-}
-
-/// Validate the "sensors per line" input; returns None if outside 1..=3.
-fn validate_sensors_per_line(input: u8) -> Option<u8> {
-    if (1..=3).contains(&input) {
-        Some(input)
-    } else {
-        None
-    }
-}
-
-/// Pick the unit to write: user input wins; falls back to default_unit when empty.
-fn pick_unit(default_unit: &str, user_input: &str) -> String {
-    if user_input.is_empty() {
-        default_unit.to_string()
-    } else {
-        user_input.to_string()
-    }
-}
-
-/// Resolve a category index against the sensor_names list. Errors if out of range.
-fn validate_category_selection(
-    idx: usize,
-    sensor_names: &[String],
-) -> Result<&String, anyhow::Error> {
-    sensor_names.get(idx).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Invalid category selection: {} (max: {})",
-            idx,
-            sensor_names.len().saturating_sub(1)
-        )
-    })
-}
-
-/// Resolve a reading index against a sensor's reading_names. Errors if out of range.
-fn validate_reading_selection(
-    idx: usize,
-    reading_names: &[String],
-) -> Result<&String, anyhow::Error> {
-    reading_names.get(idx).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Invalid reading selection: {} (max: {})",
-            idx,
-            reading_names.len().saturating_sub(1)
-        )
-    })
-}
-
-/// Format the canonical sensor id used in conf.ini: `Category;Reading`.
-fn format_sensor_id(category: &str, reading: &str) -> String {
-    format!("{};{}", category, reading)
-}
-
-fn get_default_unit(reading_type: SensorReadingType) -> &'static str {
-    match reading_type {
-        SensorReadingType::SensorTypeTemp => "°",
-        SensorReadingType::SensorTypeVolt => "V",
-        SensorReadingType::SensorTypeFan => "RPM",
-        SensorReadingType::SensorTypeCurrent => "A",
-        SensorReadingType::SensorTypePower => "W",
-        SensorReadingType::SensorTypeClock => "MHz",
-        SensorReadingType::SensorTypeUsage => "%",
-        _ => "",
-    }
-}
-
-fn configure_gpu_selection(
-    term: &Term,
-    hwinfo: &Hwinfo,
-    conf: &mut Ini,
-) -> Result<(), anyhow::Error> {
-    let gpus = hwinfo.find("GPU Temperature").map_err(|e| {
-        error!("Failed to find GPU temperature sensors: {}", e);
-        e
-    })?;
-
-    if gpus.len() <= 1 {
-        info!("Only one GPU found, no selection needed");
-        return Ok(());
-    }
-
-    info!(
-        "Multiple GPUs detected ({}), prompting user for selection",
-        gpus.len()
-    );
-    term.write_line("Which GPU:\n")?;
-    for (i, gpu) in gpus.iter().enumerate() {
-        let sensor_name = &hwinfo.sensor_names[gpu.dw_sensor_index as usize];
-        term.write_line(&format!("{}: {}", i, sensor_name))?;
-    }
-
-    let gpu_selection: usize = Input::new()
-        .with_prompt(format!("0..{}", gpus.len() - 1))
-        .interact_text()?;
-
-    let gpu_selected = &hwinfo.sensor_names[gpus[gpu_selection].dw_sensor_index as usize];
-    info!("User selected GPU: {}", gpu_selected);
-    conf.with_section(Some("Main")).set("gpu", gpu_selected);
-
-    Ok(())
-}
-
-fn configure_custom_sensors(
-    hwinfo: &Hwinfo,
-    conf: &mut Ini,
-    lines: u8,
-    sensors_per_line: u8,
-) -> Result<(), anyhow::Error> {
-    info!(
-        "Configuring {} custom sensors ({} lines x {} sensors per line)",
-        lines * sensors_per_line,
-        lines,
-        sensors_per_line
-    );
-
-    for k in 0..(lines * sensors_per_line) {
-        println!("\n{} / {}\n", k + 1, lines * sensors_per_line);
-
-        // Display available sensors in HWiNFO's original order
-        for (i, sensor) in hwinfo.sensor_names.iter().enumerate() {
-            println!("{}) {}", i, sensor);
+/// Load `path`, or on first run write a minimal config there. Returns the
+/// config and whether it was just created, so the caller can open the settings
+/// window. A file that exists but cannot be read or parsed is an error and is
+/// left untouched.
+pub fn load_or_create_config(path: &str) -> Result<(AppConfig, bool), anyhow::Error> {
+    match Ini::load_from_file(path) {
+        Ok(ini) => Ok((AppConfig::from_ini(&ini)?, false)),
+        Err(ini::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut ini = Ini::new();
+            ini.with_section(Some("Main")).set("style", "Vertical");
+            ini.write_to_file(path)
+                .map_err(|e| anyhow!("Failed to write {}: {}", path, e))?;
+            Ok((AppConfig::from_ini(&ini)?, true))
         }
-
-        let category: usize = Input::new()
-            .with_prompt("Category")
-            .interact_text()
-            .unwrap_or(0);
-
-        let sensor_name = validate_category_selection(category, &hwinfo.sensor_names)
-            .inspect_err(|e| {
-                error!("{}", e);
-                println!("Category out of range, please try again.");
-            })?
-            .clone();
-
-        let sensor = hwinfo.sensors.get(&sensor_name).ok_or_else(|| {
-            error!("Sensor '{}' not found in HWiNFO data", sensor_name);
-            anyhow::anyhow!(
-                "Sensor '{}' not found - HWiNFO data may have changed",
-                sensor_name
-            )
-        })?;
-
-        println!("\n{}:", sensor_name);
-        for (i, reading_name) in sensor.reading_names.iter().enumerate() {
-            println!("\t{}) {}", i, reading_name);
-        }
-
-        let sensor_selection: usize = Input::new().with_prompt("Sensor").interact_text()?;
-        let selected_reading_name =
-            validate_reading_selection(sensor_selection, &sensor.reading_names)?.clone();
-        let sensor_selected = format_sensor_id(&sensor_name, &selected_reading_name);
-        let label: String = Input::new().with_prompt("Label").interact_text()?;
-
-        let reading = sensor.readings.get(&selected_reading_name).ok_or_else(|| {
-            error!(
-                "Reading '{}' not found in sensor '{}'",
-                selected_reading_name, sensor_name
-            );
-            anyhow::anyhow!(
-                "Reading '{}' not found - HWiNFO data may have changed",
-                selected_reading_name
-            )
-        })?;
-        let default_unit = get_default_unit(reading.t_reading);
-
-        let unit: String = if default_unit.is_empty() {
-            Input::new().with_prompt("Unit").interact_text()?
-        } else {
-            let input: String = Input::new()
-                .with_prompt(format!("Unit (default: {})", default_unit))
-                .allow_empty(true)
-                .interact_text()?;
-            pick_unit(default_unit, &input)
-        };
-
-        conf.with_section(Some("PAGE1.Sensors"))
-            .set(format!("sensor_{}", k), sensor_selected)
-            .set(format!("label_{}", k), label)
-            .set(format!("unit_{}", k), unit);
+        Err(e) => Err(anyhow!("Failed to read {}: {}", path, e)),
     }
-
-    Ok(())
-}
-
-pub fn settings_create_config(term: &Term, hwinfo: &Hwinfo) -> Result<Ini, anyhow::Error> {
-    info!("Creating new configuration file");
-    term.write_line("Config not found.")?;
-    let mut conf = Ini::new();
-
-    term.write_line(
-        "Summary Vertical:
-    1) CPU  GPU  MEM\n
-       55°  45°  8.65G\n
-       10%  0.0% 32.0G",
-    )?;
-    term.write_line(
-        "Summary Horizontal:
-    2) CPU  45°  10.0%\n
-       GPU  35°  0.0%\n
-       MEM  10G  33.3%",
-    )?;
-    term.write_line("3) Pick your own sensors")?;
-
-    let input: u8 = match Input::new()
-        .with_prompt("Choose style\n(1,2,3)")
-        .interact_text()
-    {
-        Ok(input) => input,
-        Err(e) => {
-            error!("Failed to read input: {}", e);
-            return Err(anyhow!("Failed to read input"));
-        }
-    };
-
-    let style: Style = match style_from_choice(input) {
-        Some(s) => s,
-        None => {
-            warn!("Invalid style input: {}", input);
-            term.write_line("Invalid input")?;
-            return settings_create_config(term, hwinfo);
-        }
-    };
-
-    info!("User selected style: {:?}", style);
-    conf.with_section(Some("Main"))
-        .set("style", style.to_string());
-
-    let direct_usb_input: u8 = Input::new()
-        .with_prompt("Connection Type\n1) SteelSeries GG (GameSense)\n2) Direct USB (HID)")
-        .interact_text()
-        .unwrap_or(1);
-    let direct_usb = direct_usb_from_choice(direct_usb_input);
-
-    conf.with_section(Some("Main"))
-        .set("direct_usb", direct_usb.to_string());
-
-    if style != Style::Custom {
-        configure_gpu_selection(term, hwinfo, &mut conf)?;
-    } else {
-        println!(
-            "\nUp to 5 lines will fit on the Arctis(or Nova) Pro screen, and 2 on the Apex Pro."
-        );
-
-        let raw_lines: u8 = Input::new()
-            .with_prompt("How many lines? (2-5)")
-            .interact_text()
-            .unwrap_or(3);
-        let lines = validate_lines(raw_lines);
-
-        let raw_spl: u8 = Input::new()
-            .with_prompt("How many sensors per line? (1-3)")
-            .interact_text()?;
-        let sensors_per_line = match validate_sensors_per_line(raw_spl) {
-            Some(v) => v,
-            None => return settings_create_config(term, hwinfo),
-        };
-
-        conf.with_section(Some("Main"))
-            .set("sensors_per_line", sensors_per_line.to_string());
-
-        configure_custom_sensors(hwinfo, &mut conf, lines, sensors_per_line)?;
-    }
-
-    info!("Writing configuration to conf.ini");
-    conf.write_to_file("conf.ini").map_err(|e| {
-        error!("Failed to write configuration file: {}", e);
-        e
-    })?;
-    info!("Configuration file created successfully");
-    term.write_line("config created.")?;
-
-    Ok(conf)
 }
 
 #[cfg(test)]
@@ -568,6 +271,71 @@ mod tests {
             .set("direct_usb", direct_usb.to_string());
 
         conf
+    }
+
+    fn temp_ini(name: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("hwinfo_ss_{}_{}.ini", name, std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn load_or_create_config_writes_default_when_missing() {
+        let path = temp_ini("first_run");
+        let (cfg, created) = load_or_create_config(path.to_str().unwrap()).unwrap();
+        assert!(created);
+        assert!(cfg.is_summary);
+        assert!(cfg.is_vertical);
+        assert!(!cfg.direct_usb);
+        // The file now exists and loads as an existing config.
+        let (again, created_again) = load_or_create_config(path.to_str().unwrap()).unwrap();
+        assert!(!created_again);
+        assert!(again.is_summary);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_or_create_config_loads_existing_without_rewriting() {
+        let path = temp_ini("existing");
+        std::fs::write(
+            &path,
+            "[Main]
+style=Horizontal
+",
+        )
+        .unwrap();
+        let (cfg, created) = load_or_create_config(path.to_str().unwrap()).unwrap();
+        assert!(!created);
+        assert!(cfg.is_summary);
+        assert!(!cfg.is_vertical);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[Main]
+style=Horizontal
+"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_or_create_config_errors_on_malformed_ini_and_keeps_file() {
+        let path = temp_ini("malformed");
+        std::fs::write(
+            &path,
+            "[Main
+style=Vertical
+",
+        )
+        .unwrap();
+        assert!(load_or_create_config(path.to_str().unwrap()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[Main
+style=Vertical
+"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -646,161 +414,6 @@ mod tests {
             result.unwrap_err().to_string(),
             "Main config section not found"
         );
-    }
-
-    // ==================== style_from_choice ====================
-
-    #[test]
-    fn test_style_from_choice_valid() {
-        assert_eq!(style_from_choice(1), Some(Style::Vertical));
-        assert_eq!(style_from_choice(2), Some(Style::Horizontal));
-        assert_eq!(style_from_choice(3), Some(Style::Custom));
-    }
-
-    #[test]
-    fn test_style_from_choice_invalid() {
-        assert!(style_from_choice(0).is_none());
-        assert!(style_from_choice(4).is_none());
-        assert!(style_from_choice(255).is_none());
-    }
-
-    // ==================== direct_usb_from_choice ====================
-
-    #[test]
-    fn test_direct_usb_from_choice_gamesense() {
-        assert!(!direct_usb_from_choice(1));
-    }
-
-    #[test]
-    fn test_direct_usb_from_choice_direct_usb() {
-        assert!(direct_usb_from_choice(2));
-    }
-
-    #[test]
-    fn test_direct_usb_from_choice_invalid_defaults_to_gamesense() {
-        assert!(!direct_usb_from_choice(0));
-        assert!(!direct_usb_from_choice(99));
-    }
-
-    // ==================== validate_lines ====================
-
-    #[test]
-    fn test_validate_lines_in_range() {
-        for n in 2..=5 {
-            assert_eq!(validate_lines(n), n);
-        }
-    }
-
-    #[test]
-    fn test_validate_lines_below_range_defaults_to_three() {
-        assert_eq!(validate_lines(0), 3);
-        assert_eq!(validate_lines(1), 3);
-    }
-
-    #[test]
-    fn test_validate_lines_above_range_defaults_to_three() {
-        assert_eq!(validate_lines(6), 3);
-        assert_eq!(validate_lines(255), 3);
-    }
-
-    // ==================== validate_sensors_per_line ====================
-
-    #[test]
-    fn test_validate_sensors_per_line_in_range() {
-        for n in 1..=3 {
-            assert_eq!(validate_sensors_per_line(n), Some(n));
-        }
-    }
-
-    #[test]
-    fn test_validate_sensors_per_line_out_of_range() {
-        assert!(validate_sensors_per_line(0).is_none());
-        assert!(validate_sensors_per_line(4).is_none());
-        assert!(validate_sensors_per_line(255).is_none());
-    }
-
-    // ==================== pick_unit ====================
-
-    #[test]
-    fn test_pick_unit_uses_input_when_non_empty() {
-        assert_eq!(pick_unit("°", "K"), "K");
-    }
-
-    #[test]
-    fn test_pick_unit_falls_back_to_default_when_empty() {
-        assert_eq!(pick_unit("°", ""), "°");
-    }
-
-    #[test]
-    fn test_pick_unit_empty_default_and_empty_input() {
-        assert_eq!(pick_unit("", ""), "");
-    }
-
-    // ==================== validate_category_selection ====================
-
-    #[test]
-    fn test_validate_category_selection_valid() {
-        let names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
-        assert_eq!(validate_category_selection(0, &names).unwrap(), "A");
-        assert_eq!(validate_category_selection(2, &names).unwrap(), "C");
-    }
-
-    #[test]
-    fn test_validate_category_selection_out_of_range() {
-        let names = vec!["A".to_string()];
-        let err = validate_category_selection(5, &names).unwrap_err();
-        assert!(format!("{}", err).contains("Invalid category selection"));
-    }
-
-    #[test]
-    fn test_validate_category_selection_empty_list() {
-        let names: Vec<String> = vec![];
-        assert!(validate_category_selection(0, &names).is_err());
-    }
-
-    // ==================== validate_reading_selection ====================
-
-    #[test]
-    fn test_validate_reading_selection_valid() {
-        let readings = vec!["Temp".to_string(), "Load".to_string()];
-        assert_eq!(validate_reading_selection(1, &readings).unwrap(), "Load");
-    }
-
-    #[test]
-    fn test_validate_reading_selection_out_of_range() {
-        let readings = vec!["Temp".to_string()];
-        let err = validate_reading_selection(7, &readings).unwrap_err();
-        assert!(format!("{}", err).contains("Invalid reading selection"));
-    }
-
-    // ==================== format_sensor_id ====================
-
-    #[test]
-    fn test_format_sensor_id() {
-        assert_eq!(
-            format_sensor_id("CPU [#0]", "Temperature"),
-            "CPU [#0];Temperature"
-        );
-        assert_eq!(format_sensor_id("", ""), ";");
-    }
-
-    // ==================== get_default_unit ====================
-
-    #[test]
-    fn test_get_default_unit_known_types() {
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeTemp), "°");
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeVolt), "V");
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeFan), "RPM");
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeCurrent), "A");
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypePower), "W");
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeClock), "MHz");
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeUsage), "%");
-    }
-
-    #[test]
-    fn test_get_default_unit_unknown_types_empty() {
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeNone), "");
-        assert_eq!(get_default_unit(SensorReadingType::SensorTypeOther), "");
     }
 
     #[test]
@@ -927,130 +540,6 @@ mod tests {
         let config = AppConfig::from_ini(&conf).unwrap();
         assert!(config.is_summary);
         assert_eq!(config.sensors_per_line, 1);
-    }
-
-    fn build_hwinfo_with_gpus(num_gpus: usize) -> Hwinfo {
-        use hwinfo_steelseries_oled::{
-            HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
-        };
-        use std::collections::HashMap;
-        let mut sensors = HashMap::new();
-        let mut sensor_names = Vec::new();
-        for i in 0..num_gpus {
-            let key = format!("GPU [#{}]", i);
-            sensor_names.push(key.clone());
-            let mut readings = HashMap::new();
-            readings.insert(
-                "GPU Temperature".to_string(),
-                HwinfoSensorsReadingElement::new_mock(i as u32, 0, "GPU Temperature", 50.0),
-            );
-            sensors.insert(
-                key.clone(),
-                Sensor {
-                    info: HwinfoSensorsSensorElement::new_mock(i as u32, &key),
-                    readings,
-                    reading_names: vec!["GPU Temperature".to_string()],
-                },
-            );
-        }
-        Hwinfo::new_mock(sensors, sensor_names)
-    }
-
-    #[test]
-    fn test_configure_gpu_selection_single_gpu_returns_ok_without_prompt() {
-        let term = Term::stdout();
-        let hwinfo = build_hwinfo_with_gpus(1);
-        let mut conf = Ini::new();
-        configure_gpu_selection(&term, &hwinfo, &mut conf).unwrap();
-        // No "gpu" key written, since single-GPU path skips selection.
-        assert!(conf
-            .section(Some("Main"))
-            .and_then(|s| s.get("gpu"))
-            .is_none());
-    }
-
-    #[test]
-    fn test_configure_gpu_selection_multi_gpu_errors_on_stdin_eof() {
-        // Two GPUs → triggers the prompt + Input::interact_text() which fails in tests → Err.
-        let term = Term::stdout();
-        let hwinfo = build_hwinfo_with_gpus(2);
-        let mut conf = Ini::new();
-        let r = configure_gpu_selection(&term, &hwinfo, &mut conf);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn test_configure_custom_sensors_errors_when_category_out_of_range() {
-        // Empty hwinfo → category=0 has no valid sensor → validate_category_selection fails,
-        // exercising the inspect_err branch.
-        let hwinfo = Hwinfo::new_mock(std::collections::HashMap::new(), vec![]);
-        let mut conf = Ini::new();
-        let r = configure_custom_sensors(&hwinfo, &mut conf, 1, 1);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn test_configure_custom_sensors_errors_when_sensor_missing_from_hashmap() {
-        // sensor_names points to "Phantom" but sensors map has no key for it → Err
-        let hwinfo = Hwinfo::new_mock(
-            std::collections::HashMap::new(),
-            vec!["Phantom".to_string()],
-        );
-        let mut conf = Ini::new();
-        let r = configure_custom_sensors(&hwinfo, &mut conf, 1, 1);
-        match r {
-            Err(e) => assert!(format!("{}", e).contains("not found")),
-            Ok(_) => panic!("expected err"),
-        }
-    }
-
-    #[test]
-    fn test_configure_custom_sensors_errors_on_stdin_eof() {
-        // Even a single sensor configuration requires Input::interact_text() which fails in tests.
-        use hwinfo_steelseries_oled::{
-            HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
-        };
-        use std::collections::HashMap;
-        let mut sensors = HashMap::new();
-        let mut readings = HashMap::new();
-        readings.insert(
-            "Temperature".to_string(),
-            HwinfoSensorsReadingElement::new_mock(0, 0, "Temperature", 50.0),
-        );
-        sensors.insert(
-            "CPU".to_string(),
-            Sensor {
-                info: HwinfoSensorsSensorElement::new_mock(0, "CPU"),
-                readings,
-                reading_names: vec!["Temperature".to_string()],
-            },
-        );
-        let hwinfo = Hwinfo::new_mock(sensors, vec!["CPU".to_string()]);
-        let mut conf = Ini::new();
-        let r = configure_custom_sensors(&hwinfo, &mut conf, 1, 1);
-        // Either fails on Input or validates index → either way uncovered branches run.
-        // In cargo test the Input::interact_text returns Err so unwrap_or(0) gives 0 → validate ok → next Input fails → Err.
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn test_settings_create_config_errors_when_stdin_eof() {
-        // In `cargo test`, dialoguer::Input has no real terminal — the first interact_text
-        // call returns Err, which settings_create_config converts into anyhow::Error.
-        // This test only confirms the preamble + error-mapping code runs.
-        let term = Term::stdout();
-        let hwinfo = build_hwinfo_with_gpus(1);
-        let result = settings_create_config(&term, &hwinfo);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_configure_gpu_selection_no_gpu_returns_err() {
-        let term = Term::stdout();
-        let hwinfo = build_hwinfo_with_gpus(0);
-        let mut conf = Ini::new();
-        let result = configure_gpu_selection(&term, &hwinfo, &mut conf);
-        assert!(result.is_err());
     }
 
     #[test]

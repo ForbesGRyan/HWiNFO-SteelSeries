@@ -1,13 +1,12 @@
 use chrono::{DateTime, Local};
-use log::{debug, error};
-use serde_json::{json, Value};
-
-use crate::media::{MediaField, MediaReader};
-use crate::mouse_battery::MouseBatteryReader;
-use crate::weather::WeatherReader;
-use hwinfo_steelseries_oled::Hwinfo;
+use log::error;
 
 use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES};
+use crate::media::{MediaField, MediaReader};
+use crate::mouse_battery::MouseBatteryReader;
+use crate::settings::CustomSensor;
+use crate::weather::{WeatherField, WeatherReader};
+use hwinfo_steelseries_oled::Snapshot;
 
 /// Format `now` with a user-supplied strftime string. chrono's `Display`
 /// panics on an invalid specifier, so render into a buffer via `write!`
@@ -22,225 +21,161 @@ fn safe_strftime(now: &DateTime<Local>, fmt: &str, fallback: &str) -> String {
     out
 }
 
-pub fn run_sensors<'a>(
-    pages_sensors: &'a ini::Properties,
-    labels: &mut Vec<&'a str>,
-    units: &mut Vec<&'a str>,
-    values: &mut Vec<String>,
-    hwinfo: &Hwinfo,
+/// One resolved sensor position, ready for layout.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Slot {
+    pub label: String,
+    pub value: String,
+    pub unit: String,
+    pub icon: String,
+}
+
+/// Resolve one page of configured sensors to display slots. Always returns
+/// `CUSTOM_SENSORS` slots; unset or hidden sensors leave their slot's text
+/// empty.
+pub fn run_sensors(
+    page: &[CustomSensor],
     decimal: bool,
+    hwinfo: &Snapshot,
     mouse_battery_reader: &mut MouseBatteryReader,
     media_reader: &mut MediaReader,
     weather_reader: &WeatherReader,
     hid_api: Option<&hidapi::HidApi>,
-) -> Result<(), anyhow::Error> {
-    for k in 0..CUSTOM_SENSORS {
-        let sensor_str = match pages_sensors.get(format!("sensor_{}", k)) {
-            Some(sensor) => sensor,
-            None => continue,
-        };
+) -> Result<Vec<Slot>, anyhow::Error> {
+    let mut slots = vec![Slot::default(); CUSTOM_SENSORS];
+
+    for (configured, slot) in page.iter().zip(slots.iter_mut()) {
+        slot.icon = configured.icon.clone();
 
         // Remove quotes if they exist (for backwards compatibility with old configs)
-        let sensor_str = sensor_str.trim_matches('"');
-
-        // Skip empty sensor entries
+        let sensor_str = configured.sensor.trim_matches('"');
         if sensor_str.trim().is_empty() {
             continue;
         }
+        let sensor: Vec<&str> = sensor_str.split(';').collect();
 
-        let sensor: Vec<&str> = sensor_str.split(";").collect();
-        let label = pages_sensors
-            .get(format!("label_{}", k))
-            .unwrap_or_default();
-        let unit = pages_sensors.get(format!("unit_{}", k)).unwrap_or_default();
-        if sensor[0] == "BLANK" {
-            labels[k] = label;
-            units[k] = unit;
-            continue;
-        } else if sensor[0] == "CLOCK" {
-            labels[k] = label;
-            units[k] = unit;
-            let fmt = sensor
+        // `None` hides the slot: label and unit stay empty too.
+        let value: Option<String> = if sensor[0] == "BLANK" {
+            Some(String::new())
+        } else if sensor[0] == "CLOCK" || sensor[0] == "DATE" {
+            let default_format = if sensor[0] == "CLOCK" {
+                "%I:%M:%S %P"
+            } else {
+                "%Y-%m-%d"
+            };
+            let format = sensor
                 .get(1)
                 .copied()
                 .filter(|s| !s.is_empty())
-                .unwrap_or("%I:%M:%S %P");
-            let now = Local::now();
-            values[k] = safe_strftime(&now, fmt, "%I:%M:%S %P");
-            continue;
-        } else if sensor[0] == "DATE" {
-            labels[k] = label;
-            units[k] = unit;
-            let fmt = sensor
-                .get(1)
-                .copied()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("%Y-%m-%d");
-            let now = Local::now();
-            values[k] = safe_strftime(&now, fmt, "%Y-%m-%d");
-            continue;
+                .unwrap_or(default_format);
+            Some(safe_strftime(&Local::now(), format, default_format))
         } else if sensor[0] == "MOUSE_BATTERY" {
-            labels[k] = label;
-            units[k] = unit;
-            values[k] = mouse_battery_reader.get_battery_percentage(hid_api);
-            continue;
-        } else if let Some(media_field) = MediaField::from_sensor_name(sensor[0]) {
-            // Handle MEDIA_* sensors (MEDIA_TITLE, MEDIA_ARTIST, MEDIA_ALBUM, MEDIA_APP)
-            match media_reader.get_media_field(media_field) {
-                Some(value) => {
-                    labels[k] = label;
-                    units[k] = unit;
-                    values[k] = value;
-                }
-                None => {
-                    // Hide sensor when nothing is playing - use empty strings
-                    labels[k] = "";
-                    units[k] = "";
-                    values[k] = String::new();
-                }
-            }
-            continue;
-        } else if let Some(weather_field) =
-            crate::weather::WeatherField::from_sensor_name(sensor[0])
-        {
-            match weather_reader.get_field(weather_field) {
-                Some(value) => {
-                    labels[k] = label;
-                    units[k] = unit;
-                    values[k] = value;
-                }
-                None => {
-                    // No data yet, or field unset → hide sensor slot (matches MEDIA_* pattern).
-                    labels[k] = "";
-                    units[k] = "";
-                    values[k] = String::new();
-                }
-            }
-            continue;
-        }
-        if sensor.len() < 2 {
+            Some(mouse_battery_reader.get_battery_percentage(hid_api))
+        } else if let Some(field) = MediaField::from_sensor_name(sensor[0]) {
+            // Hidden when nothing is playing.
+            media_reader.get_media_field(field)
+        } else if let Some(field) = WeatherField::from_sensor_name(sensor[0]) {
+            // Hidden when there is no data yet or the field is unset.
+            weather_reader.get_field(field)
+        } else if sensor.len() < 2 {
             error!("Malformed sensor entry (missing ';'): {}", sensor_str);
-            continue;
-        }
-        let mut value = match hwinfo.get(sensor[0], sensor[1]) {
-            Some(value) => {
-                debug!("Successfully read sensor: {} / {}", sensor[0], sensor[1]);
-                value
-            }
-            None => {
-                error!("Sensor not found: {} / {}", sensor[0], sensor[1]);
-                return Err(anyhow::Error::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Sensor not found:\n\t{}\n\t{}", sensor[0], sensor[1]),
-                )));
-            }
-        }
-        .value;
-        if let Some(convert) = pages_sensors.get(format!("convert_{}", k)) {
-            match convert {
-                "MB/GB" => value /= 1024.0,
-                "kb/mb" | "KB/MB" => value /= 1024.0,
-                _ => {}
-            }
-        };
-        let value_string: String = if decimal {
-            format!("{:.1}", &value)
+            None
         } else {
-            format!("{:02.0}", &value)
+            let mut value = hwinfo.get(sensor[0], sensor[1]).ok_or_else(|| {
+                error!("Sensor not found: {} / {}", sensor[0], sensor[1]);
+                anyhow::anyhow!("Sensor not found:\n\t{}\n\t{}", sensor[0], sensor[1])
+            })?;
+            if matches!(configured.convert.as_str(), "MB/GB" | "kb/mb" | "KB/MB") {
+                value /= 1024.0;
+            }
+            Some(if decimal {
+                format!("{:.1}", value)
+            } else {
+                format!("{:02.0}", value)
+            })
         };
-        labels[k] = label;
-        units[k] = unit;
-        values[k] = value_string;
+
+        if let Some(value) = value {
+            slot.label = configured.label.clone();
+            slot.unit = configured.unit.clone();
+            slot.value = value;
+        }
     }
-    Ok(())
+    Ok(slots)
 }
 
-pub fn format_custom_value(
-    sensors_per_line: u8,
-    labels: Vec<&str>,
-    values: Vec<String>,
-    units: Vec<&str>,
-    icons: Vec<&str>,
-) -> Value {
-    let mut value = json!({});
+/// Lay the slots out as `DISPLAY_LINES` text lines, `sensors_per_line` slots
+/// per line. Positions beyond the available slots render empty.
+pub fn format_custom_lines(sensors_per_line: u8, slots: &[Slot]) -> Vec<String> {
+    let per_line = sensors_per_line as usize;
+    // Tighter spacing when three or more sensors share a line.
+    let separator = if per_line >= 3 { " " } else { "  " };
+    let empty = Slot::default();
 
-    for line_idx in 0..DISPLAY_LINES {
-        let start_idx = line_idx * sensors_per_line as usize;
-        let line_parts: Vec<String> = (0..sensors_per_line as usize)
-            .map(|i| {
-                let idx = start_idx + i;
-                let label = labels[idx].trim();
-                let unit = units[idx].trim();
-                let icon = icons[idx].trim();
+    (0..DISPLAY_LINES)
+        .map(|line| {
+            (0..per_line)
+                .map(|i| {
+                    let slot = slots.get(line * per_line + i).unwrap_or(&empty);
+                    let label = slot.label.trim();
+                    let unit = slot.unit.trim();
+                    let icon = slot.icon.trim();
 
-                // Leading icon token (rendered only on the direct-USB bitmap
-                // path; ignored as a harmless control char by GameSense text).
-                let prefix = if icon.is_empty() {
-                    String::new()
-                } else {
-                    crate::render::icon_token(icon)
-                };
-
-                // Format with proper spacing: add space between label and value only if label exists
-                if label.is_empty() {
-                    format!("{}{}{}", prefix, values[idx], unit)
-                } else {
-                    format!("{}{} {}{}", prefix, label, values[idx], unit)
-                }
-            })
-            .collect();
-
-        // Determine spacing based on sensors per line - tighter spacing for multiple sensors
-        let separator = if sensors_per_line >= 3 { " " } else { "  " };
-        value[format!("line{}", line_idx + 1)] = json!(line_parts.join(separator));
-    }
-
-    value
+                    // Leading icon token (drawn only on the direct-USB bitmap
+                    // path; a harmless control char in GameSense text).
+                    let prefix = if icon.is_empty() {
+                        String::new()
+                    } else {
+                        crate::render::icon_token(icon)
+                    };
+                    // A space between label and value only when there is a label.
+                    if label.is_empty() {
+                        format!("{}{}{}", prefix, slot.value, unit)
+                    } else {
+                        format!("{}{} {}{}", prefix, label, slot.value, unit)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(separator)
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hwinfo_steelseries_oled::{
-        HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
-    };
-    use std::collections::HashMap;
-
-    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Hwinfo {
-        let mut sensors: HashMap<String, Sensor> = HashMap::new();
-        let mut sensor_names: Vec<String> = Vec::new();
-        for (sensor_key, reading_key, value) in entries {
-            let entry = sensors.entry(sensor_key.to_string()).or_insert_with(|| {
-                sensor_names.push(sensor_key.to_string());
-                Sensor {
-                    info: HwinfoSensorsSensorElement::new_mock(0, sensor_key),
-                    readings: HashMap::new(),
-                    reading_names: Vec::new(),
-                }
-            });
-            entry.readings.insert(
-                reading_key.to_string(),
-                HwinfoSensorsReadingElement::new_mock(0, 0, reading_key, *value),
-            );
-            entry.reading_names.push(reading_key.to_string());
-        }
-        Hwinfo::new_mock(sensors, sensor_names)
+    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Snapshot {
+        Snapshot::from_readings(entries)
     }
 
-    fn make_props(pairs: &[(&str, &str)]) -> ini::Properties {
-        let mut p = ini::Properties::new();
-        for (k, v) in pairs {
-            p.insert(*k, *v);
+    /// Build a page from `("sensor_0", "...")`-style pairs.
+    fn make_page(pairs: &[(&str, &str)]) -> Vec<CustomSensor> {
+        let mut page = vec![CustomSensor::default(); CUSTOM_SENSORS];
+        for (key, value) in pairs {
+            let (field, index) = key.rsplit_once('_').expect("key like sensor_0");
+            let slot = &mut page[index.parse::<usize>().expect("numeric index")];
+            match field {
+                "sensor" => slot.sensor = value.to_string(),
+                "label" => slot.label = value.to_string(),
+                "unit" => slot.unit = value.to_string(),
+                "convert" => slot.convert = value.to_string(),
+                "icon" => slot.icon = value.to_string(),
+                other => panic!("unknown field {}", other),
+            }
         }
-        p
+        page
     }
 
-    fn empty_buffers<'a>() -> (Vec<&'a str>, Vec<&'a str>, Vec<String>) {
-        (
-            vec![""; CUSTOM_SENSORS],
-            vec![""; CUSTOM_SENSORS],
-            vec![String::new(); CUSTOM_SENSORS],
-        )
+    fn slots(entries: &[(&str, &str, &str, &str)]) -> Vec<Slot> {
+        entries
+            .iter()
+            .map(|(label, value, unit, icon)| Slot {
+                label: label.to_string(),
+                value: value.to_string(),
+                unit: unit.to_string(),
+                icon: icon.to_string(),
+            })
+            .collect()
     }
 
     fn weather_with_info() -> crate::weather::WeatherReader {
@@ -261,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_run_sensors_weather_temp_returns_cached() {
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "WEATHER_TEMP"),
             ("label_0", "Out"),
             ("unit_0", "°F"),
@@ -270,30 +205,20 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = weather_with_info();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "Out");
-        assert_eq!(units[0], "°F");
-        assert_eq!(values[0], "72");
+        assert_eq!(slots[0].label, "Out");
+        assert_eq!(slots[0].unit, "°F");
+        assert_eq!(slots[0].value, "72");
     }
 
     #[test]
     fn test_run_sensors_weather_forecast_day_field() {
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "WEATHER_HI_D1"),
             ("label_0", "Tmrw"),
             ("unit_0", "°"),
@@ -302,30 +227,20 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = weather_with_info();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "Tmrw");
-        assert_eq!(units[0], "°");
-        assert_eq!(values[0], "75");
+        assert_eq!(slots[0].label, "Tmrw");
+        assert_eq!(slots[0].unit, "°");
+        assert_eq!(slots[0].value, "75");
     }
 
     #[test]
     fn test_run_sensors_weather_hides_when_no_data() {
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "WEATHER_TEMP"),
             ("label_0", "Out"),
             ("unit_0", "°F"),
@@ -334,26 +249,16 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
         // No data → sensor hides (empty label/unit/value).
-        assert_eq!(labels[0], "");
-        assert_eq!(units[0], "");
-        assert_eq!(values[0], "");
+        assert_eq!(slots[0].label, "");
+        assert_eq!(slots[0].unit, "");
+        assert_eq!(slots[0].value, "");
     }
 
     #[test]
@@ -362,7 +267,7 @@ mod tests {
         let info = crate::weather::WeatherInfo::default(); // every field None
         let weather = crate::weather::WeatherReader::with_cached_info(info);
 
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "WEATHER_TEMP"),
             ("label_0", "T"),
             ("unit_0", "°F"),
@@ -370,148 +275,98 @@ mod tests {
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "");
-        assert_eq!(values[0], "");
+        assert_eq!(slots[0].label, "");
+        assert_eq!(slots[0].value, "");
     }
 
     #[test]
     fn test_run_sensors_blank_skips_value() {
-        let props = make_props(&[("sensor_0", "BLANK"), ("label_0", "spacer"), ("unit_0", "")]);
+        let props = make_page(&[("sensor_0", "BLANK"), ("label_0", "spacer"), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "spacer");
-        assert_eq!(units[0], "");
-        assert_eq!(values[0], "");
+        assert_eq!(slots[0].label, "spacer");
+        assert_eq!(slots[0].unit, "");
+        assert_eq!(slots[0].value, "");
     }
 
     #[test]
     fn test_run_sensors_clock_formats_time() {
-        let props = make_props(&[("sensor_0", "CLOCK"), ("label_0", "T"), ("unit_0", "")]);
+        let props = make_page(&[("sensor_0", "CLOCK"), ("label_0", "T"), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "T");
+        assert_eq!(slots[0].label, "T");
         // HH:MM:SS am/pm
-        let re_like = values[0].len() == 11
-            && values[0].chars().nth(2) == Some(':')
-            && values[0].chars().nth(5) == Some(':')
-            && (values[0].ends_with("am") || values[0].ends_with("pm"));
-        assert!(re_like, "unexpected CLOCK value: {}", values[0]);
+        let re_like = slots[0].value.len() == 11
+            && slots[0].value.chars().nth(2) == Some(':')
+            && slots[0].value.chars().nth(5) == Some(':')
+            && (slots[0].value.ends_with("am") || slots[0].value.ends_with("pm"));
+        assert!(re_like, "unexpected CLOCK value: {}", slots[0].value);
     }
 
     #[test]
     fn test_run_sensors_clock_custom_format() {
-        let props = make_props(&[("sensor_0", "CLOCK;%H:%M"), ("label_0", ""), ("unit_0", "")]);
+        let props = make_page(&[("sensor_0", "CLOCK;%H:%M"), ("label_0", ""), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
         // HH:MM, 24-hour, no seconds, no am/pm
-        assert_eq!(values[0].len(), 5);
-        assert_eq!(values[0].chars().nth(2), Some(':'));
-        assert!(!values[0].ends_with("am") && !values[0].ends_with("pm"));
+        assert_eq!(slots[0].value.len(), 5);
+        assert_eq!(slots[0].value.chars().nth(2), Some(':'));
+        assert!(!slots[0].value.ends_with("am") && !slots[0].value.ends_with("pm"));
     }
 
     #[test]
     fn test_run_sensors_date_default_format() {
-        let props = make_props(&[("sensor_0", "DATE"), ("label_0", "D"), ("unit_0", "")]);
+        let props = make_page(&[("sensor_0", "DATE"), ("label_0", "D"), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "D");
+        assert_eq!(slots[0].label, "D");
         // YYYY-MM-DD
-        assert_eq!(values[0].len(), 10);
-        assert_eq!(values[0].chars().nth(4), Some('-'));
-        assert_eq!(values[0].chars().nth(7), Some('-'));
+        assert_eq!(slots[0].value.len(), 10);
+        assert_eq!(slots[0].value.chars().nth(4), Some('-'));
+        assert_eq!(slots[0].value.chars().nth(7), Some('-'));
     }
 
     #[test]
     fn test_run_sensors_date_custom_format() {
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "DATE;%m/%d/%Y"),
             ("label_0", ""),
             ("unit_0", ""),
@@ -520,31 +375,21 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
         // MM/DD/YYYY
-        assert_eq!(values[0].len(), 10);
-        assert_eq!(values[0].chars().nth(2), Some('/'));
-        assert_eq!(values[0].chars().nth(5), Some('/'));
+        assert_eq!(slots[0].value.len(), 10);
+        assert_eq!(slots[0].value.chars().nth(2), Some('/'));
+        assert_eq!(slots[0].value.chars().nth(5), Some('/'));
     }
 
     #[test]
     fn test_run_sensors_mouse_battery_returns_na_without_hidapi() {
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "MOUSE_BATTERY"),
             ("label_0", "MB"),
             ("unit_0", "%"),
@@ -553,31 +398,21 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "MB");
-        assert_eq!(units[0], "%");
-        assert_eq!(values[0], "N/A");
+        assert_eq!(slots[0].label, "MB");
+        assert_eq!(slots[0].unit, "%");
+        assert_eq!(slots[0].value, "N/A");
     }
 
     #[test]
     fn test_run_sensors_media_returns_cached_value() {
-        // MediaReader with is_playing=true and a populated title returns Some → labels/units/values set.
-        let props = make_props(&[
+        // MediaReader with is_playing=true and a populated title returns Some → slot populated.
+        let props = make_page(&[
             ("sensor_0", "MEDIA_TITLE"),
             ("label_0", "T:"),
             ("unit_0", "!"),
@@ -593,58 +428,38 @@ mod tests {
         };
         let mut media = MediaReader::with_cached_info(info);
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "T:");
-        assert_eq!(units[0], "!");
-        assert_eq!(values[0], "Song Name");
+        assert_eq!(slots[0].label, "T:");
+        assert_eq!(slots[0].unit, "!");
+        assert_eq!(slots[0].value, "Song Name");
     }
 
     #[test]
     fn test_run_sensors_unknown_conversion_ignored() {
-        // Unknown convert_ value hits the _ arm — leaves value unchanged.
-        let props = make_props(&[("sensor_0", "S;R"), ("convert_0", "unknown-unit")]);
+        // An unrecognised convert_ value leaves the value unchanged.
+        let props = make_page(&[("sensor_0", "S;R"), ("convert_0", "unknown-unit")]);
         let hwinfo = build_hwinfo(&[("S", "R", 42.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(values[0], "42");
+        assert_eq!(slots[0].value, "42");
     }
 
     #[test]
     fn test_run_sensors_media_hides_when_nothing_playing() {
         // MediaReader::new() has no manager and is_playing=false → field is None → hide sensor.
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "MEDIA_TITLE"),
             ("label_0", "Title:"),
             ("unit_0", ""),
@@ -653,30 +468,20 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "");
-        assert_eq!(units[0], "");
-        assert_eq!(values[0], "");
+        assert_eq!(slots[0].label, "");
+        assert_eq!(slots[0].unit, "");
+        assert_eq!(slots[0].value, "");
     }
 
     #[test]
     fn test_run_sensors_regular_lookup_integer_format() {
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "CPU [#0];Temperature"),
             ("label_0", "CPU"),
             ("unit_0", "°C"),
@@ -685,260 +490,160 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "CPU");
-        assert_eq!(units[0], "°C");
-        assert_eq!(values[0], "43"); // {:02.0} rounds 42.7
+        assert_eq!(slots[0].label, "CPU");
+        assert_eq!(slots[0].unit, "°C");
+        assert_eq!(slots[0].value, "43"); // {:02.0} rounds 42.7
     }
 
     #[test]
     fn test_run_sensors_decimal_format() {
-        let props = make_props(&[("sensor_0", "CPU;Temp"), ("label_0", ""), ("unit_0", "")]);
+        let props = make_page(&[("sensor_0", "CPU;Temp"), ("label_0", ""), ("unit_0", "")]);
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 42.75)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            true,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, true, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(values[0], "42.8"); // {:.1}
+        assert_eq!(slots[0].value, "42.8"); // {:.1}
     }
 
     #[test]
     fn test_run_sensors_integer_pads_single_digit() {
-        let props = make_props(&[("sensor_0", "S;R")]);
+        let props = make_page(&[("sensor_0", "S;R")]);
         let hwinfo = build_hwinfo(&[("S", "R", 7.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(values[0], "07"); // {:02.0}
+        assert_eq!(slots[0].value, "07"); // {:02.0}
     }
 
     #[test]
     fn test_run_sensors_mb_gb_conversion() {
-        let props = make_props(&[("sensor_0", "MEM;Used"), ("convert_0", "MB/GB")]);
+        let props = make_page(&[("sensor_0", "MEM;Used"), ("convert_0", "MB/GB")]);
         let hwinfo = build_hwinfo(&[("MEM", "Used", 8192.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            true,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, true, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(values[0], "8.0"); // 8192 / 1024 = 8.0
+        assert_eq!(slots[0].value, "8.0"); // 8192 / 1024 = 8.0
     }
 
     #[test]
     fn test_run_sensors_kb_mb_conversion_both_cases() {
         for convert in &["kb/mb", "KB/MB"] {
-            let props = make_props(&[("sensor_0", "S;R"), ("convert_0", *convert)]);
+            let props = make_page(&[("sensor_0", "S;R"), ("convert_0", *convert)]);
             let hwinfo = build_hwinfo(&[("S", "R", 2048.0)]);
             let mut mouse = MouseBatteryReader::new();
             let mut media = MediaReader::new();
             let weather = crate::weather::WeatherReader::disabled();
-            let (mut labels, mut units, mut values) = empty_buffers();
 
-            run_sensors(
-                &props,
-                &mut labels,
-                &mut units,
-                &mut values,
-                &hwinfo,
-                true,
-                &mut mouse,
-                &mut media,
-                &weather,
-                None,
+            let slots = run_sensors(
+                &props, true, &hwinfo, &mut mouse, &mut media, &weather, None,
             )
             .unwrap();
 
-            assert_eq!(values[0], "2.0", "convert={}", convert);
+            assert_eq!(slots[0].value, "2.0", "convert={}", convert);
         }
     }
 
     #[test]
     fn test_run_sensors_quoted_sensor_backwards_compat() {
-        let props = make_props(&[("sensor_0", "\"CPU;Temp\"")]);
+        let props = make_page(&[("sensor_0", "\"CPU;Temp\"")]);
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 50.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(values[0], "50");
+        assert_eq!(slots[0].value, "50");
     }
 
     #[test]
     fn test_run_sensors_empty_sensor_string_skipped() {
-        let props = make_props(&[("sensor_0", "   ")]);
+        let props = make_page(&[("sensor_0", "   ")]);
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "");
-        assert_eq!(values[0], "");
+        assert_eq!(slots[0].label, "");
+        assert_eq!(slots[0].value, "");
     }
 
     #[test]
     fn test_run_sensors_no_sensor_key_skipped() {
-        let props = make_props(&[]); // no sensor_* at all
+        let props = make_page(&[]); // no sensor_* at all
         let hwinfo = build_hwinfo(&[]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert!(values.iter().all(|v| v.is_empty()));
+        assert!(slots.iter().all(|s| s.value.is_empty()));
     }
 
     #[test]
     fn test_run_sensors_malformed_no_semicolon_skipped() {
-        // No ';' separator → logs error and continues; buffers untouched.
-        let props = make_props(&[("sensor_0", "NoSeparator")]);
+        // No ';' separator → logs error and continues; slot left empty.
+        let props = make_page(&[("sensor_0", "NoSeparator")]);
         let hwinfo = build_hwinfo(&[("NoSeparator", "X", 1.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "");
-        assert_eq!(values[0], "");
+        assert_eq!(slots[0].label, "");
+        assert_eq!(slots[0].value, "");
     }
 
     #[test]
     fn test_run_sensors_missing_sensor_returns_err() {
-        let props = make_props(&[("sensor_0", "GHOST;Reading")]);
+        let props = make_page(&[("sensor_0", "GHOST;Reading")]);
         let hwinfo = build_hwinfo(&[("CPU", "Temp", 1.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
         let err = run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap_err();
         assert!(format!("{}", err).contains("Sensor not found"));
@@ -946,35 +651,25 @@ mod tests {
 
     #[test]
     fn test_run_sensors_label_unit_default_when_missing() {
-        let props = make_props(&[("sensor_0", "S;R")]); // no label_0/unit_0
+        let props = make_page(&[("sensor_0", "S;R")]); // no label_0/unit_0
         let hwinfo = build_hwinfo(&[("S", "R", 10.0)]);
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(labels[0], "");
-        assert_eq!(units[0], "");
-        assert_eq!(values[0], "10");
+        assert_eq!(slots[0].label, "");
+        assert_eq!(slots[0].unit, "");
+        assert_eq!(slots[0].value, "10");
     }
 
     #[test]
     fn test_run_sensors_multiple_sensors_at_different_indices() {
-        let props = make_props(&[
+        let props = make_page(&[
             ("sensor_0", "CPU;Temp"),
             ("sensor_2", "GPU;Temp"),
             ("label_2", "G"),
@@ -984,108 +679,108 @@ mod tests {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-        let (mut labels, mut units, mut values) = empty_buffers();
 
-        run_sensors(
-            &props,
-            &mut labels,
-            &mut units,
-            &mut values,
-            &hwinfo,
-            false,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
+        let slots = run_sensors(
+            &props, false, &hwinfo, &mut mouse, &mut media, &weather, None,
         )
         .unwrap();
 
-        assert_eq!(values[0], "40");
-        assert_eq!(values[1], ""); // untouched
-        assert_eq!(labels[2], "G");
-        assert_eq!(values[2], "60");
+        assert_eq!(slots[0].value, "40");
+        assert_eq!(slots[1].value, ""); // untouched
+        assert_eq!(slots[2].label, "G");
+        assert_eq!(slots[2].value, "60");
     }
 
     #[test]
-    fn test_format_custom_value_prepends_icon_token_when_set() {
-        let mut labels = vec![""; 15];
-        labels[0] = "CPU";
-        let mut values = vec![String::new(); 15];
-        values[0] = "42".to_string();
-        let units = vec![""; 15];
-        let mut icons = vec![""; 15];
-        icons[0] = "cpu";
-
-        let result = format_custom_value(1, labels, values, units, icons);
-
-        let line1 = result["line1"].as_str().unwrap();
-        assert!(line1.starts_with(&crate::render::icon_token("cpu")));
-        assert!(line1.contains("CPU 42"));
+    fn test_format_custom_lines_prepends_icon_token_when_set() {
+        let lines = format_custom_lines(1, &slots(&[("CPU", "42", "", "cpu")]));
+        assert!(lines[0].starts_with(&crate::render::icon_token("cpu")));
+        assert!(lines[0].contains("CPU 42"));
     }
 
     #[test]
-    fn test_format_custom_value_no_token_when_icon_empty() {
-        let mut labels = vec![""; 15];
-        labels[0] = "CPU";
-        let mut values = vec![String::new(); 15];
-        values[0] = "42".to_string();
-        let units = vec![""; 15];
-        let icons = vec![""; 15];
-
-        let result = format_custom_value(1, labels, values, units, icons);
-
-        assert_eq!(result["line1"], "CPU 42");
+    fn test_format_custom_lines_no_token_when_icon_empty() {
+        let lines = format_custom_lines(1, &slots(&[("CPU", "42", "", "")]));
+        assert_eq!(lines[0], "CPU 42");
     }
 
     #[test]
-    fn test_format_custom_value_one_sensor_per_line() {
-        let labels = ["L1", "L2", "L3", "L4", "L5"];
-        let mut all_labels = vec![""; 15];
-        for (i, l) in labels.iter().enumerate() {
-            all_labels[i] = l;
-        }
-        let values = [
-            "1".to_string(),
-            "2".to_string(),
-            "3".to_string(),
-            "4".to_string(),
-            "5".to_string(),
-        ];
-        let mut all_values = vec![String::new(); 15];
-        for (i, v) in values.iter().enumerate() {
-            all_values[i] = v.clone();
-        }
-        let units = ["U1", "U2", "U3", "U4", "U5"];
-        let mut all_units = vec![""; 15];
-        for (i, u) in units.iter().enumerate() {
-            all_units[i] = u;
-        }
-
-        let result = format_custom_value(1, all_labels, all_values, all_units, vec![""; 15]);
-
-        assert_eq!(result["line1"], "L1 1U1");
-        assert_eq!(result["line2"], "L2 2U2");
-        assert_eq!(result["line3"], "L3 3U3");
-        assert_eq!(result["line4"], "L4 4U4");
-        assert_eq!(result["line5"], "L5 5U5");
+    fn test_format_custom_lines_one_sensor_per_line() {
+        let lines = format_custom_lines(
+            1,
+            &slots(&[
+                ("L1", "1", "U1", ""),
+                ("L2", "2", "U2", ""),
+                ("L3", "3", "U3", ""),
+                ("L4", "4", "U4", ""),
+                ("L5", "5", "U5", ""),
+            ]),
+        );
+        assert_eq!(
+            lines,
+            vec!["L1 1U1", "L2 2U2", "L3 3U3", "L4 4U4", "L5 5U5"]
+        );
     }
 
     #[test]
-    fn test_format_custom_value_three_sensors_per_line() {
-        let labels = vec![""; 15];
-        let mut values = vec![String::new(); 15];
-        let units = vec![""; 15];
+    fn test_format_custom_lines_three_sensors_per_line() {
+        let all: Vec<Slot> = (0..15)
+            .map(|i| Slot {
+                value: i.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        let lines = format_custom_lines(3, &all);
+        assert_eq!(
+            lines,
+            vec!["0 1 2", "3 4 5", "6 7 8", "9 10 11", "12 13 14"]
+        );
+    }
 
-        for (i, v) in values.iter_mut().enumerate().take(15) {
-            *v = i.to_string();
-        }
+    #[test]
+    fn test_format_custom_lines_always_returns_display_lines() {
+        assert_eq!(format_custom_lines(1, &[]).len(), DISPLAY_LINES);
+        assert_eq!(
+            format_custom_lines(0, &slots(&[("A", "1", "", "")])).len(),
+            DISPLAY_LINES
+        );
+    }
 
-        let result = format_custom_value(3, labels, values, units, vec![""; 15]);
+    #[test]
+    fn test_format_custom_lines_survives_oversized_sensors_per_line() {
+        // 4 per line x 5 lines = 20 positions, but only 15 slots exist.
+        let all: Vec<Slot> = (0..15)
+            .map(|i| Slot {
+                value: i.to_string(),
+                ..Default::default()
+            })
+            .collect();
+        let lines = format_custom_lines(4, &all);
+        assert_eq!(lines.len(), DISPLAY_LINES);
+        assert_eq!(lines[0], "0 1 2 3");
+        assert_eq!(lines[3], "12 13 14 ");
+        assert_eq!(lines[4], "   ");
+    }
 
-        assert_eq!(result["line1"], "0 1 2");
-        assert_eq!(result["line2"], "3 4 5");
-        assert_eq!(result["line3"], "6 7 8");
-        assert_eq!(result["line4"], "9 10 11");
-        assert_eq!(result["line5"], "12 13 14");
+    #[test]
+    fn test_run_sensors_keeps_icon_and_pads_to_custom_sensors() {
+        let page = vec![CustomSensor {
+            sensor: "BLANK".into(),
+            icon: "cpu".into(),
+            ..Default::default()
+        }];
+        let hwinfo = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
+
+        let result = run_sensors(
+            &page, false, &hwinfo, &mut mouse, &mut media, &weather, None,
+        )
+        .unwrap();
+
+        assert_eq!(result.len(), CUSTOM_SENSORS);
+        assert_eq!(result[0].icon, "cpu");
+        assert_eq!(result[1], Slot::default());
     }
 }

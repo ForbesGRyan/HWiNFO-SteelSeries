@@ -1,21 +1,19 @@
-use crate::connect::{connect_hid, connect_hwinfo, connect_steelseries};
-use crate::consts::{CUSTOM_SENSORS, DISPLAY_LINES, TICK_RATE};
+use crate::connect::{connect_hid, connect_steelseries};
+use crate::consts::{DISPLAY_LINES, TICK_RATE};
 use crate::media::MediaReader;
 use crate::mouse_battery::MouseBatteryReader;
 use crate::render::{render_text_to_oled, FontSize, OledBuffer};
 use crate::settings::AppConfig;
 use crate::state::{ActiveMode, SensorValue, Shared, SleepCommand};
 use crate::steelseries::page_handler;
-use crate::utils::{format_custom_value, run_sensors};
+use crate::utils::{format_custom_lines, run_sensors};
 use anyhow::anyhow;
-use console::Term;
 use gamesense::client::GameSenseClient;
-use hwinfo_steelseries_oled::Hwinfo;
+use hwinfo_steelseries_oled::{Hwinfo, Snapshot};
 use ini::Ini;
 use log::{debug, error, info, warn};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::num::Wrapping;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -31,95 +29,103 @@ struct SummarySensors {
     mem_load: f64,
 }
 
-fn fetch_summary_sensors(hwinfo: &Hwinfo, gpu_name: &str) -> Result<SummarySensors, anyhow::Error> {
-    let sensor_cpu_usage = hwinfo.find_first("Total CPU Usage")?;
-    let sensor_cpu_temp = hwinfo.find_first("CPU (Tctl/Tdie)")?;
-    let sensor_gpu_usage = hwinfo.find_first("GPU Core Load")?;
-
-    let sensor_gpu_temp = if gpu_name.is_empty() {
-        hwinfo.find_first("GPU Temperature")?
+fn fetch_summary_sensors(
+    hwinfo: &Snapshot,
+    gpu_name: &str,
+) -> Result<SummarySensors, anyhow::Error> {
+    let first = |reading: &str| {
+        hwinfo
+            .find_first(reading)
+            .ok_or_else(|| anyhow!("{} not found", reading))
+    };
+    let gpu_temp = if gpu_name.is_empty() {
+        first("GPU Temperature")?
     } else {
         hwinfo
             .get(gpu_name, "GPU Temperature")
             .ok_or_else(|| anyhow!("GPU Temperature not found"))?
     };
-
-    let sensor_mem_used = hwinfo.find_first("Physical Memory Used")?;
-    let sensor_mem_free = hwinfo.find_first("Physical Memory Available")?;
-    let sensor_mem_load = hwinfo.find_first("Physical Memory Load")?;
-
     Ok(SummarySensors {
-        cpu_temp: sensor_cpu_temp.value,
-        cpu_usage: sensor_cpu_usage.value,
-        gpu_temp: sensor_gpu_temp.value,
-        gpu_usage: sensor_gpu_usage.value,
-        mem_used: sensor_mem_used.value / 1024.0,
-        mem_free: sensor_mem_free.value / 1024.0,
-        mem_load: sensor_mem_load.value,
+        cpu_temp: first("CPU (Tctl/Tdie)")?,
+        cpu_usage: first("Total CPU Usage")?,
+        gpu_temp,
+        gpu_usage: first("GPU Core Load")?,
+        mem_used: first("Physical Memory Used")? / 1024.0,
+        mem_free: first("Physical Memory Available")? / 1024.0,
+        mem_load: first("Physical Memory Load")?,
     })
 }
 
-fn format_vertical_summary(s: &SummarySensors, decimal: bool) -> Value {
+fn format_vertical_summary(s: &SummarySensors, decimal: bool) -> Vec<String> {
     let precision = if decimal { 1 } else { 0 };
     let spacing = if decimal { " " } else { "   " };
     let spacing2 = if decimal { " " } else { "    " };
-    json!({
-        "line1": "CPU   GPU   MEM",
-        "line2": format!("{:.p$}°{}{:.p$}°{}{:.p$}G",
-            s.cpu_temp, spacing, s.gpu_temp, spacing, s.mem_used, p = precision),
-        "line3": format!("{:.p$}%{}{:.p$}%{}{:.p$}G",
-            s.cpu_usage, spacing2, s.gpu_usage, spacing2, s.mem_free, p = precision),
-    })
+    vec![
+        "CPU   GPU   MEM".to_string(),
+        format!(
+            "{:.p$}°{}{:.p$}°{}{:.p$}G",
+            s.cpu_temp,
+            spacing,
+            s.gpu_temp,
+            spacing,
+            s.mem_used,
+            p = precision
+        ),
+        format!(
+            "{:.p$}%{}{:.p$}%{}{:.p$}G",
+            s.cpu_usage,
+            spacing2,
+            s.gpu_usage,
+            spacing2,
+            s.mem_free,
+            p = precision
+        ),
+    ]
 }
 
-fn format_horizontal_summary(s: &SummarySensors, decimal: bool) -> Value {
+fn format_horizontal_summary(s: &SummarySensors, decimal: bool) -> Vec<String> {
     let precision = if decimal { 1 } else { 0 };
-    json!({
-        "line1": format!("CPU {:.p$}° {:.p$}%", s.cpu_temp, s.cpu_usage, p = precision),
-        "line2": format!("GPU {:.p$}° {:.p$}%", s.gpu_temp, s.gpu_usage, p = precision),
-        "line3": format!("MEM {:.p$}G {:.p$}%", s.mem_used, s.mem_load, p = precision),
-    })
+    vec![
+        format!(
+            "CPU {:.p$}° {:.p$}%",
+            s.cpu_temp,
+            s.cpu_usage,
+            p = precision
+        ),
+        format!(
+            "GPU {:.p$}° {:.p$}%",
+            s.gpu_temp,
+            s.gpu_usage,
+            p = precision
+        ),
+        format!("MEM {:.p$}G {:.p$}%", s.mem_used, s.mem_load, p = precision),
+    ]
 }
 
-/// Join `line1..lineN` into newline-separated text, preserving each line's
-/// slot position. An empty line keeps its place (so blank/hidden sensors leave
-/// a gap rather than shifting later lines up).
-fn value_to_text(value: &Value) -> String {
-    let mut text = String::new();
-    if let Some(obj) = value.as_object() {
-        let mut first = true;
-        for i in 1..=DISPLAY_LINES {
-            let key = format!("line{}", i);
-            if let Some(s) = obj.get(&key).and_then(|v| v.as_str()) {
-                if !first {
-                    text.push('\n');
-                }
-                text.push_str(s);
-                first = false;
-            }
-        }
-    }
-    text
+/// GameSense frame payload: `{"line1": ..., "line2": ...}`.
+fn lines_to_frame(lines: &[String]) -> Value {
+    Value::Object(
+        lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| (format!("line{}", i + 1), Value::String(line.clone())))
+            .collect(),
+    )
 }
 
-fn value_to_oled_buffer(value: &Value, font_sizes: &[FontSize], size: (u32, u32)) -> OledBuffer {
-    render_text_to_oled(&value_to_text(value), 0, font_sizes, size.0, size.1)
+fn lines_to_oled_buffer(lines: &[String], font_sizes: &[FontSize], size: (u32, u32)) -> OledBuffer {
+    render_text_to_oled(&lines.join("\n"), 0, font_sizes, size.0, size.1)
 }
 
-fn value_to_sensor_values(value: &Value) -> Vec<SensorValue> {
-    let mut out = Vec::new();
-    if let Some(obj) = value.as_object() {
-        for i in 1..=DISPLAY_LINES {
-            let key = format!("line{}", i);
-            if let Some(s) = obj.get(&key).and_then(|v| v.as_str()) {
-                out.push(SensorValue {
-                    label: format!("Line {}", i),
-                    value: s.to_string(),
-                });
-            }
-        }
-    }
-    out
+fn lines_to_sensor_values(lines: &[String]) -> Vec<SensorValue> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| SensorValue {
+            label: format!("Line {}", i + 1),
+            value: line.clone(),
+        })
+        .collect()
 }
 
 /// Pure helper: create an OledBuffer with every pixel turned on ("white" screen).
@@ -133,135 +139,105 @@ fn white_buffer(width: u32, height: u32) -> OledBuffer {
     buffer
 }
 
-/// Display driver abstraction so the daemon can be tested with mocks.
+/// Where frames go. Two implementations: SteelSeries GG (text lines) and
+/// direct USB HID (bitmap).
 trait DisplayDriver: Send {
     fn trigger_frame(
         &mut self,
         event: &str,
         i: isize,
-        value: &Value,
+        lines: &[String],
         buffer: &OledBuffer,
     ) -> Result<(), anyhow::Error>;
     fn send_blank(&mut self) -> Result<(), anyhow::Error>;
     fn send_white(&mut self) -> Result<(), anyhow::Error>;
-    fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error>;
-}
-
-/// Abstraction over the HID send path so the OledClient::Hid branches can be tested
-/// with a mock sender instead of a real `hidapi::HidDevice`.
-trait HidSender: Send {
-    fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error>;
-}
-
-impl HidSender for hidapi::HidDevice {
-    fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
-        hidapi::HidDevice::send_feature_report(self, packet).map_err(|e| anyhow::anyhow!("{}", e))
-    }
-}
-
-enum OledClient {
-    GameSense(GameSenseClient),
-    Hid {
-        sender: Box<dyn HidSender>,
-        device: &'static crate::devices::SupportedDevice,
-    },
-}
-
-impl DisplayDriver for OledClient {
-    fn trigger_frame(
-        &mut self,
-        event: &str,
-        i: isize,
-        value: &Value,
-        buffer: &OledBuffer,
-    ) -> Result<(), anyhow::Error> {
-        OledClient::trigger_frame(self, event, i, value, buffer)
-    }
-    fn send_blank(&mut self) -> Result<(), anyhow::Error> {
-        OledClient::send_blank(self)
-    }
-    fn send_white(&mut self) -> Result<(), anyhow::Error> {
-        OledClient::send_white(self)
-    }
     fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
-        OledClient::stop_heartbeat(self)
+        Ok(())
     }
 }
 
-impl OledClient {
+struct GameSenseDisplay(GameSenseClient);
+
+impl DisplayDriver for GameSenseDisplay {
     fn trigger_frame(
         &mut self,
         event: &str,
         i: isize,
-        value: &Value,
-        buffer: &OledBuffer,
+        lines: &[String],
+        _buffer: &OledBuffer,
     ) -> Result<(), anyhow::Error> {
-        match self {
-            OledClient::GameSense(client) => {
-                client.trigger_event_frame(event, i, value.clone())?;
-            }
-            OledClient::Hid { sender, device } => {
-                for packet in device.protocol.build_packets(buffer) {
-                    if let Err(e) = sender.send_feature_report(&packet) {
-                        error!("Failed to send HID frame: {}", e);
-                        return Err(anyhow!("HID send failed: {}", e));
-                    }
-                }
-            }
-        }
+        self.0
+            .trigger_event_frame(event, i, lines_to_frame(lines))?;
         Ok(())
     }
 
     fn send_blank(&mut self) -> Result<(), anyhow::Error> {
-        match self {
-            OledClient::GameSense(client) => {
-                let v = json!({ "line1": "", "line2": "", "line3": "" });
-                client.trigger_event_frame("BLANK", 0, v)?;
-            }
-            OledClient::Hid { sender, device } => {
-                let blank = OledBuffer::new(device.width, device.height);
-                for packet in device.protocol.build_packets(&blank) {
-                    let _ = sender.send_feature_report(&packet);
-                }
-            }
-        }
+        let blank = vec![String::new(); 3];
+        self.0
+            .trigger_event_frame("BLANK", 0, lines_to_frame(&blank))?;
         Ok(())
     }
 
     fn send_white(&mut self) -> Result<(), anyhow::Error> {
-        match self {
-            OledClient::GameSense(client) => {
-                let v = json!({
-                    "line1": "████████████████",
-                    "line2": "████████████████",
-                    "line3": "████████████████"
-                });
-                client.trigger_event_frame("WHITE", 0, v)?;
-            }
-            OledClient::Hid { sender, device } => {
-                let buffer = white_buffer(device.width, device.height);
-                for packet in device.protocol.build_packets(&buffer) {
-                    let _ = sender.send_feature_report(&packet);
-                }
-            }
-        }
+        let white = vec!["████████████████".to_string(); 3];
+        self.0
+            .trigger_event_frame("WHITE", 0, lines_to_frame(&white))?;
         Ok(())
     }
 
-    pub fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
-        if let OledClient::GameSense(client) = self {
-            client.stop_heartbeat()?;
+    fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
+        self.0.stop_heartbeat()?;
+        Ok(())
+    }
+}
+
+struct HidDisplay {
+    device: hidapi::HidDevice,
+    model: &'static crate::devices::SupportedDevice,
+}
+
+impl HidDisplay {
+    fn send(&self, buffer: &OledBuffer) -> Result<(), anyhow::Error> {
+        for packet in self.model.protocol.build_packets(buffer) {
+            self.device.send_feature_report(&packet).map_err(|e| {
+                error!("Failed to send HID frame: {}", e);
+                anyhow!("HID send failed: {}", e)
+            })?;
         }
         Ok(())
     }
 }
 
-fn check_disconnect(old: &Hwinfo, new: &Hwinfo, count: &mut usize, limit: usize) -> bool {
-    if old == new {
-        *count = (*count + 1).min(limit);
-    } else {
-        *count = 0;
+impl DisplayDriver for HidDisplay {
+    fn trigger_frame(
+        &mut self,
+        _event: &str,
+        _i: isize,
+        _lines: &[String],
+        buffer: &OledBuffer,
+    ) -> Result<(), anyhow::Error> {
+        self.send(buffer)
     }
+
+    // Blank and white are best-effort: a failed send must not tear down the
+    // connection when the user asks the screen to sleep.
+    fn send_blank(&mut self) -> Result<(), anyhow::Error> {
+        let _ = self.send(&OledBuffer::new(self.model.width, self.model.height));
+        Ok(())
+    }
+
+    fn send_white(&mut self) -> Result<(), anyhow::Error> {
+        let _ = self.send(&white_buffer(self.model.width, self.model.height));
+        Ok(())
+    }
+}
+
+/// Ticks without new HWiNFO data before the display shows "Disconnected".
+const STALE_LIMIT: usize = 5;
+
+/// Count consecutive pulls without new HWiNFO data; true once `limit` is reached.
+fn is_stale(fresh: bool, count: &mut usize, limit: usize) -> bool {
+    *count = if fresh { 0 } else { (*count + 1).min(limit) };
     *count >= limit
 }
 
@@ -278,101 +254,39 @@ fn next_page_counter(i: isize, page_time: isize, pages: usize, current: usize) -
     }
 }
 
-fn disconnected_value() -> Value {
-    json!({ "line1": "Disconnected", "line2": "FROM", "line3": "HWiNFO" })
-}
-
-/// Pure helper: returns (is_sleeping, is_white_screen) flags for the given sleep command.
-fn apply_sleep_flags(cmd: SleepCommand) -> (bool, bool) {
-    match cmd {
-        SleepCommand::Sleep => (true, false),
-        SleepCommand::White => (false, true),
-        SleepCommand::Wake => (false, false),
-    }
-}
-
-/// Pure helper: load custom-page properties from an Ini given a page count.
-fn load_pages_from_ini(ini: &Ini, pages: usize) -> Vec<ini::Properties> {
-    let mut out = Vec::new();
-    for i in 1..=pages {
-        if let Some(page) = ini.section(Some(format!("PAGE{}.Sensors", i))) {
-            out.push(page.clone());
-        }
-    }
-    out
-}
-
-/// Pure helper: build the GameSense event name for a 1-indexed page counter.
-fn page_event_name(page_counter: usize) -> String {
-    format!("PAGE{}", page_counter + 1)
-}
-
-fn build_display_value(
+fn build_display_lines(
     config: &AppConfig,
-    hwinfo: &Hwinfo,
-    pages_vec: &[ini::Properties],
+    hwinfo: &Snapshot,
     page_counter: usize,
     mouse: &mut MouseBatteryReader,
     media: &mut MediaReader,
     weather: &crate::weather::WeatherReader,
     hid_api: Option<&hidapi::HidApi>,
-) -> Result<Value, anyhow::Error> {
+) -> Result<Vec<String>, anyhow::Error> {
     if config.is_summary {
         let sensors = fetch_summary_sensors(hwinfo, &config.gpu)?;
-        if config.is_vertical {
-            Ok(format_vertical_summary(&sensors, config.decimal))
+        return Ok(if config.is_vertical {
+            format_vertical_summary(&sensors, config.decimal)
         } else {
-            Ok(format_horizontal_summary(&sensors, config.decimal))
-        }
-    } else {
-        let pages_sensors = pages_vec
-            .get(page_counter)
-            .ok_or_else(|| anyhow!("Page {} missing", page_counter))?;
-
-        let mut labels = vec![""; CUSTOM_SENSORS];
-        let mut units = vec![""; CUSTOM_SENSORS];
-        let mut values = vec![String::new(); CUSTOM_SENSORS];
-
-        run_sensors(
-            pages_sensors,
-            &mut labels,
-            &mut units,
-            &mut values,
-            hwinfo,
-            config.decimal,
-            mouse,
-            media,
-            weather,
-            hid_api,
-        )?;
-
-        // Per-sensor icon names (direct-USB bitmap path). Read straight from the
-        // page properties, parallel to labels/units, so `run_sensors` stays
-        // unchanged.
-        let icons: Vec<&str> = (0..CUSTOM_SENSORS)
-            .map(|k| pages_sensors.get(format!("icon_{}", k)).unwrap_or_default())
-            .collect();
-
-        Ok(format_custom_value(
-            config.sensors_per_line,
-            labels,
-            values,
-            units,
-            icons,
-        ))
+            format_horizontal_summary(&sensors, config.decimal)
+        });
     }
+    let page = config
+        .custom_sensors
+        .get(page_counter)
+        .ok_or_else(|| anyhow!("Page {} missing", page_counter))?;
+    let slots = run_sensors(page, config.decimal, hwinfo, mouse, media, weather, hid_api)?;
+    Ok(format_custom_lines(config.sensors_per_line, &slots))
 }
 
 struct Daemon<R: Runtime = tauri::Wry> {
     state: Shared,
     app: AppHandle<R>,
-    term: Term,
 
     hwinfo: Option<Hwinfo>,
     oled: Option<Box<dyn DisplayDriver>>,
     hid_api: Option<hidapi::HidApi>,
 
-    pages_vec: Vec<ini::Properties>,
     config: AppConfig,
 
     i: Wrapping<isize>,
@@ -387,8 +301,9 @@ struct Daemon<R: Runtime = tauri::Wry> {
     media_reader: MediaReader,
     weather_reader: crate::weather::WeatherReader,
 
-    is_sleeping: bool,
-    is_white_screen: bool,
+    /// True while the display is asleep or showing the white screen; ticks
+    /// draw nothing until a Wake command.
+    paused: bool,
 }
 
 impl<R: Runtime> Daemon<R> {
@@ -397,11 +312,9 @@ impl<R: Runtime> Daemon<R> {
         Self {
             state,
             app,
-            term: Term::stdout(),
             hwinfo: None,
             oled: None,
             hid_api: None,
-            pages_vec: Vec::new(),
             config,
             i: Wrapping(0),
             disconnect_count: 0,
@@ -410,8 +323,7 @@ impl<R: Runtime> Daemon<R> {
             mouse_battery_reader: MouseBatteryReader::new(),
             media_reader: MediaReader::new(),
             weather_reader,
-            is_sleeping: false,
-            is_white_screen: false,
+            paused: false,
         }
     }
 
@@ -433,174 +345,154 @@ impl<R: Runtime> Daemon<R> {
         let _ = self.app.emit("frame", crate::gui::buffer_to_frame(buf));
     }
 
-    fn announce_connecting_hwinfo(&self) {
+    /// Show a "Connecting to ..." message in the settings window.
+    fn announce(&self, mode: Option<ActiveMode>, message: &str) {
         self.write_state(|s| {
-            s.last_error = Some("Connecting to HWiNFO...".to_string());
+            if let Some(mode) = mode {
+                s.active_mode = mode;
+            }
+            s.last_error = Some(message.to_string());
         });
         self.push_status();
     }
 
-    fn after_hwinfo_connected(&self) {
+    /// Log a failure and surface it in the settings window.
+    fn record_failure(&self, what: &str, err: &anyhow::Error) {
+        error!("Daemon: {}: {}", what, err);
+        self.write_state(|s| {
+            s.last_error = Some(format!("{}: {}", what, err));
+        });
+        self.push_status();
+    }
+
+    fn connect_all(&mut self) -> Result<(), anyhow::Error> {
+        self.announce(None, "Connecting to HWiNFO...");
+        self.hwinfo = Some(Hwinfo::new().map_err(|e| {
+            anyhow!(
+                "HWiNFO not reachable ({}). Is it running with Shared Memory Support enabled?",
+                e
+            )
+        })?);
         self.write_state(|s| {
             s.hwinfo_connected = true;
             s.last_error = None;
         });
         self.push_status();
-    }
-
-    fn load_pages_for_config(&mut self) {
-        self.pages_vec.clear();
-        if !self.config.is_summary {
-            let ini = Ini::load_from_file("conf.ini").unwrap_or_else(|_| Ini::new());
-            self.pages_vec = load_pages_from_ini(&ini, self.config.pages);
-        }
-    }
-
-    fn announce_connecting_direct_usb(&self) {
-        self.write_state(|s| {
-            s.active_mode = ActiveMode::DirectUsb;
-            s.last_error = Some("Connecting to SteelSeries HID...".to_string());
-        });
-        self.push_status();
-    }
-
-    fn announce_connecting_gamesense(&self) {
-        self.write_state(|s| {
-            s.active_mode = ActiveMode::GameSense;
-            s.last_error = Some("Connecting to SteelSeries GG...".to_string());
-        });
-        self.push_status();
-    }
-
-    fn after_direct_usb_connected(&self) {
-        self.write_state(|s| {
-            s.usb_connected = true;
-            s.gg_connected = false;
-            s.last_error = None;
-        });
-    }
-
-    fn after_gamesense_connected(&self) {
-        self.write_state(|s| {
-            s.gg_connected = true;
-            s.usb_connected = false;
-            s.last_error = None;
-        });
-    }
-
-    fn connect_all(&mut self) -> Result<(), anyhow::Error> {
-        self.announce_connecting_hwinfo();
-
-        let mut hwinfo = connect_hwinfo(&self.term)?;
-        hwinfo.pull()?;
-        self.hwinfo = Some(hwinfo);
-
-        self.after_hwinfo_connected();
 
         if let Err(e) = self.media_reader.initialize() {
             warn!("MediaReader init failed: {}. Media sensors unavailable.", e);
         }
 
-        self.load_pages_for_config();
-
         if self.config.direct_usb {
-            self.announce_connecting_direct_usb();
+            self.announce(
+                Some(ActiveMode::DirectUsb),
+                "Connecting to SteelSeries HID...",
+            );
 
             let api = hidapi::HidApi::new().map_err(|e| anyhow!("HID API init failed: {}", e))?;
-            let (device, supported) =
-                connect_hid(&self.term, &api, &self.config.direct_usb_serial)?;
+            let (device, supported) = connect_hid(&api, &self.config.direct_usb_serial)?;
             info!(
                 "Direct USB device: {} ({}x{})",
                 supported.name, supported.width, supported.height
             );
-            self.display_size = (supported.width, supported.height);
-            let size = self.display_size;
-            self.write_state(|s| {
-                s.display_size = size;
-                s.oled_buffer = OledBuffer::new(size.0, size.1);
-            });
-            self.oled = Some(Box::new(OledClient::Hid {
-                sender: Box::new(device),
-                device: supported,
+            self.set_display_size((supported.width, supported.height));
+            self.oled = Some(Box::new(HidDisplay {
+                device,
+                model: supported,
             }));
             self.hid_api = Some(api);
-
-            self.after_direct_usb_connected();
         } else {
-            self.display_size = (128, 64);
-            let size = self.display_size;
-            self.write_state(|s| {
-                s.display_size = size;
-                s.oled_buffer = OledBuffer::new(size.0, size.1);
-            });
-            self.announce_connecting_gamesense();
+            self.set_display_size((128, 64));
+            self.announce(
+                Some(ActiveMode::GameSense),
+                "Connecting to SteelSeries GG...",
+            );
 
-            let mut gg = connect_steelseries(&self.term)?;
+            let mut gg = connect_steelseries()?;
+            let line_keys: Vec<String> =
+                (1..=DISPLAY_LINES).map(|j| format!("line{}", j)).collect();
+            let line_refs: Vec<&str> = line_keys.iter().map(|s| s.as_str()).collect();
             for i in 1..=self.config.pages {
-                let line_keys: Vec<String> =
-                    (1..=DISPLAY_LINES).map(|j| format!("line{}", j)).collect();
-                let line_refs: Vec<&str> = line_keys.iter().map(|s| s.as_str()).collect();
                 let handler = page_handler(3, &line_refs, None);
                 gg.bind_event(&format!("PAGE{}", i), None, None, None, None, vec![handler])?;
             }
             gg.start_heartbeat();
-            self.oled = Some(Box::new(OledClient::GameSense(gg)));
-
-            self.after_gamesense_connected();
+            self.oled = Some(Box::new(GameSenseDisplay(gg)));
         }
+
+        let direct_usb = self.config.direct_usb;
+        self.write_state(|s| {
+            s.usb_connected = direct_usb;
+            s.gg_connected = !direct_usb;
+            s.last_error = None;
+        });
         self.push_status();
         Ok(())
     }
 
-    fn reload(&mut self) -> Result<(), anyhow::Error> {
-        info!("Daemon: reloading config");
+    fn set_display_size(&mut self, size: (u32, u32)) {
+        self.display_size = size;
+        self.write_state(|s| {
+            s.display_size = size;
+            s.oled_buffer = OledBuffer::new(size.0, size.1);
+        });
+    }
+
+    /// Re-read conf.ini into the daemon and shared state, restarting the
+    /// weather reader so [Weather] changes take effect.
+    fn load_config(&mut self) -> Result<(), anyhow::Error> {
         let ini =
             Ini::load_from_file("conf.ini").map_err(|e| anyhow!("Load conf.ini failed: {}", e))?;
-        let new_config = AppConfig::from_ini(&ini)?;
-        self.config = new_config.clone();
+        self.config = AppConfig::from_ini(&ini)?;
+        // A reload can shrink the page list; never keep pointing past its end.
+        self.page_counter = 0;
 
-        // Respawn the weather reader so [Weather] changes (location/units/refresh)
-        // take effect without an app restart. Stop the old thread first.
         self.weather_reader.stop();
         self.weather_reader = crate::weather::WeatherReader::spawn(&self.config.weather);
 
-        // Tear down existing OLED connection
+        let config = self.config.clone();
+        self.write_state(|s| s.config = config);
+        Ok(())
+    }
+
+    /// Whether a config reload was requested; clears the request.
+    fn take_reload_request(&self) -> bool {
+        self.state
+            .lock()
+            .map(|mut g| std::mem::take(&mut g.reload_requested))
+            .unwrap_or(false)
+    }
+
+    fn reload(&mut self) -> Result<(), anyhow::Error> {
+        info!("Daemon: reloading config");
+        self.load_config()?;
+
+        // Tear down the existing OLED connection, then reconnect with the new config.
         if let Some(mut oled) = self.oled.take() {
             let _ = oled.stop_heartbeat();
         }
         self.hid_api = None;
-
         self.write_state(|s| {
-            s.config = new_config;
             s.gg_connected = false;
             s.usb_connected = false;
             s.active_mode = ActiveMode::Disconnected;
         });
 
-        self.connect_all()?;
-        Ok(())
+        self.connect_all()
     }
 
     fn handle_sleep_command(&mut self, cmd: SleepCommand) {
-        let (sleeping, white) = apply_sleep_flags(cmd);
-        self.is_sleeping = sleeping;
-        self.is_white_screen = white;
-        match cmd {
-            SleepCommand::Sleep => {
-                if let Some(o) = self.oled.as_mut() {
-                    if let Err(e) = o.send_blank() {
-                        error!("Send blank failed: {}", e);
-                    }
-                }
-            }
-            SleepCommand::White => {
-                if let Some(o) = self.oled.as_mut() {
-                    if let Err(e) = o.send_white() {
-                        error!("Send white failed: {}", e);
-                    }
-                }
-            }
-            SleepCommand::Wake => {}
+        self.paused = cmd != SleepCommand::Wake;
+        let Some(oled) = self.oled.as_mut() else {
+            return;
+        };
+        let result = match cmd {
+            SleepCommand::Sleep => oled.send_blank(),
+            SleepCommand::White => oled.send_white(),
+            SleepCommand::Wake => Ok(()),
+        };
+        if let Err(e) = result {
+            error!("{:?} command failed: {}", cmd, e);
         }
     }
 
@@ -619,11 +511,7 @@ impl<R: Runtime> Daemon<R> {
 
         if reload {
             if let Err(e) = self.reload() {
-                error!("Reload failed: {}", e);
-                self.write_state(|s| {
-                    s.last_error = Some(format!("Reload failed: {}", e));
-                });
-                self.push_status();
+                self.record_failure("Reload failed", &e);
             }
         }
 
@@ -631,36 +519,50 @@ impl<R: Runtime> Daemon<R> {
             self.handle_sleep_command(cmd);
         }
 
-        if self.is_sleeping || self.is_white_screen {
+        if self.paused {
             return Ok(());
         }
 
-        let hwinfo = self
+        let mut hwinfo = self
             .hwinfo
-            .as_mut()
+            .take()
             .ok_or_else(|| anyhow!("hwinfo missing"))?;
+        let fresh = hwinfo.pull()?;
+        let result = self.render(hwinfo.snapshot(), fresh);
+        // A stale view never recovers on its own: after HWiNFO restarts, the
+        // old mapping stays frozen. Remap, keeping the old view if HWiNFO is
+        // still gone.
+        self.hwinfo = Some(if self.disconnect_count >= STALE_LIMIT {
+            Hwinfo::new().unwrap_or(hwinfo)
+        } else {
+            hwinfo
+        });
+        result
+    }
+
+    /// Draw one frame from `hwinfo`. `fresh` is false when HWiNFO has not
+    /// polled since the previous tick.
+    fn render(&mut self, hwinfo: &Snapshot, fresh: bool) -> Result<(), anyhow::Error> {
         let oled = self.oled.as_mut().ok_or_else(|| anyhow!("oled missing"))?;
+        let disconnected = is_stale(fresh, &mut self.disconnect_count, STALE_LIMIT);
 
-        let old = hwinfo.clone();
-        hwinfo.pull()?;
-        let disconnected = check_disconnect(&old, hwinfo, &mut self.disconnect_count, 5);
-        drop(old);
-
-        let snapshot = hwinfo.clone();
         if let Ok(mut g) = self.state.lock() {
-            g.hwinfo_snapshot = Some(snapshot);
+            g.hwinfo_snapshot = Some(hwinfo.clone());
         }
 
         if disconnected {
             warn!("HWiNFO disconnected");
-            let value = disconnected_value();
-            let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, self.display_size);
-            let _ = oled.trigger_frame("ERROR", self.i.0, &value, &buffer);
+            // Only the PAGE events are bound to a screen handler in GG mode, so
+            // the message goes out on the current page's event.
+            let event_name = format!("PAGE{}", self.page_counter + 1);
+            let lines = ["Disconnected", "FROM", "HWiNFO"].map(String::from);
+            let buffer = lines_to_oled_buffer(&lines, &self.config.font_sizes, self.display_size);
+            let _ = oled.trigger_frame(&event_name, self.i.0, &lines, &buffer);
 
             self.write_state(|s| {
                 s.hwinfo_connected = false;
                 s.oled_buffer = buffer.clone();
-                s.sensor_values = value_to_sensor_values(&value);
+                s.sensor_values = lines_to_sensor_values(&lines);
                 s.last_error = Some("HWiNFO disconnected".to_string());
             });
             self.push_status();
@@ -683,10 +585,9 @@ impl<R: Runtime> Daemon<R> {
             }
         }
 
-        let value = build_display_value(
+        let lines = build_display_lines(
             &self.config,
             hwinfo,
-            &self.pages_vec,
             self.page_counter,
             &mut self.mouse_battery_reader,
             &mut self.media_reader,
@@ -694,9 +595,9 @@ impl<R: Runtime> Daemon<R> {
             self.hid_api.as_ref(),
         )?;
 
-        let buffer = value_to_oled_buffer(&value, &self.config.font_sizes, self.display_size);
-        let event_name = page_event_name(self.page_counter);
-        oled.trigger_frame(&event_name, self.i.0, &value, &buffer)?;
+        let buffer = lines_to_oled_buffer(&lines, &self.config.font_sizes, self.display_size);
+        let event_name = format!("PAGE{}", self.page_counter + 1);
+        oled.trigger_frame(&event_name, self.i.0, &lines, &buffer)?;
 
         // Publish live dynamic-sensor snapshots so the settings preview can render
         // MEDIA_*/WEATHER_* with the same data the OLED shows (the GUI preview has
@@ -707,7 +608,7 @@ impl<R: Runtime> Daemon<R> {
         self.write_state(|s| {
             s.hwinfo_connected = true;
             s.oled_buffer = buffer.clone();
-            s.sensor_values = value_to_sensor_values(&value);
+            s.sensor_values = lines_to_sensor_values(&lines);
             s.last_error = None;
             s.media_info = media_snapshot;
             s.weather_info = weather_snapshot;
@@ -716,24 +617,6 @@ impl<R: Runtime> Daemon<R> {
         self.push_frame(&buffer);
         self.i += 1;
         Ok(())
-    }
-
-    /// Record a connect failure into shared state.
-    fn record_connect_failure(&self, err: &anyhow::Error) {
-        error!("Daemon connect failed: {}", err);
-        self.write_state(|s| {
-            s.last_error = Some(format!("Connect failed: {}", err));
-        });
-        self.push_status();
-    }
-
-    /// Record a tick failure into shared state.
-    fn record_tick_failure(&self, err: &anyhow::Error) {
-        error!("Daemon tick error: {}", err);
-        self.write_state(|s| {
-            s.last_error = Some(format!("Tick error: {}", err));
-        });
-        self.push_status();
     }
 
     /// Tear down connections and reset state for reconnect.
@@ -754,8 +637,13 @@ impl<R: Runtime> Daemon<R> {
 
     fn run(&mut self) {
         loop {
+            if self.take_reload_request() {
+                if let Err(e) = self.load_config() {
+                    self.record_failure("Connect failed", &e);
+                }
+            }
             if let Err(e) = self.connect_all() {
-                self.record_connect_failure(&e);
+                self.record_failure("Connect failed", &e);
                 thread::sleep(Duration::from_secs(3));
                 continue;
             }
@@ -764,7 +652,7 @@ impl<R: Runtime> Daemon<R> {
             loop {
                 let start = std::time::Instant::now();
                 if let Err(e) = self.tick() {
-                    self.record_tick_failure(&e);
+                    self.record_failure("Tick error", &e);
                     break; // exit inner loop, reconnect
                 }
                 let elapsed = start.elapsed();
@@ -787,18 +675,10 @@ pub fn spawn<R: Runtime>(state: Shared, app: AppHandle<R>, config: AppConfig) {
     });
 }
 
-// Ensure Arc usage compiles regardless of Mutex location elsewhere
-#[allow(dead_code)]
-fn _arc_assert(_: Arc<()>) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{AppConfig, WeatherConfig};
-    use hwinfo_steelseries_oled::{
-        HwinfoSensorsReadingElement, HwinfoSensorsSensorElement, Sensor,
-    };
-    use std::collections::HashMap;
+    use crate::settings::{AppConfig, CustomSensor, WeatherConfig};
 
     fn sample_summary() -> SummarySensors {
         SummarySensors {
@@ -812,28 +692,11 @@ mod tests {
         }
     }
 
-    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Hwinfo {
-        let mut sensors: HashMap<String, Sensor> = HashMap::new();
-        let mut sensor_names: Vec<String> = Vec::new();
-        for (sk, rk, val) in entries {
-            let entry = sensors.entry(sk.to_string()).or_insert_with(|| {
-                sensor_names.push(sk.to_string());
-                Sensor {
-                    info: HwinfoSensorsSensorElement::new_mock(0, sk),
-                    readings: HashMap::new(),
-                    reading_names: Vec::new(),
-                }
-            });
-            entry.readings.insert(
-                rk.to_string(),
-                HwinfoSensorsReadingElement::new_mock(0, 0, rk, *val),
-            );
-            entry.reading_names.push(rk.to_string());
-        }
-        Hwinfo::new_mock(sensors, sensor_names)
+    fn build_hwinfo(entries: &[(&str, &str, f64)]) -> Snapshot {
+        Snapshot::from_readings(entries)
     }
 
-    fn full_summary_hwinfo() -> Hwinfo {
+    fn full_summary_hwinfo() -> Snapshot {
         build_hwinfo(&[
             ("CPU", "Total CPU Usage", 50.0),
             ("CPU", "CPU (Tctl/Tdie)", 42.0),
@@ -890,14 +753,6 @@ mod tests {
     }
 
     #[test]
-    fn test_disconnected_value_has_three_lines() {
-        let v = disconnected_value();
-        assert_eq!(v["line1"], "Disconnected");
-        assert_eq!(v["line2"], "FROM");
-        assert_eq!(v["line3"], "HWiNFO");
-    }
-
-    #[test]
     fn test_fetch_summary_sensors_uses_find_first_when_gpu_empty() {
         let hw = full_summary_hwinfo();
         let s = fetch_summary_sensors(&hw, "").unwrap();
@@ -929,261 +784,127 @@ mod tests {
     #[test]
     fn test_format_vertical_summary_no_decimal() {
         let v = format_vertical_summary(&sample_summary(), false);
-        assert_eq!(v["line1"], "CPU   GPU   MEM");
-        assert_eq!(v["line2"], "42°   60°   8G");
-        assert_eq!(v["line3"], "50%    70%    8G");
+        assert_eq!(v[0], "CPU   GPU   MEM");
+        assert_eq!(v[1], "42°   60°   8G");
+        assert_eq!(v[2], "50%    70%    8G");
     }
 
     #[test]
     fn test_format_vertical_summary_decimal() {
         let v = format_vertical_summary(&sample_summary(), true);
-        assert_eq!(v["line2"], "42.0° 60.0° 8.0G");
-        assert_eq!(v["line3"], "50.0% 70.0% 8.0G");
+        assert_eq!(v[1], "42.0° 60.0° 8.0G");
+        assert_eq!(v[2], "50.0% 70.0% 8.0G");
     }
 
     #[test]
     fn test_format_horizontal_summary_no_decimal() {
         let v = format_horizontal_summary(&sample_summary(), false);
-        assert_eq!(v["line1"], "CPU 42° 50%");
-        assert_eq!(v["line2"], "GPU 60° 70%");
-        assert_eq!(v["line3"], "MEM 8G 50%");
+        assert_eq!(v[0], "CPU 42° 50%");
+        assert_eq!(v[1], "GPU 60° 70%");
+        assert_eq!(v[2], "MEM 8G 50%");
     }
 
     #[test]
     fn test_format_horizontal_summary_decimal() {
         let v = format_horizontal_summary(&sample_summary(), true);
-        assert_eq!(v["line1"], "CPU 42.0° 50.0%");
+        assert_eq!(v[0], "CPU 42.0° 50.0%");
     }
 
-    #[test]
-    fn test_build_display_value_summary_vertical() {
-        let cfg = base_config();
-        let hw = full_summary_hwinfo();
+    fn lines_for(cfg: &AppConfig, hw: &Snapshot) -> Result<Vec<String>, anyhow::Error> {
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-
-        let v =
-            build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None).unwrap();
-        assert_eq!(v["line1"], "CPU   GPU   MEM");
+        build_display_lines(cfg, hw, 0, &mut mouse, &mut media, &weather, None)
     }
 
     #[test]
-    fn test_build_display_value_summary_horizontal() {
+    fn test_build_display_lines_summary_vertical() {
+        let lines = lines_for(&base_config(), &full_summary_hwinfo()).unwrap();
+        assert_eq!(lines[0], "CPU   GPU   MEM");
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn test_build_display_lines_summary_horizontal() {
         let mut cfg = base_config();
         cfg.is_vertical = false;
-        let hw = full_summary_hwinfo();
-        let mut mouse = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
-
-        let v =
-            build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None).unwrap();
-        assert_eq!(v["line1"], "CPU 42° 50%");
+        let lines = lines_for(&cfg, &full_summary_hwinfo()).unwrap();
+        assert_eq!(lines[0], "CPU 42° 50%");
     }
 
     #[test]
-    fn test_build_display_value_custom_missing_page_errors() {
+    fn test_build_display_lines_custom_missing_page_errors() {
         let mut cfg = base_config();
         cfg.is_summary = false;
-        let hw = build_hwinfo(&[]);
-        let mut mouse = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
-
-        let err = build_display_value(&cfg, &hw, &[], 0, &mut mouse, &mut media, &weather, None)
-            .unwrap_err();
+        let err = lines_for(&cfg, &build_hwinfo(&[])).unwrap_err();
         assert!(format!("{}", err).contains("Page 0 missing"));
     }
 
     #[test]
-    fn test_build_display_value_custom_renders_blank_sensor() {
+    fn test_build_display_lines_errors_past_last_page() {
+        // Documents why load_config resets page_counter: a counter left past a
+        // shrunken page list fails every tick.
         let mut cfg = base_config();
         cfg.is_summary = false;
-        cfg.sensors_per_line = 1;
+        cfg.custom_sensors = vec![Vec::new()];
         let hw = build_hwinfo(&[]);
-        let mut props = ini::Properties::new();
-        props.insert("sensor_0", "BLANK");
-        props.insert("label_0", "X");
-
         let mut mouse = MouseBatteryReader::new();
         let mut media = MediaReader::new();
         let weather = crate::weather::WeatherReader::disabled();
-
-        let v = build_display_value(
-            &cfg,
-            &hw,
-            &[props],
-            0,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
-        )
-        .unwrap();
-        assert!(v["line1"].as_str().unwrap().contains("X"));
+        assert!(build_display_lines(&cfg, &hw, 0, &mut mouse, &mut media, &weather, None).is_ok());
+        assert!(build_display_lines(&cfg, &hw, 1, &mut mouse, &mut media, &weather, None).is_err());
     }
 
     #[test]
-    fn test_value_to_oled_buffer_populates_text() {
-        let v = json!({ "line1": "Hi", "line2": "There", "line3": "" });
-        let buf = value_to_oled_buffer(&v, &[], (128, 64));
-        // Some pixels should be lit
-        assert!(buf.data.iter().any(|&b| b != 0));
-    }
-
-    #[test]
-    fn test_value_to_text_preserves_leading_blank_line() {
-        // An empty top line must keep its slot, not shift line2/line3 up.
-        let v = json!({ "line1": "", "line2": "CPU", "line3": "GPU" });
-        assert_eq!(value_to_text(&v), "\nCPU\nGPU");
-    }
-
-    #[test]
-    fn test_value_to_text_preserves_middle_blank_slot() {
-        let v = json!({ "line1": "A", "line2": "", "line3": "C" });
-        assert_eq!(value_to_text(&v), "A\n\nC");
-    }
-
-    #[test]
-    fn test_value_to_text_all_present_unchanged() {
-        let v = json!({ "line1": "A", "line2": "B", "line3": "C" });
-        assert_eq!(value_to_text(&v), "A\nB\nC");
-    }
-
-    #[test]
-    fn test_value_to_sensor_values_collects_lines() {
-        let v = json!({ "line1": "A", "line2": "B", "line3": "C" });
-        let svs = value_to_sensor_values(&v);
-        assert_eq!(svs.len(), 3);
-        assert_eq!(svs[0].label, "Line 1");
-        assert_eq!(svs[0].value, "A");
-        assert_eq!(svs[2].value, "C");
-    }
-
-    #[test]
-    fn test_value_to_sensor_values_skips_missing_lines() {
-        let v = json!({ "line1": "Only" });
-        let svs = value_to_sensor_values(&v);
-        assert_eq!(svs.len(), 1);
-        assert_eq!(svs[0].value, "Only");
-    }
-
-    #[test]
-    fn test_check_disconnect_increments_on_match() {
-        let hw = build_hwinfo(&[("S", "R", 1.0)]);
-        let mut count = 0;
-        assert!(!check_disconnect(&hw, &hw, &mut count, 3));
-        assert_eq!(count, 1);
-        assert!(!check_disconnect(&hw, &hw, &mut count, 3));
-        assert_eq!(count, 2);
-        assert!(check_disconnect(&hw, &hw, &mut count, 3));
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn test_check_disconnect_resets_on_change() {
-        let a = build_hwinfo(&[("S", "R", 1.0)]);
-        let b = build_hwinfo(&[("S", "R", 2.0)]);
-        let mut count = 2;
-        assert!(!check_disconnect(&a, &b, &mut count, 3));
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_check_disconnect_caps_at_limit() {
-        let hw = build_hwinfo(&[("S", "R", 1.0)]);
-        let mut count = 5;
-        check_disconnect(&hw, &hw, &mut count, 3);
-        assert_eq!(count, 3); // capped to limit
-    }
-
-    #[test]
-    fn test_build_display_value_custom_run_sensors_propagates_err() {
+    fn test_build_display_lines_custom_renders_configured_sensor() {
         let mut cfg = base_config();
         cfg.is_summary = false;
-        cfg.sensors_per_line = 1;
-        let hw = build_hwinfo(&[]);
-        let mut props = ini::Properties::new();
-        props.insert("sensor_0", "CPU;Temp");
-        let mut mouse = MouseBatteryReader::new();
-        let mut media = MediaReader::new();
-        let weather = crate::weather::WeatherReader::disabled();
-        let r = build_display_value(
-            &cfg,
-            &hw,
-            &[props],
-            0,
-            &mut mouse,
-            &mut media,
-            &weather,
-            None,
-        );
-        assert!(r.is_err());
+        cfg.custom_sensors = vec![vec![CustomSensor {
+            sensor: "CPU;Temp".into(),
+            label: "X".into(),
+            unit: "°".into(),
+            ..Default::default()
+        }]];
+        let lines = lines_for(&cfg, &build_hwinfo(&[("CPU", "Temp", 42.0)])).unwrap();
+        assert_eq!(lines[0], "X 42°");
+        assert_eq!(lines.len(), crate::consts::DISPLAY_LINES);
     }
 
     #[test]
-    fn test_value_to_oled_buffer_with_non_object_value() {
-        let v = json!("not an object");
-        let buf = value_to_oled_buffer(&v, &[], (128, 64));
-        // Should produce an empty buffer (no text rendered)
-        assert!(buf.data.iter().all(|b| *b == 0));
+    fn test_build_display_lines_custom_propagates_missing_sensor() {
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![vec![CustomSensor {
+            sensor: "Nope;Missing".into(),
+            ..Default::default()
+        }]];
+        assert!(lines_for(&cfg, &build_hwinfo(&[])).is_err());
     }
 
     #[test]
-    fn test_value_to_sensor_values_with_non_object() {
-        let v = json!(42);
-        let svs = value_to_sensor_values(&v);
-        assert!(svs.is_empty());
+    fn test_lines_to_frame_numbers_keys_from_one() {
+        let frame = lines_to_frame(&["A".to_string(), String::new(), "C".to_string()]);
+        assert_eq!(frame["line1"], "A");
+        assert_eq!(frame["line2"], "");
+        assert_eq!(frame["line3"], "C");
+        assert!(frame.get("line4").is_none());
     }
 
     #[test]
-    fn test_apply_sleep_flags() {
-        assert_eq!(apply_sleep_flags(SleepCommand::Sleep), (true, false));
-        assert_eq!(apply_sleep_flags(SleepCommand::White), (false, true));
-        assert_eq!(apply_sleep_flags(SleepCommand::Wake), (false, false));
+    fn test_lines_to_oled_buffer_keeps_blank_line_positions() {
+        let with_gap = lines_to_oled_buffer(&[String::new(), "CPU".to_string()], &[], (128, 64));
+        let without_gap = lines_to_oled_buffer(&["CPU".to_string()], &[], (128, 64));
+        assert!(with_gap.data.iter().any(|&b| b != 0));
+        // A leading blank line pushes the text down: the buffers differ.
+        assert_ne!(with_gap, without_gap);
     }
 
     #[test]
-    fn test_page_event_name() {
-        assert_eq!(page_event_name(0), "PAGE1");
-        assert_eq!(page_event_name(2), "PAGE3");
-    }
-
-    #[test]
-    fn test_load_pages_from_ini_returns_existing_sections() {
-        let mut ini = Ini::new();
-        ini.with_section(Some("PAGE1.Sensors"))
-            .set("sensor_0", "A;1");
-        ini.with_section(Some("PAGE3.Sensors"))
-            .set("sensor_0", "C;3");
-        let pages = load_pages_from_ini(&ini, 3);
-        assert_eq!(pages.len(), 2);
-        assert_eq!(pages[0].get("sensor_0"), Some("A;1"));
-        assert_eq!(pages[1].get("sensor_0"), Some("C;3"));
-    }
-
-    #[test]
-    fn test_load_pages_from_ini_empty_when_no_pages() {
-        let ini = Ini::new();
-        assert!(load_pages_from_ini(&ini, 3).is_empty());
-    }
-
-    #[test]
-    fn test_load_pages_from_ini_zero_pages() {
-        let mut ini = Ini::new();
-        ini.with_section(Some("PAGE1.Sensors")).set("sensor_0", "A");
-        assert!(load_pages_from_ini(&ini, 0).is_empty());
-    }
-
-    #[test]
-    fn test_oled_client_send_blank_hid_variant_does_not_panic_on_invalid_device() {
-        // We can't easily construct a HidDevice without a real device.
-        // Cover the GameSense send_blank by using a real GameSenseClient only if available.
-        // Instead exercise via JSON shape: the function body's primary paths run.
-        // This test merely confirms the helper functions compile and the json() value shape is correct.
-        let v = json!({ "line1": "", "line2": "", "line3": "" });
-        assert_eq!(v["line1"], "");
+    fn test_lines_to_sensor_values_labels_each_line() {
+        let values = lines_to_sensor_values(&["A".to_string(), "B".to_string()]);
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[1].label, "Line 2");
+        assert_eq!(values[1].value, "B");
     }
 
     // ==================== Daemon impl tests via Tauri mock_app ====================
@@ -1194,27 +915,6 @@ mod tests {
 
     fn mock_app_handle() -> tauri::AppHandle<MockRuntime> {
         mock_app().app_handle().clone()
-    }
-
-    // Daemon is generic over Runtime via AppHandle. The actual struct uses tauri::AppHandle
-    // (default runtime = wry::Wry). We can only construct Daemon::new with AppHandle<Wry>,
-    // which mock_app() does NOT provide. So we test the pure helpers + structural pieces only.
-
-    #[test]
-    fn test_shared_state_initial_disconnect_count_zero() {
-        let cfg = base_config();
-        let shared: Shared = Arc::new(Mutex::new(SharedState::new(cfg)));
-        let g = shared.lock().unwrap();
-        assert!(!g.hwinfo_connected);
-        assert_eq!(g.active_mode, crate::state::ActiveMode::Disconnected);
-    }
-
-    #[test]
-    fn test_mock_app_creates_handle() {
-        // Smoke test that the tauri test feature is wired up correctly.
-        let h = mock_app_handle();
-        // AppHandle has no public asserts but exists/clones — confirms the dep works.
-        let _h2 = h.clone();
     }
 
     fn fresh_shared() -> Shared {
@@ -1233,9 +933,7 @@ mod tests {
         assert!(d.hid_api.is_none());
         assert_eq!(d.disconnect_count, 0);
         assert_eq!(d.page_counter, 0);
-        assert!(!d.is_sleeping);
-        assert!(!d.is_white_screen);
-        assert!(d.pages_vec.is_empty());
+        assert!(!d.paused);
     }
 
     #[test]
@@ -1262,20 +960,6 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_handle_sleep_command_sets_flags() {
-        let mut d = daemon_for_tests();
-        d.handle_sleep_command(SleepCommand::Sleep);
-        assert!(d.is_sleeping);
-        assert!(!d.is_white_screen);
-        d.handle_sleep_command(SleepCommand::White);
-        assert!(!d.is_sleeping);
-        assert!(d.is_white_screen);
-        d.handle_sleep_command(SleepCommand::Wake);
-        assert!(!d.is_sleeping);
-        assert!(!d.is_white_screen);
-    }
-
-    #[test]
     fn test_daemon_tick_missing_hwinfo_errors() {
         let mut d = daemon_for_tests();
         let r = d.tick();
@@ -1284,345 +968,252 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_tick_processes_sleep_and_skips_when_sleeping() {
+    fn test_handle_sleep_command_sets_paused() {
         let mut d = daemon_for_tests();
-        // Set sleep_requested → tick consumes it, sets is_sleeping=true, returns Ok early
+        d.handle_sleep_command(SleepCommand::Sleep);
+        assert!(d.paused);
+        d.handle_sleep_command(SleepCommand::Wake);
+        assert!(!d.paused);
+        d.handle_sleep_command(SleepCommand::White);
+        assert!(d.paused);
+    }
+
+    #[test]
+    fn test_tick_drains_sleep_request_and_skips_while_paused() {
+        let mut d = daemon_for_tests();
         d.state.lock().unwrap().sleep_requested = Some(SleepCommand::Sleep);
-        let r = d.tick();
-        assert!(r.is_ok());
-        assert!(d.is_sleeping);
-        // sleep_requested was drained
+        // No hwinfo installed: tick would fail if it did not return early.
+        assert!(d.tick().is_ok());
+        assert!(d.paused);
         assert!(d.state.lock().unwrap().sleep_requested.is_none());
     }
 
     #[test]
-    fn test_daemon_tick_processes_white_screen() {
+    fn test_tick_wake_resumes() {
         let mut d = daemon_for_tests();
-        d.state.lock().unwrap().sleep_requested = Some(SleepCommand::White);
-        let r = d.tick();
-        assert!(r.is_ok());
-        assert!(d.is_white_screen);
-    }
-
-    #[test]
-    fn test_daemon_tick_wake_unsets_flags() {
-        let mut d = daemon_for_tests();
-        d.is_sleeping = true;
+        d.paused = true;
         d.state.lock().unwrap().sleep_requested = Some(SleepCommand::Wake);
-        // Wake clears flags but then tick continues → fails on missing hwinfo
-        let r = d.tick();
-        assert!(r.is_err());
-        assert!(!d.is_sleeping);
-        assert!(!d.is_white_screen);
+        // Resumed, so tick goes on and fails on the missing hwinfo.
+        assert!(d.tick().is_err());
+        assert!(!d.paused);
     }
 
     #[test]
-    fn test_daemon_tick_reload_request_errors_when_no_conf() {
-        // tick() handles reload by reading conf.ini; without one it should set last_error.
+    fn test_tick_clears_reload_request_even_when_reload_fails() {
         let mut d = daemon_for_tests();
-        d.is_sleeping = true; // skip the hwinfo check after reload-attempt
+        d.paused = true; // return right after the reload attempt
         d.state.lock().unwrap().reload_requested = true;
-        let r = d.tick();
-        assert!(r.is_ok()); // is_sleeping=true short-circuits after reload-fail
-                            // reload_requested cleared even on failure
+        assert!(d.tick().is_ok());
         assert!(!d.state.lock().unwrap().reload_requested);
     }
 
     #[test]
-    fn test_oled_client_send_blank_gamesense_unsupported_in_tests() {
-        // GameSenseClient construction requires the SS GG service. We can't reach the success path
-        // in CI. But test that the OledClient::Hid variant compiles in tests via match coverage of the
-        // sister functions.
-        // Just exercise apply_sleep_flags additionally.
-        assert!(apply_sleep_flags(SleepCommand::Wake) == (false, false));
+    fn test_record_failure_writes_status_text() {
+        let d = daemon_for_tests();
+        d.record_failure("Connect failed", &anyhow!("boom"));
+        assert_eq!(
+            d.state.lock().unwrap().last_error.as_deref(),
+            Some("Connect failed: boom")
+        );
     }
 
-    /// Mock display driver that records calls without doing I/O.
-    struct MockDriver {
-        trigger_calls: usize,
-        blank_calls: usize,
-        white_calls: usize,
-        stop_calls: usize,
-        next_trigger_err: bool,
+    #[test]
+    fn test_announce_sets_mode_and_message() {
+        let d = daemon_for_tests();
+        d.announce(
+            Some(ActiveMode::DirectUsb),
+            "Connecting to SteelSeries HID...",
+        );
+        let g = d.state.lock().unwrap();
+        assert_eq!(g.active_mode, ActiveMode::DirectUsb);
+        assert_eq!(
+            g.last_error.as_deref(),
+            Some("Connecting to SteelSeries HID...")
+        );
     }
-    impl MockDriver {
-        fn new() -> Self {
-            Self {
-                trigger_calls: 0,
-                blank_calls: 0,
-                white_calls: 0,
-                stop_calls: 0,
-                next_trigger_err: false,
-            }
-        }
+
+    #[test]
+    fn test_take_reload_request_returns_and_clears_flag() {
+        let d = daemon_for_tests();
+        assert!(!d.take_reload_request());
+        d.state.lock().unwrap().reload_requested = true;
+        assert!(d.take_reload_request());
+        assert!(!d.state.lock().unwrap().reload_requested);
+        assert!(!d.take_reload_request());
     }
-    impl DisplayDriver for MockDriver {
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Calls {
+        frames: AtomicUsize,
+        blank: AtomicUsize,
+        white: AtomicUsize,
+        stop: AtomicUsize,
+        events: Mutex<Vec<String>>,
+    }
+
+    struct CountingDriver(Arc<Calls>);
+
+    impl DisplayDriver for CountingDriver {
         fn trigger_frame(
             &mut self,
-            _event: &str,
+            event: &str,
             _i: isize,
-            _value: &Value,
-            _buf: &OledBuffer,
+            _lines: &[String],
+            _buffer: &OledBuffer,
         ) -> Result<(), anyhow::Error> {
-            self.trigger_calls += 1;
-            if self.next_trigger_err {
-                self.next_trigger_err = false;
-                Err(anyhow!("mock trigger err"))
-            } else {
-                Ok(())
-            }
+            self.0.events.lock().unwrap().push(event.to_string());
+            self.0.frames.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
         fn send_blank(&mut self) -> Result<(), anyhow::Error> {
-            self.blank_calls += 1;
+            self.0.blank.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
         fn send_white(&mut self) -> Result<(), anyhow::Error> {
-            self.white_calls += 1;
+            self.0.white.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
         fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
-            self.stop_calls += 1;
+            self.0.stop.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
 
     fn install_mock_driver(d: &mut Daemon<MockRuntime>) {
-        d.oled = Some(Box::new(MockDriver::new()));
-    }
-
-    #[allow(dead_code)]
-    fn install_summary_hwinfo(d: &mut Daemon<MockRuntime>) {
-        d.hwinfo = Some(full_summary_hwinfo());
+        d.oled = Some(Box::new(CountingDriver(Arc::new(Calls::default()))));
     }
 
     #[test]
-    fn test_daemon_tick_handles_disconnect_path() {
-        use std::ffi::OsStr;
-        use std::iter::once;
-        use std::os::windows::ffi::OsStrExt;
-        // Same hwinfo before and after pull. Use a valid (but nonexistent) mapping name so
-        // OpenFileMappingW returns null cleanly instead of dereferencing junk.
+    fn test_daemon_drives_installed_display_driver() {
+        let calls = Arc::new(Calls::default());
         let mut d = daemon_for_tests();
-        let mut hw = full_summary_hwinfo();
-        let name: Vec<u16> = OsStr::new("Global\\NoSuchMappingDaemonTest")
-            .encode_wide()
-            .chain(once(0))
-            .collect();
-        hw.set_shared_memory_name_for_test(name);
-        d.hwinfo = Some(hw);
-        install_mock_driver(&mut d);
-        // pull() returns Err because the mapping doesn't exist → tick propagates the error.
-        let r = d.tick();
-        assert!(r.is_err());
-    }
+        d.oled = Some(Box::new(CountingDriver(calls.clone())));
 
-    #[test]
-    fn test_daemon_handle_sleep_command_calls_driver_send_blank() {
-        let mut d = daemon_for_tests();
-        install_mock_driver(&mut d);
+        d.render(&full_summary_hwinfo(), true).unwrap();
         d.handle_sleep_command(SleepCommand::Sleep);
-        // Driver should have been called once
-        // Unfortunately we can't easily downcast Box<dyn DisplayDriver> here without unsafe.
-        // Instead verify the flag changes.
-        assert!(d.is_sleeping);
-    }
-
-    #[test]
-    fn test_daemon_handle_sleep_command_calls_driver_send_white() {
-        let mut d = daemon_for_tests();
-        install_mock_driver(&mut d);
         d.handle_sleep_command(SleepCommand::White);
-        assert!(d.is_white_screen);
-    }
+        d.disconnect_and_cleanup();
 
-    fn install_bypass_hwinfo(d: &mut Daemon<MockRuntime>) {
-        let mut hw = full_summary_hwinfo();
-        hw.bypass_pull_for_test = true;
-        d.hwinfo = Some(hw);
-    }
-
-    #[test]
-    fn test_daemon_tick_happy_path_summary_renders_and_emits() {
-        let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
-        install_mock_driver(&mut d);
-
-        d.tick().unwrap();
-        // Should have updated state with hwinfo_connected=true and a non-empty buffer
-        let g = d.state.lock().unwrap();
-        assert!(g.hwinfo_connected);
-        // Summary mode rendered "CPU GPU MEM" → sensor_values populated
-        assert!(!g.sensor_values.is_empty());
-        // hwinfo_snapshot captured
-        assert!(g.hwinfo_snapshot.is_some());
+        assert_eq!(calls.frames.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.blank.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.white.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.stop.load(Ordering::Relaxed), 1);
+        assert!(d.oled.is_none());
     }
 
     #[test]
-    fn test_daemon_tick_happy_path_advances_counter() {
-        let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
-        install_mock_driver(&mut d);
+    fn test_is_stale_counts_up_to_limit_and_resets_on_fresh() {
+        let mut count = 0;
+        assert!(!is_stale(false, &mut count, 3));
+        assert!(!is_stale(false, &mut count, 3));
+        assert!(is_stale(false, &mut count, 3));
+        // Capped: stays at the limit, does not overflow.
+        assert!(is_stale(false, &mut count, 3));
+        assert_eq!(count, 3);
+        assert!(!is_stale(true, &mut count, 3));
+        assert_eq!(count, 0);
+    }
 
+    #[test]
+    fn test_render_summary_updates_state_and_counter() {
+        let mut d = daemon_for_tests();
+        install_mock_driver(&mut d);
         let i_before = d.i.0;
-        d.tick().unwrap();
+
+        d.render(&full_summary_hwinfo(), true).unwrap();
+
         assert_eq!(d.i.0, i_before + 1);
+        let g = d.state.lock().unwrap();
+        assert!(g.hwinfo_connected);
+        assert!(!g.sensor_values.is_empty());
+        assert!(g.hwinfo_snapshot.is_some());
+        assert!(g.last_error.is_none());
     }
 
     #[test]
-    fn test_daemon_tick_happy_path_custom_mode_advances_pages() {
+    fn test_render_without_driver_errors() {
+        let mut d = daemon_for_tests();
+        let err = d.render(&full_summary_hwinfo(), true).unwrap_err();
+        assert!(format!("{}", err).contains("oled missing"));
+    }
+
+    #[test]
+    fn test_render_custom_mode_advances_pages() {
         let mut d = daemon_for_tests();
         d.config.is_summary = false;
         d.config.pages = 2;
-        d.config.page_time = 1; // every 2 ticks → quick advance
-        let mut hw = build_hwinfo(&[("S", "R", 1.0)]);
-        hw.bypass_pull_for_test = true;
-        d.hwinfo = Some(hw);
+        d.config.page_time = 1; // TICK_RATE=500 → 2 ticks per second → switch every 2 ticks
+        d.config.custom_sensors = vec![Vec::new(), Vec::new()];
         install_mock_driver(&mut d);
+        let hw = build_hwinfo(&[("S", "R", 1.0)]);
 
-        // Provide two pages of empty properties
-        d.pages_vec = vec![ini::Properties::new(), ini::Properties::new()];
-
-        // Run a few ticks; page_counter should advance at intervals (TICK_RATE=500 → 2 ticks/sec, page_time=1 → interval=2)
         for _ in 0..3 {
-            let _ = d.tick();
+            d.render(&hw, true).unwrap();
         }
-        // At i=2 the counter switches to 1
-        assert!(d.page_counter <= 1);
+        assert_eq!(d.page_counter, 1);
     }
 
     #[test]
-    fn test_daemon_tick_disconnect_after_many_unchanged_pulls() {
+    fn test_render_shows_disconnected_after_stale_limit() {
         let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
         install_mock_driver(&mut d);
-        // bypass_pull → old==new every tick → disconnect_count increments
-        // limit is 5 (hard-coded in tick), so after 5 ticks tick should hit the disconnected path.
-        for _ in 0..10 {
-            let _ = d.tick();
+        let hw = full_summary_hwinfo();
+
+        for _ in 0..STALE_LIMIT - 1 {
+            d.render(&hw, false).unwrap();
         }
+        assert!(d.state.lock().unwrap().hwinfo_connected);
+
+        d.render(&hw, false).unwrap();
         let g = d.state.lock().unwrap();
-        // hwinfo_connected was flipped to false during disconnect path
-        assert!(!g.hwinfo_connected || g.last_error.as_deref() == Some("HWiNFO disconnected"));
+        assert!(!g.hwinfo_connected);
+        assert_eq!(g.last_error.as_deref(), Some("HWiNFO disconnected"));
     }
 
     #[test]
-    fn test_announce_connecting_hwinfo_sets_status() {
-        let d = daemon_for_tests();
-        d.announce_connecting_hwinfo();
-        assert_eq!(
-            d.state.lock().unwrap().last_error.as_deref(),
-            Some("Connecting to HWiNFO...")
-        );
+    fn test_render_sends_disconnected_frame_on_bound_page_event() {
+        let calls = Arc::new(Calls::default());
+        let mut d = daemon_for_tests();
+        d.oled = Some(Box::new(CountingDriver(calls.clone())));
+        let hw = full_summary_hwinfo();
+
+        for _ in 0..STALE_LIMIT {
+            d.render(&hw, false).unwrap();
+        }
+
+        assert!(!d.state.lock().unwrap().hwinfo_connected);
+        let events = calls.events.lock().unwrap();
+        assert_eq!(events.len(), STALE_LIMIT);
+        assert_eq!(events.last().map(String::as_str), Some("PAGE1"));
     }
 
     #[test]
-    fn test_after_hwinfo_connected_clears_error() {
-        let d = daemon_for_tests();
-        d.state.lock().unwrap().last_error = Some("prev".to_string());
-        d.after_hwinfo_connected();
+    fn test_render_recovers_after_stale() {
+        let mut d = daemon_for_tests();
+        install_mock_driver(&mut d);
+        let hw = full_summary_hwinfo();
+        for _ in 0..STALE_LIMIT {
+            d.render(&hw, false).unwrap();
+        }
+        assert!(!d.state.lock().unwrap().hwinfo_connected);
+
+        d.render(&hw, true).unwrap();
         let g = d.state.lock().unwrap();
         assert!(g.hwinfo_connected);
         assert!(g.last_error.is_none());
-    }
-
-    #[test]
-    fn test_load_pages_for_config_summary_clears_pages() {
-        let mut d = daemon_for_tests();
-        d.pages_vec.push(ini::Properties::new());
-        d.config.is_summary = true;
-        d.load_pages_for_config();
-        assert!(d.pages_vec.is_empty());
-    }
-
-    #[test]
-    fn test_load_pages_for_config_custom_with_no_conf_ini_yields_empty() {
-        let mut d = daemon_for_tests();
-        d.config.is_summary = false;
-        d.config.pages = 2;
-        // No conf.ini in temp cwd typically → Ini::new() → no PAGE sections → empty
-        d.load_pages_for_config();
-        // pages_vec may be empty (no PAGE sections in cwd's conf.ini) or have entries (if some
-        // unrelated conf.ini exists). Either way, this method should not panic.
-        assert!(d.pages_vec.len() <= 2);
-    }
-
-    #[test]
-    fn test_announce_connecting_direct_usb_sets_mode() {
-        let d = daemon_for_tests();
-        d.announce_connecting_direct_usb();
-        let g = d.state.lock().unwrap();
-        assert_eq!(g.active_mode, ActiveMode::DirectUsb);
-        assert!(g.last_error.as_deref().unwrap().contains("HID"));
-    }
-
-    #[test]
-    fn test_announce_connecting_gamesense_sets_mode() {
-        let d = daemon_for_tests();
-        d.announce_connecting_gamesense();
-        let g = d.state.lock().unwrap();
-        assert_eq!(g.active_mode, ActiveMode::GameSense);
-        assert!(g.last_error.as_deref().unwrap().contains("SteelSeries"));
-    }
-
-    #[test]
-    fn test_after_direct_usb_connected_sets_flags() {
-        let d = daemon_for_tests();
-        d.state.lock().unwrap().gg_connected = true; // ensure it gets flipped
-        d.after_direct_usb_connected();
-        let g = d.state.lock().unwrap();
-        assert!(g.usb_connected);
-        assert!(!g.gg_connected);
-        assert!(g.last_error.is_none());
-    }
-
-    #[test]
-    fn test_after_gamesense_connected_sets_flags() {
-        let d = daemon_for_tests();
-        d.state.lock().unwrap().usb_connected = true;
-        d.after_gamesense_connected();
-        let g = d.state.lock().unwrap();
-        assert!(g.gg_connected);
-        assert!(!g.usb_connected);
-    }
-
-    #[test]
-    fn test_record_connect_failure_writes_state() {
-        let d = daemon_for_tests();
-        let err = anyhow!("boom");
-        d.record_connect_failure(&err);
-        assert!(d
-            .state
-            .lock()
-            .unwrap()
-            .last_error
-            .as_deref()
-            .unwrap()
-            .contains("Connect failed"));
-    }
-
-    #[test]
-    fn test_record_tick_failure_writes_state() {
-        let d = daemon_for_tests();
-        let err = anyhow!("tick err");
-        d.record_tick_failure(&err);
-        assert!(d
-            .state
-            .lock()
-            .unwrap()
-            .last_error
-            .as_deref()
-            .unwrap()
-            .contains("Tick error"));
     }
 
     #[test]
     fn test_disconnect_and_cleanup_clears_everything() {
         let mut d = daemon_for_tests();
-        install_bypass_hwinfo(&mut d);
         install_mock_driver(&mut d);
         d.state.lock().unwrap().hwinfo_connected = true;
         d.state.lock().unwrap().gg_connected = true;
         d.disconnect_and_cleanup();
+        // A Hwinfo cannot be constructed without a live HWiNFO mapping, so the
+        // test cannot install one first.
         assert!(d.hwinfo.is_none());
         assert!(d.oled.is_none());
         assert!(d.hid_api.is_none());
@@ -1634,176 +1225,9 @@ mod tests {
     }
 
     #[test]
-    fn test_arc_assert_compiles() {
-        // Smoke test for the _arc_assert helper.
-        _arc_assert(Arc::new(()));
-    }
-
-    /// Registry entry for the Nova Pro Wireless, the default device used by
-    /// the OledClient::Hid test fixtures.
-    fn nova_device() -> &'static crate::devices::SupportedDevice {
-        crate::devices::find_supported(0x12E0).expect("Nova Pro in registry")
-    }
-
-    struct FakeHidSender {
-        fail: bool,
-        calls: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
-    }
-    impl FakeHidSender {
-        fn new() -> Self {
-            Self {
-                fail: false,
-                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
-            }
-        }
-        fn failing() -> Self {
-            Self {
-                fail: true,
-                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
-            }
-        }
-        /// Like `new()`, but also hands back the call log so tests can assert
-        /// on packets after the sender is boxed as `dyn HidSender`.
-        fn with_shared_calls() -> (Self, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
-            let sender = Self::new();
-            let calls = Arc::clone(&sender.calls);
-            (sender, calls)
-        }
-    }
-    impl HidSender for FakeHidSender {
-        fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
-            self.calls.lock().unwrap().push(packet.to_vec());
-            if self.fail {
-                Err(anyhow!("fake send fail"))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    #[test]
-    fn test_oled_client_hid_trigger_frame_sends_two_packets() {
-        let (sender, calls) = FakeHidSender::with_shared_calls();
-        let mut oled = OledClient::Hid {
-            sender: Box::new(sender),
-            device: nova_device(),
-        };
-        let buf = OledBuffer::new(128, 64);
-        let val = json!({});
-        oled.trigger_frame("E", 0, &val, &buf).unwrap();
-        // Nova Pro frames are two 1024-byte feature reports.
-        let packets = calls.lock().unwrap();
-        assert_eq!(packets.len(), 2);
-        assert!(packets.iter().all(|p| p.len() == 1024));
-    }
-
-    #[test]
-    fn test_oled_client_hid_trigger_frame_returns_err_when_sender_fails() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::failing()),
-            device: nova_device(),
-        };
-        let buf = OledBuffer::new(128, 64);
-        let val = json!({});
-        let r = oled.trigger_frame("E", 0, &val, &buf);
-        assert!(r.is_err());
-        assert!(r.unwrap_err().to_string().contains("HID send"));
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_blank_writes_packets() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        };
-        oled.send_blank().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_white_writes_packets() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        };
-        oled.send_white().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_via_display_driver_trait() {
-        // Exercise OledClient's DisplayDriver impl via dyn dispatch (covers the trait wrapper methods).
-        let mut drv: Box<dyn DisplayDriver> = Box::new(OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        });
-        let buf = OledBuffer::new(128, 64);
-        let val = json!({});
-        assert!(drv.trigger_frame("E", 0, &val, &buf).is_ok());
-        assert!(drv.send_blank().is_ok());
-        assert!(drv.send_white().is_ok());
-        assert!(drv.stop_heartbeat().is_ok());
-    }
-
-    #[test]
-    fn test_oled_client_hid_stop_heartbeat_noop() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        };
-        // stop_heartbeat is a noop for Hid variant
-        oled.stop_heartbeat().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_blank_ignores_sender_err() {
-        // send_blank ignores send errors (best-effort)
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::failing()),
-            device: nova_device(),
-        };
-        oled.send_blank().unwrap(); // still Ok even though sender fails
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_white_ignores_sender_err() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::failing()),
-            device: nova_device(),
-        };
-        oled.send_white().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_apex_sends_single_642_byte_packet() {
-        let (sender, calls) = FakeHidSender::with_shared_calls();
-        let mut oled = OledClient::Hid {
-            sender: Box::new(sender),
-            device: crate::devices::find_supported(0x1610).expect("Apex Pro in registry"),
-        };
-        let buf = OledBuffer::new(128, 40);
-        let val = json!({"line1": "x"});
-        oled.trigger_frame("E", 0, &val, &buf).unwrap();
-        let packets = calls.lock().unwrap();
-        assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].len(), 642);
-        assert_eq!(packets[0][0], 0x61);
-    }
-
-    #[test]
     fn test_white_buffer_all_pixels_on() {
         let buf = white_buffer(128, 64);
         // Every byte should be 0xFF
         assert!(buf.data.iter().all(|b| *b == 0xFF));
-    }
-
-    #[test]
-    fn test_oled_client_dyn_dispatch_via_mock() {
-        // Exercise the trait methods through dyn dispatch.
-        let mut drv: Box<dyn DisplayDriver> = Box::new(MockDriver::new());
-        let buf = OledBuffer::new(128, 64);
-        let val = json!({});
-        assert!(drv.trigger_frame("e", 0, &val, &buf).is_ok());
-        assert!(drv.send_blank().is_ok());
-        assert!(drv.send_white().is_ok());
-        assert!(drv.stop_heartbeat().is_ok());
     }
 }
