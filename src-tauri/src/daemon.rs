@@ -139,7 +139,8 @@ fn white_buffer(width: u32, height: u32) -> OledBuffer {
     buffer
 }
 
-/// Display driver abstraction so the daemon can be tested with mocks.
+/// Where frames go. Two implementations: SteelSeries GG (text lines) and
+/// direct USB HID (bitmap).
 trait DisplayDriver: Send {
     fn trigger_frame(
         &mut self,
@@ -150,110 +151,80 @@ trait DisplayDriver: Send {
     ) -> Result<(), anyhow::Error>;
     fn send_blank(&mut self) -> Result<(), anyhow::Error>;
     fn send_white(&mut self) -> Result<(), anyhow::Error>;
-    fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error>;
-}
-
-/// Abstraction over the HID send path so the OledClient::Hid branches can be tested
-/// with a mock sender instead of a real `hidapi::HidDevice`.
-trait HidSender: Send {
-    fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error>;
-}
-
-impl HidSender for hidapi::HidDevice {
-    fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
-        hidapi::HidDevice::send_feature_report(self, packet).map_err(|e| anyhow::anyhow!("{}", e))
-    }
-}
-
-enum OledClient {
-    GameSense(GameSenseClient),
-    Hid {
-        sender: Box<dyn HidSender>,
-        device: &'static crate::devices::SupportedDevice,
-    },
-}
-
-impl DisplayDriver for OledClient {
-    fn trigger_frame(
-        &mut self,
-        event: &str,
-        i: isize,
-        lines: &[String],
-        buffer: &OledBuffer,
-    ) -> Result<(), anyhow::Error> {
-        OledClient::trigger_frame(self, event, i, lines, buffer)
-    }
-    fn send_blank(&mut self) -> Result<(), anyhow::Error> {
-        OledClient::send_blank(self)
-    }
-    fn send_white(&mut self) -> Result<(), anyhow::Error> {
-        OledClient::send_white(self)
-    }
     fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
-        OledClient::stop_heartbeat(self)
+        Ok(())
     }
 }
 
-impl OledClient {
+struct GameSenseDisplay(GameSenseClient);
+
+impl DisplayDriver for GameSenseDisplay {
     fn trigger_frame(
         &mut self,
         event: &str,
         i: isize,
         lines: &[String],
-        buffer: &OledBuffer,
+        _buffer: &OledBuffer,
     ) -> Result<(), anyhow::Error> {
-        match self {
-            OledClient::GameSense(client) => {
-                client.trigger_event_frame(event, i, lines_to_frame(lines))?;
-            }
-            OledClient::Hid { sender, device } => {
-                for packet in device.protocol.build_packets(buffer) {
-                    if let Err(e) = sender.send_feature_report(&packet) {
-                        error!("Failed to send HID frame: {}", e);
-                        return Err(anyhow!("HID send failed: {}", e));
-                    }
-                }
-            }
-        }
+        self.0.trigger_event_frame(event, i, lines_to_frame(lines))?;
         Ok(())
     }
 
     fn send_blank(&mut self) -> Result<(), anyhow::Error> {
-        match self {
-            OledClient::GameSense(client) => {
-                let blank = vec![String::new(); 3];
-                client.trigger_event_frame("BLANK", 0, lines_to_frame(&blank))?;
-            }
-            OledClient::Hid { sender, device } => {
-                let blank = OledBuffer::new(device.width, device.height);
-                for packet in device.protocol.build_packets(&blank) {
-                    let _ = sender.send_feature_report(&packet);
-                }
-            }
-        }
+        let blank = vec![String::new(); 3];
+        self.0.trigger_event_frame("BLANK", 0, lines_to_frame(&blank))?;
         Ok(())
     }
 
     fn send_white(&mut self) -> Result<(), anyhow::Error> {
-        match self {
-            OledClient::GameSense(client) => {
-                let white = vec!["████████████████".to_string(); 3];
-                client.trigger_event_frame("WHITE", 0, lines_to_frame(&white))?;
-            }
-            OledClient::Hid { sender, device } => {
-                let buffer = white_buffer(device.width, device.height);
-                for packet in device.protocol.build_packets(&buffer) {
-                    let _ = sender.send_feature_report(&packet);
-                }
-            }
-        }
+        let white = vec!["████████████████".to_string(); 3];
+        self.0.trigger_event_frame("WHITE", 0, lines_to_frame(&white))?;
         Ok(())
     }
 
-    pub fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
-        if let OledClient::GameSense(client) = self {
-            client.stop_heartbeat()?;
+    fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
+        self.0.stop_heartbeat()?;
+        Ok(())
+    }
+}
+
+struct HidDisplay {
+    device: hidapi::HidDevice,
+    model: &'static crate::devices::SupportedDevice,
+}
+
+impl HidDisplay {
+    fn send(&self, buffer: &OledBuffer) -> Result<(), anyhow::Error> {
+        for packet in self.model.protocol.build_packets(buffer) {
+            self.device.send_feature_report(&packet).map_err(|e| {
+                error!("Failed to send HID frame: {}", e);
+                anyhow!("HID send failed: {}", e)
+            })?;
         }
+        Ok(())
+    }
+}
+
+impl DisplayDriver for HidDisplay {
+    fn trigger_frame(
+        &mut self,
+        _event: &str,
+        _i: isize,
+        _lines: &[String],
+        buffer: &OledBuffer,
+    ) -> Result<(), anyhow::Error> {
+        self.send(buffer)
+    }
+
+    // Blank and white are best-effort: a failed send must not tear down the
+    // connection when the user asks the screen to sleep.
+    fn send_blank(&mut self) -> Result<(), anyhow::Error> {
+        let _ = self.send(&OledBuffer::new(self.model.width, self.model.height));
+        Ok(())
+    }
+
+    fn send_white(&mut self) -> Result<(), anyhow::Error> {
+        let _ = self.send(&white_buffer(self.model.width, self.model.height));
         Ok(())
     }
 }
@@ -463,9 +434,9 @@ impl<R: Runtime> Daemon<R> {
                 s.display_size = size;
                 s.oled_buffer = OledBuffer::new(size.0, size.1);
             });
-            self.oled = Some(Box::new(OledClient::Hid {
-                sender: Box::new(device),
-                device: supported,
+            self.oled = Some(Box::new(HidDisplay {
+                device,
+                model: supported,
             }));
             self.hid_api = Some(api);
 
@@ -488,7 +459,7 @@ impl<R: Runtime> Daemon<R> {
                 gg.bind_event(&format!("PAGE{}", i), None, None, None, None, vec![handler])?;
             }
             gg.start_heartbeat();
-            self.oled = Some(Box::new(OledClient::GameSense(gg)));
+            self.oled = Some(Box::new(GameSenseDisplay(gg)));
 
             self.after_gamesense_connected();
         }
@@ -988,16 +959,6 @@ mod tests {
         assert_eq!(page_event_name(2), "PAGE3");
     }
 
-    #[test]
-    fn test_oled_client_send_blank_hid_variant_does_not_panic_on_invalid_device() {
-        // We can't easily construct a HidDevice without a real device.
-        // Cover the GameSense send_blank by using a real GameSenseClient only if available.
-        // Instead exercise via JSON shape: the function body's primary paths run.
-        // This test merely confirms the helper functions compile and the json() value shape is correct.
-        let v = serde_json::json!({ "line1": "", "line2": "", "line3": "" });
-        assert_eq!(v["line1"], "");
-    }
-
     // ==================== Daemon impl tests via Tauri mock_app ====================
     use crate::state::SharedState;
     use std::sync::{Arc, Mutex};
@@ -1149,15 +1110,6 @@ mod tests {
         assert!(!d.take_reload_request());
     }
 
-    #[test]
-    fn test_oled_client_send_blank_gamesense_unsupported_in_tests() {
-        // GameSenseClient construction requires the SS GG service. We can't reach the success path
-        // in CI. But test that the OledClient::Hid variant compiles in tests via match coverage of the
-        // sister functions.
-        // Just exercise apply_sleep_flags additionally.
-        assert!(apply_sleep_flags(SleepCommand::Wake) == (false, false));
-    }
-
     /// Mock display driver that records calls without doing I/O.
     struct MockDriver {
         trigger_calls: usize,
@@ -1211,23 +1163,59 @@ mod tests {
         d.oled = Some(Box::new(MockDriver::new()));
     }
 
-    #[test]
-    fn test_daemon_handle_sleep_command_calls_driver_send_blank() {
-        let mut d = daemon_for_tests();
-        install_mock_driver(&mut d);
-        d.handle_sleep_command(SleepCommand::Sleep);
-        // Driver should have been called once
-        // Unfortunately we can't easily downcast Box<dyn DisplayDriver> here without unsafe.
-        // Instead verify the flag changes.
-        assert!(d.is_sleeping);
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Calls {
+        frames: AtomicUsize,
+        blank: AtomicUsize,
+        white: AtomicUsize,
+        stop: AtomicUsize,
+    }
+
+    struct CountingDriver(Arc<Calls>);
+
+    impl DisplayDriver for CountingDriver {
+        fn trigger_frame(
+            &mut self,
+            _event: &str,
+            _i: isize,
+            _lines: &[String],
+            _buffer: &OledBuffer,
+        ) -> Result<(), anyhow::Error> {
+            self.0.frames.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn send_blank(&mut self) -> Result<(), anyhow::Error> {
+            self.0.blank.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn send_white(&mut self) -> Result<(), anyhow::Error> {
+            self.0.white.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
+            self.0.stop.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
     }
 
     #[test]
-    fn test_daemon_handle_sleep_command_calls_driver_send_white() {
+    fn test_daemon_drives_installed_display_driver() {
+        let calls = Arc::new(Calls::default());
         let mut d = daemon_for_tests();
-        install_mock_driver(&mut d);
+        d.oled = Some(Box::new(CountingDriver(calls.clone())));
+
+        d.render(&full_summary_hwinfo(), true).unwrap();
+        d.handle_sleep_command(SleepCommand::Sleep);
         d.handle_sleep_command(SleepCommand::White);
-        assert!(d.is_white_screen);
+        d.disconnect_and_cleanup();
+
+        assert_eq!(calls.frames.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.blank.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.white.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.stop.load(Ordering::Relaxed), 1);
+        assert!(d.oled.is_none());
     }
 
     #[test]
@@ -1423,171 +1411,10 @@ mod tests {
         assert_eq!(g.active_mode, ActiveMode::Disconnected);
     }
 
-    /// Registry entry for the Nova Pro Wireless, the default device used by
-    /// the OledClient::Hid test fixtures.
-    fn nova_device() -> &'static crate::devices::SupportedDevice {
-        crate::devices::find_supported(0x12E0).expect("Nova Pro in registry")
-    }
-
-    struct FakeHidSender {
-        fail: bool,
-        calls: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
-    }
-    impl FakeHidSender {
-        fn new() -> Self {
-            Self {
-                fail: false,
-                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
-            }
-        }
-        fn failing() -> Self {
-            Self {
-                fail: true,
-                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
-            }
-        }
-        /// Like `new()`, but also hands back the call log so tests can assert
-        /// on packets after the sender is boxed as `dyn HidSender`.
-        fn with_shared_calls() -> (Self, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
-            let sender = Self::new();
-            let calls = Arc::clone(&sender.calls);
-            (sender, calls)
-        }
-    }
-    impl HidSender for FakeHidSender {
-        fn send_feature_report(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
-            self.calls.lock().unwrap().push(packet.to_vec());
-            if self.fail {
-                Err(anyhow!("fake send fail"))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    #[test]
-    fn test_oled_client_hid_trigger_frame_sends_two_packets() {
-        let (sender, calls) = FakeHidSender::with_shared_calls();
-        let mut oled = OledClient::Hid {
-            sender: Box::new(sender),
-            device: nova_device(),
-        };
-        let buf = OledBuffer::new(128, 64);
-        let val: Vec<String> = Vec::new();
-        oled.trigger_frame("E", 0, &val, &buf).unwrap();
-        // Nova Pro frames are two 1024-byte feature reports.
-        let packets = calls.lock().unwrap();
-        assert_eq!(packets.len(), 2);
-        assert!(packets.iter().all(|p| p.len() == 1024));
-    }
-
-    #[test]
-    fn test_oled_client_hid_trigger_frame_returns_err_when_sender_fails() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::failing()),
-            device: nova_device(),
-        };
-        let buf = OledBuffer::new(128, 64);
-        let val: Vec<String> = Vec::new();
-        let r = oled.trigger_frame("E", 0, &val, &buf);
-        assert!(r.is_err());
-        assert!(r.unwrap_err().to_string().contains("HID send"));
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_blank_writes_packets() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        };
-        oled.send_blank().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_white_writes_packets() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        };
-        oled.send_white().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_via_display_driver_trait() {
-        // Exercise OledClient's DisplayDriver impl via dyn dispatch (covers the trait wrapper methods).
-        let mut drv: Box<dyn DisplayDriver> = Box::new(OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        });
-        let buf = OledBuffer::new(128, 64);
-        let val: Vec<String> = Vec::new();
-        assert!(drv.trigger_frame("E", 0, &val, &buf).is_ok());
-        assert!(drv.send_blank().is_ok());
-        assert!(drv.send_white().is_ok());
-        assert!(drv.stop_heartbeat().is_ok());
-    }
-
-    #[test]
-    fn test_oled_client_hid_stop_heartbeat_noop() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::new()),
-            device: nova_device(),
-        };
-        // stop_heartbeat is a noop for Hid variant
-        oled.stop_heartbeat().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_blank_ignores_sender_err() {
-        // send_blank ignores send errors (best-effort)
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::failing()),
-            device: nova_device(),
-        };
-        oled.send_blank().unwrap(); // still Ok even though sender fails
-    }
-
-    #[test]
-    fn test_oled_client_hid_send_white_ignores_sender_err() {
-        let mut oled = OledClient::Hid {
-            sender: Box::new(FakeHidSender::failing()),
-            device: nova_device(),
-        };
-        oled.send_white().unwrap();
-    }
-
-    #[test]
-    fn test_oled_client_hid_apex_sends_single_642_byte_packet() {
-        let (sender, calls) = FakeHidSender::with_shared_calls();
-        let mut oled = OledClient::Hid {
-            sender: Box::new(sender),
-            device: crate::devices::find_supported(0x1610).expect("Apex Pro in registry"),
-        };
-        let buf = OledBuffer::new(128, 40);
-        let val = vec!["x".to_string()];
-        oled.trigger_frame("E", 0, &val, &buf).unwrap();
-        let packets = calls.lock().unwrap();
-        assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].len(), 642);
-        assert_eq!(packets[0][0], 0x61);
-    }
-
     #[test]
     fn test_white_buffer_all_pixels_on() {
         let buf = white_buffer(128, 64);
         // Every byte should be 0xFF
         assert!(buf.data.iter().all(|b| *b == 0xFF));
-    }
-
-    #[test]
-    fn test_oled_client_dyn_dispatch_via_mock() {
-        // Exercise the trait methods through dyn dispatch.
-        let mut drv: Box<dyn DisplayDriver> = Box::new(MockDriver::new());
-        let buf = OledBuffer::new(128, 64);
-        let val: Vec<String> = Vec::new();
-        assert!(drv.trigger_frame("e", 0, &val, &buf).is_ok());
-        assert!(drv.send_blank().is_ok());
-        assert!(drv.send_white().is_ok());
-        assert!(drv.stop_heartbeat().is_ok());
     }
 }
