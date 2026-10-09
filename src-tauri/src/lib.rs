@@ -88,25 +88,52 @@ struct Header {
     poll_time: i64,
     sensors: Section,
     readings: Section,
+    /// Fingerprint of every name the layout is built from.
+    names: u64,
 }
 
 impl Header {
     fn parse(bytes: &[u8]) -> Result<Self> {
+        let poll_time = i64::from_le_bytes(bytes_at(bytes, HDR_POLL_TIME)?);
+        let sensors = Section::parse(bytes, HDR_SENSORS, SENSOR_NAME + STRING_LEN)?;
+        let readings = Section::parse(bytes, HDR_READINGS, READING_VALUE + 8)?;
         Ok(Header {
-            poll_time: i64::from_le_bytes(bytes_at(bytes, HDR_POLL_TIME)?),
-            sensors: Section::parse(bytes, HDR_SENSORS, SENSOR_NAME + STRING_LEN)?,
-            readings: Section::parse(bytes, HDR_READINGS, READING_VALUE + 8)?,
+            poll_time,
+            sensors,
+            readings,
+            names: names_fingerprint(bytes, sensors, readings),
         })
     }
 }
 
-/// NUL-terminated string field; prefers the UTF-8 copy when the element is
-/// large enough to have one.
-fn name_at(element: &[u8], utf8: usize, ansi: usize) -> String {
-    let field = element
+/// Hash of every field the layout is built from, so a pull can tell cheaply
+/// whether HWiNFO renamed, reordered or swapped readings without changing
+/// the table sizes.
+fn names_fingerprint(bytes: &[u8], sensors: Section, readings: Section) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for e in sensors.elements(bytes) {
+        name_field(e, SENSOR_NAME_UTF8, SENSOR_NAME).hash(&mut hasher);
+    }
+    for e in readings.elements(bytes) {
+        e[READING_SENSOR_INDEX..READING_SENSOR_INDEX + 4].hash(&mut hasher);
+        name_field(e, READING_LABEL_UTF8, READING_LABEL).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// The raw string field: the UTF-8 copy when the element is large enough to
+/// have one, else the ANSI copy, else empty.
+fn name_field(element: &[u8], utf8: usize, ansi: usize) -> &[u8] {
+    element
         .get(utf8..utf8 + STRING_LEN)
         .or_else(|| element.get(ansi..ansi + STRING_LEN))
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// NUL-terminated string field, see `name_field`.
+fn name_at(element: &[u8], utf8: usize, ansi: usize) -> String {
+    let field = name_field(element, utf8, ansi);
     let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
     String::from_utf8_lossy(&field[..end]).into_owned()
 }
@@ -222,7 +249,8 @@ fn load(bytes: &[u8]) -> Result<(Header, Snapshot)> {
 /// `header` was read; the values are refreshed either way.
 fn refresh(bytes: &[u8], header: &mut Header, snapshot: &mut Snapshot) -> Result<bool> {
     let new = Header::parse(bytes)?;
-    if new.sensors != header.sensors || new.readings != header.readings {
+    if new.sensors != header.sensors || new.readings != header.readings || new.names != header.names
+    {
         snapshot.layout = Arc::new(Layout::parse(bytes, &new));
     }
     read_values(bytes, new.readings, &mut snapshot.values);
@@ -459,6 +487,63 @@ mod tests {
         refresh(&grown, &mut header, &mut snap).unwrap();
         assert_eq!(snap.get("T", "New"), Some(9.0));
         assert_eq!(snap.readings().count(), 2);
+    }
+
+    #[test]
+    fn refresh_rebuilds_layout_when_readings_swap_without_count_change() {
+        let (mut header, mut snap) =
+            load(&memory(1, &["S"], &[(0, "A", 1.0), (0, "B", 2.0)])).unwrap();
+        // Same sizes and counts, but the two readings traded places.
+        let swapped = memory(2, &["S"], &[(0, "B", 2.0), (0, "A", 1.0)]);
+        refresh(&swapped, &mut header, &mut snap).unwrap();
+        assert_eq!(snap.get("S", "A"), Some(1.0));
+        assert_eq!(snap.get("S", "B"), Some(2.0));
+    }
+
+    #[test]
+    fn refresh_rebuilds_layout_when_reading_renamed() {
+        let (mut header, mut snap) = load(&memory(1, &["S"], &[(0, "Old", 1.0)])).unwrap();
+        refresh(
+            &memory(2, &["S"], &[(0, "New", 1.0)]),
+            &mut header,
+            &mut snap,
+        )
+        .unwrap();
+        assert_eq!(snap.get("S", "New"), Some(1.0));
+        assert_eq!(snap.get("S", "Old"), None);
+    }
+
+    #[test]
+    fn refresh_rebuilds_layout_when_sensor_renamed_or_reading_moves_sensor() {
+        let (mut header, mut snap) = load(&memory(1, &["S", "T"], &[(0, "R", 1.0)])).unwrap();
+        refresh(
+            &memory(2, &["S2", "T"], &[(0, "R", 1.0)]),
+            &mut header,
+            &mut snap,
+        )
+        .unwrap();
+        assert_eq!(snap.get("S2", "R"), Some(1.0));
+        refresh(
+            &memory(3, &["S2", "T"], &[(1, "R", 1.0)]),
+            &mut header,
+            &mut snap,
+        )
+        .unwrap();
+        assert_eq!(snap.get("T", "R"), Some(1.0));
+        assert_eq!(snap.get("S2", "R"), None);
+    }
+
+    #[test]
+    fn refresh_keeps_layout_when_only_values_change() {
+        let (mut header, mut snap) = load(&memory(1, &["S"], &[(0, "R", 1.0)])).unwrap();
+        let before = Arc::as_ptr(&snap.layout);
+        refresh(&memory(2, &["S"], &[(0, "R", 9.0)]), &mut header, &mut snap).unwrap();
+        assert_eq!(
+            Arc::as_ptr(&snap.layout),
+            before,
+            "layout must not be rebuilt"
+        );
+        assert_eq!(snap.get("S", "R"), Some(9.0));
     }
 
     #[test]
