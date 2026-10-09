@@ -218,16 +218,6 @@ pub struct SensorOption {
     pub description: Option<String>,
 }
 
-fn get_status_impl(shared: &Shared) -> Result<StatusPayload, String> {
-    let g = shared.lock().map_err(|e| e.to_string())?;
-    Ok(g.status_payload())
-}
-
-fn get_config_impl(shared: &Shared) -> Result<AppConfig, String> {
-    let g = shared.lock().map_err(|e| e.to_string())?;
-    Ok(g.config.clone())
-}
-
 fn save_config_impl(path: &str, shared: &Shared, config: AppConfig) -> Result<(), String> {
     let mut ini = Ini::load_from_file(path).unwrap_or_else(|_| Ini::new());
     apply_main_section(&mut ini, &config);
@@ -249,19 +239,16 @@ fn save_config_impl(path: &str, shared: &Shared, config: AppConfig) -> Result<()
     Ok(())
 }
 
-fn get_live_preview_impl(shared: &Shared) -> Result<crate::state::OledFrame, String> {
-    let g = shared.lock().map_err(|e| e.to_string())?;
-    Ok(buffer_to_frame(&g.oled_buffer))
-}
-
 #[command]
 pub fn get_status(state: State<Shared>) -> Result<StatusPayload, String> {
-    get_status_impl(&state)
+    let g = state.lock().map_err(|e| e.to_string())?;
+    Ok(g.status_payload())
 }
 
 #[command]
 pub fn get_config(state: State<Shared>) -> Result<AppConfig, String> {
-    get_config_impl(&state)
+    let g = state.lock().map_err(|e| e.to_string())?;
+    Ok(g.config.clone())
 }
 
 #[command]
@@ -271,7 +258,8 @@ pub fn save_config(state: State<Shared>, config: AppConfig) -> Result<(), String
 
 #[command]
 pub fn get_live_preview(state: State<Shared>) -> Result<crate::state::OledFrame, String> {
-    get_live_preview_impl(&state)
+    let g = state.lock().map_err(|e| e.to_string())?;
+    Ok(buffer_to_frame(&g.oled_buffer))
 }
 
 #[command]
@@ -752,33 +740,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_status_impl_returns_payload() {
-        let shared = mock_shared(base_config());
-        let r = get_status_impl(&shared).unwrap();
-        assert!(!r.hwinfo_connected);
-        assert_eq!(r.active_mode, ActiveMode::Disconnected);
-    }
-
-    #[test]
-    fn test_get_config_impl_returns_clone() {
-        let shared = mock_shared(base_config());
-        let r = get_config_impl(&shared).unwrap();
-        assert!(r.is_summary);
-        assert_eq!(r.gpu, "GPU [#0]");
-    }
-
-    #[test]
-    fn test_get_live_preview_impl_returns_frame() {
-        let shared = mock_shared(base_config());
-        let frame = get_live_preview_impl(&shared).unwrap();
-        assert_eq!(frame.width, 128);
-        assert_eq!(frame.height, 64);
-        assert_eq!(frame.pixels.len(), 128 * 64);
-        // Empty buffer → all zero
-        assert!(frame.pixels.iter().all(|p| *p == 0));
-    }
-
-    #[test]
     fn test_list_sensors_impl_without_hwinfo_returns_specials_only() {
         let shared = mock_shared(base_config());
         let opts = list_sensors_impl(&shared).unwrap();
@@ -886,9 +847,13 @@ mod tests {
 
         // Each #[command] wrapper delegates to its `_impl` fn. Call them directly via app.state().
         let state: tauri::State<Shared> = app.state();
-        assert!(get_status(state.clone()).is_ok());
-        assert!(get_config(state.clone()).is_ok());
-        assert!(get_live_preview(state.clone()).is_ok());
+        let status = get_status(state.clone()).unwrap();
+        assert!(!status.hwinfo_connected);
+        assert_eq!(status.active_mode, ActiveMode::Disconnected);
+        assert_eq!(get_config(state.clone()).unwrap().gpu, "GPU [#0]");
+        let frame = get_live_preview(state.clone()).unwrap();
+        assert_eq!((frame.width, frame.height), (128, 64));
+        assert!(frame.pixels.iter().all(|p| *p == 0));
         assert!(list_sensors(state.clone()).is_ok());
         // preview_config calls render — works without HWiNFO snapshot
         assert!(preview_config(state.clone(), base_config(), 0).is_ok());

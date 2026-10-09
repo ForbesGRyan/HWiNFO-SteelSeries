@@ -251,20 +251,6 @@ fn next_page_counter(i: isize, page_time: isize, pages: usize, current: usize) -
     }
 }
 
-/// Pure helper: returns (is_sleeping, is_white_screen) flags for the given sleep command.
-fn apply_sleep_flags(cmd: SleepCommand) -> (bool, bool) {
-    match cmd {
-        SleepCommand::Sleep => (true, false),
-        SleepCommand::White => (false, true),
-        SleepCommand::Wake => (false, false),
-    }
-}
-
-/// Pure helper: build the GameSense event name for a 1-indexed page counter.
-fn page_event_name(page_counter: usize) -> String {
-    format!("PAGE{}", page_counter + 1)
-}
-
 fn build_display_lines(
     config: &AppConfig,
     hwinfo: &Snapshot,
@@ -312,8 +298,9 @@ struct Daemon<R: Runtime = tauri::Wry> {
     media_reader: MediaReader,
     weather_reader: crate::weather::WeatherReader,
 
-    is_sleeping: bool,
-    is_white_screen: bool,
+    /// True while the display is asleep or showing the white screen; ticks
+    /// draw nothing until a Wake command.
+    paused: bool,
 }
 
 impl<R: Runtime> Daemon<R> {
@@ -333,8 +320,7 @@ impl<R: Runtime> Daemon<R> {
             mouse_battery_reader: MouseBatteryReader::new(),
             media_reader: MediaReader::new(),
             weather_reader,
-            is_sleeping: false,
-            is_white_screen: false,
+            paused: false,
         }
     }
 
@@ -356,71 +342,49 @@ impl<R: Runtime> Daemon<R> {
         let _ = self.app.emit("frame", crate::gui::buffer_to_frame(buf));
     }
 
-    fn announce_connecting_hwinfo(&self) {
+    /// Show a "Connecting to ..." message in the settings window.
+    fn announce(&self, mode: Option<ActiveMode>, message: &str) {
         self.write_state(|s| {
-            s.last_error = Some("Connecting to HWiNFO...".to_string());
+            if let Some(mode) = mode {
+                s.active_mode = mode;
+            }
+            s.last_error = Some(message.to_string());
         });
         self.push_status();
     }
 
-    fn after_hwinfo_connected(&self) {
+    /// Log a failure and surface it in the settings window.
+    fn record_failure(&self, what: &str, err: &anyhow::Error) {
+        error!("Daemon: {}: {}", what, err);
         self.write_state(|s| {
-            s.hwinfo_connected = true;
-            s.last_error = None;
+            s.last_error = Some(format!("{}: {}", what, err));
         });
         self.push_status();
-    }
-
-    fn announce_connecting_direct_usb(&self) {
-        self.write_state(|s| {
-            s.active_mode = ActiveMode::DirectUsb;
-            s.last_error = Some("Connecting to SteelSeries HID...".to_string());
-        });
-        self.push_status();
-    }
-
-    fn announce_connecting_gamesense(&self) {
-        self.write_state(|s| {
-            s.active_mode = ActiveMode::GameSense;
-            s.last_error = Some("Connecting to SteelSeries GG...".to_string());
-        });
-        self.push_status();
-    }
-
-    fn after_direct_usb_connected(&self) {
-        self.write_state(|s| {
-            s.usb_connected = true;
-            s.gg_connected = false;
-            s.last_error = None;
-        });
-    }
-
-    fn after_gamesense_connected(&self) {
-        self.write_state(|s| {
-            s.gg_connected = true;
-            s.usb_connected = false;
-            s.last_error = None;
-        });
     }
 
     fn connect_all(&mut self) -> Result<(), anyhow::Error> {
-        self.announce_connecting_hwinfo();
-
+        self.announce(None, "Connecting to HWiNFO...");
         self.hwinfo = Some(Hwinfo::new().map_err(|e| {
             anyhow!(
                 "HWiNFO not reachable ({}). Is it running with Shared Memory Support enabled?",
                 e
             )
         })?);
-
-        self.after_hwinfo_connected();
+        self.write_state(|s| {
+            s.hwinfo_connected = true;
+            s.last_error = None;
+        });
+        self.push_status();
 
         if let Err(e) = self.media_reader.initialize() {
             warn!("MediaReader init failed: {}. Media sensors unavailable.", e);
         }
 
         if self.config.direct_usb {
-            self.announce_connecting_direct_usb();
+            self.announce(
+                Some(ActiveMode::DirectUsb),
+                "Connecting to SteelSeries HID...",
+            );
 
             let api = hidapi::HidApi::new().map_err(|e| anyhow!("HID API init failed: {}", e))?;
             let (device, supported) = connect_hid(&api, &self.config.direct_usb_serial)?;
@@ -428,43 +392,47 @@ impl<R: Runtime> Daemon<R> {
                 "Direct USB device: {} ({}x{})",
                 supported.name, supported.width, supported.height
             );
-            self.display_size = (supported.width, supported.height);
-            let size = self.display_size;
-            self.write_state(|s| {
-                s.display_size = size;
-                s.oled_buffer = OledBuffer::new(size.0, size.1);
-            });
+            self.set_display_size((supported.width, supported.height));
             self.oled = Some(Box::new(HidDisplay {
                 device,
                 model: supported,
             }));
             self.hid_api = Some(api);
-
-            self.after_direct_usb_connected();
         } else {
-            self.display_size = (128, 64);
-            let size = self.display_size;
-            self.write_state(|s| {
-                s.display_size = size;
-                s.oled_buffer = OledBuffer::new(size.0, size.1);
-            });
-            self.announce_connecting_gamesense();
+            self.set_display_size((128, 64));
+            self.announce(
+                Some(ActiveMode::GameSense),
+                "Connecting to SteelSeries GG...",
+            );
 
             let mut gg = connect_steelseries()?;
+            let line_keys: Vec<String> =
+                (1..=DISPLAY_LINES).map(|j| format!("line{}", j)).collect();
+            let line_refs: Vec<&str> = line_keys.iter().map(|s| s.as_str()).collect();
             for i in 1..=self.config.pages {
-                let line_keys: Vec<String> =
-                    (1..=DISPLAY_LINES).map(|j| format!("line{}", j)).collect();
-                let line_refs: Vec<&str> = line_keys.iter().map(|s| s.as_str()).collect();
                 let handler = page_handler(3, &line_refs, None);
                 gg.bind_event(&format!("PAGE{}", i), None, None, None, None, vec![handler])?;
             }
             gg.start_heartbeat();
             self.oled = Some(Box::new(GameSenseDisplay(gg)));
-
-            self.after_gamesense_connected();
         }
+
+        let direct_usb = self.config.direct_usb;
+        self.write_state(|s| {
+            s.usb_connected = direct_usb;
+            s.gg_connected = !direct_usb;
+            s.last_error = None;
+        });
         self.push_status();
         Ok(())
+    }
+
+    fn set_display_size(&mut self, size: (u32, u32)) {
+        self.display_size = size;
+        self.write_state(|s| {
+            s.display_size = size;
+            s.oled_buffer = OledBuffer::new(size.0, size.1);
+        });
     }
 
     /// Re-read conf.ini into the daemon and shared state, restarting the
@@ -509,25 +477,17 @@ impl<R: Runtime> Daemon<R> {
     }
 
     fn handle_sleep_command(&mut self, cmd: SleepCommand) {
-        let (sleeping, white) = apply_sleep_flags(cmd);
-        self.is_sleeping = sleeping;
-        self.is_white_screen = white;
-        match cmd {
-            SleepCommand::Sleep => {
-                if let Some(o) = self.oled.as_mut() {
-                    if let Err(e) = o.send_blank() {
-                        error!("Send blank failed: {}", e);
-                    }
-                }
-            }
-            SleepCommand::White => {
-                if let Some(o) = self.oled.as_mut() {
-                    if let Err(e) = o.send_white() {
-                        error!("Send white failed: {}", e);
-                    }
-                }
-            }
-            SleepCommand::Wake => {}
+        self.paused = cmd != SleepCommand::Wake;
+        let Some(oled) = self.oled.as_mut() else {
+            return;
+        };
+        let result = match cmd {
+            SleepCommand::Sleep => oled.send_blank(),
+            SleepCommand::White => oled.send_white(),
+            SleepCommand::Wake => Ok(()),
+        };
+        if let Err(e) = result {
+            error!("{:?} command failed: {}", cmd, e);
         }
     }
 
@@ -546,11 +506,7 @@ impl<R: Runtime> Daemon<R> {
 
         if reload {
             if let Err(e) = self.reload() {
-                error!("Reload failed: {}", e);
-                self.write_state(|s| {
-                    s.last_error = Some(format!("Reload failed: {}", e));
-                });
-                self.push_status();
+                self.record_failure("Reload failed", &e);
             }
         }
 
@@ -558,7 +514,7 @@ impl<R: Runtime> Daemon<R> {
             self.handle_sleep_command(cmd);
         }
 
-        if self.is_sleeping || self.is_white_screen {
+        if self.paused {
             return Ok(());
         }
 
@@ -632,7 +588,7 @@ impl<R: Runtime> Daemon<R> {
         )?;
 
         let buffer = lines_to_oled_buffer(&lines, &self.config.font_sizes, self.display_size);
-        let event_name = page_event_name(self.page_counter);
+        let event_name = format!("PAGE{}", self.page_counter + 1);
         oled.trigger_frame(&event_name, self.i.0, &lines, &buffer)?;
 
         // Publish live dynamic-sensor snapshots so the settings preview can render
@@ -655,24 +611,6 @@ impl<R: Runtime> Daemon<R> {
         Ok(())
     }
 
-    /// Record a connect failure into shared state.
-    fn record_connect_failure(&self, err: &anyhow::Error) {
-        error!("Daemon connect failed: {}", err);
-        self.write_state(|s| {
-            s.last_error = Some(format!("Connect failed: {}", err));
-        });
-        self.push_status();
-    }
-
-    /// Record a tick failure into shared state.
-    fn record_tick_failure(&self, err: &anyhow::Error) {
-        error!("Daemon tick error: {}", err);
-        self.write_state(|s| {
-            s.last_error = Some(format!("Tick error: {}", err));
-        });
-        self.push_status();
-    }
-
     /// Tear down connections and reset state for reconnect.
     fn disconnect_and_cleanup(&mut self) {
         if let Some(mut oled) = self.oled.take() {
@@ -693,11 +631,11 @@ impl<R: Runtime> Daemon<R> {
         loop {
             if self.take_reload_request() {
                 if let Err(e) = self.load_config() {
-                    self.record_connect_failure(&e);
+                    self.record_failure("Connect failed", &e);
                 }
             }
             if let Err(e) = self.connect_all() {
-                self.record_connect_failure(&e);
+                self.record_failure("Connect failed", &e);
                 thread::sleep(Duration::from_secs(3));
                 continue;
             }
@@ -706,7 +644,7 @@ impl<R: Runtime> Daemon<R> {
             loop {
                 let start = std::time::Instant::now();
                 if let Err(e) = self.tick() {
-                    self.record_tick_failure(&e);
+                    self.record_failure("Tick error", &e);
                     break; // exit inner loop, reconnect
                 }
                 let elapsed = start.elapsed();
@@ -946,19 +884,6 @@ mod tests {
         assert_eq!(values[1].value, "B");
     }
 
-    #[test]
-    fn test_apply_sleep_flags() {
-        assert_eq!(apply_sleep_flags(SleepCommand::Sleep), (true, false));
-        assert_eq!(apply_sleep_flags(SleepCommand::White), (false, true));
-        assert_eq!(apply_sleep_flags(SleepCommand::Wake), (false, false));
-    }
-
-    #[test]
-    fn test_page_event_name() {
-        assert_eq!(page_event_name(0), "PAGE1");
-        assert_eq!(page_event_name(2), "PAGE3");
-    }
-
     // ==================== Daemon impl tests via Tauri mock_app ====================
     use crate::state::SharedState;
     use std::sync::{Arc, Mutex};
@@ -972,23 +897,6 @@ mod tests {
     // Daemon is generic over Runtime via AppHandle. The actual struct uses tauri::AppHandle
     // (default runtime = wry::Wry). We can only construct Daemon::new with AppHandle<Wry>,
     // which mock_app() does NOT provide. So we test the pure helpers + structural pieces only.
-
-    #[test]
-    fn test_shared_state_initial_disconnect_count_zero() {
-        let cfg = base_config();
-        let shared: Shared = Arc::new(Mutex::new(SharedState::new(cfg)));
-        let g = shared.lock().unwrap();
-        assert!(!g.hwinfo_connected);
-        assert_eq!(g.active_mode, crate::state::ActiveMode::Disconnected);
-    }
-
-    #[test]
-    fn test_mock_app_creates_handle() {
-        // Smoke test that the tauri test feature is wired up correctly.
-        let h = mock_app_handle();
-        // AppHandle has no public asserts but exists/clones — confirms the dep works.
-        let _h2 = h.clone();
-    }
 
     fn fresh_shared() -> Shared {
         Arc::new(Mutex::new(SharedState::new(base_config())))
@@ -1006,8 +914,7 @@ mod tests {
         assert!(d.hid_api.is_none());
         assert_eq!(d.disconnect_count, 0);
         assert_eq!(d.page_counter, 0);
-        assert!(!d.is_sleeping);
-        assert!(!d.is_white_screen);
+        assert!(!d.paused);
     }
 
     #[test]
@@ -1034,20 +941,6 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_handle_sleep_command_sets_flags() {
-        let mut d = daemon_for_tests();
-        d.handle_sleep_command(SleepCommand::Sleep);
-        assert!(d.is_sleeping);
-        assert!(!d.is_white_screen);
-        d.handle_sleep_command(SleepCommand::White);
-        assert!(!d.is_sleeping);
-        assert!(d.is_white_screen);
-        d.handle_sleep_command(SleepCommand::Wake);
-        assert!(!d.is_sleeping);
-        assert!(!d.is_white_screen);
-    }
-
-    #[test]
     fn test_daemon_tick_missing_hwinfo_errors() {
         let mut d = daemon_for_tests();
         let r = d.tick();
@@ -1056,48 +949,68 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_tick_processes_sleep_and_skips_when_sleeping() {
+    fn test_handle_sleep_command_sets_paused() {
         let mut d = daemon_for_tests();
-        // Set sleep_requested → tick consumes it, sets is_sleeping=true, returns Ok early
+        d.handle_sleep_command(SleepCommand::Sleep);
+        assert!(d.paused);
+        d.handle_sleep_command(SleepCommand::Wake);
+        assert!(!d.paused);
+        d.handle_sleep_command(SleepCommand::White);
+        assert!(d.paused);
+    }
+
+    #[test]
+    fn test_tick_drains_sleep_request_and_skips_while_paused() {
+        let mut d = daemon_for_tests();
         d.state.lock().unwrap().sleep_requested = Some(SleepCommand::Sleep);
-        let r = d.tick();
-        assert!(r.is_ok());
-        assert!(d.is_sleeping);
-        // sleep_requested was drained
+        // No hwinfo installed: tick would fail if it did not return early.
+        assert!(d.tick().is_ok());
+        assert!(d.paused);
         assert!(d.state.lock().unwrap().sleep_requested.is_none());
     }
 
     #[test]
-    fn test_daemon_tick_processes_white_screen() {
+    fn test_tick_wake_resumes() {
         let mut d = daemon_for_tests();
-        d.state.lock().unwrap().sleep_requested = Some(SleepCommand::White);
-        let r = d.tick();
-        assert!(r.is_ok());
-        assert!(d.is_white_screen);
-    }
-
-    #[test]
-    fn test_daemon_tick_wake_unsets_flags() {
-        let mut d = daemon_for_tests();
-        d.is_sleeping = true;
+        d.paused = true;
         d.state.lock().unwrap().sleep_requested = Some(SleepCommand::Wake);
-        // Wake clears flags but then tick continues → fails on missing hwinfo
-        let r = d.tick();
-        assert!(r.is_err());
-        assert!(!d.is_sleeping);
-        assert!(!d.is_white_screen);
+        // Resumed, so tick goes on and fails on the missing hwinfo.
+        assert!(d.tick().is_err());
+        assert!(!d.paused);
     }
 
     #[test]
-    fn test_daemon_tick_reload_request_errors_when_no_conf() {
-        // tick() handles reload by reading conf.ini; without one it should set last_error.
+    fn test_tick_clears_reload_request_even_when_reload_fails() {
         let mut d = daemon_for_tests();
-        d.is_sleeping = true; // skip the hwinfo check after reload-attempt
+        d.paused = true; // return right after the reload attempt
         d.state.lock().unwrap().reload_requested = true;
-        let r = d.tick();
-        assert!(r.is_ok()); // is_sleeping=true short-circuits after reload-fail
-                            // reload_requested cleared even on failure
+        assert!(d.tick().is_ok());
         assert!(!d.state.lock().unwrap().reload_requested);
+    }
+
+    #[test]
+    fn test_record_failure_writes_status_text() {
+        let d = daemon_for_tests();
+        d.record_failure("Connect failed", &anyhow!("boom"));
+        assert_eq!(
+            d.state.lock().unwrap().last_error.as_deref(),
+            Some("Connect failed: boom")
+        );
+    }
+
+    #[test]
+    fn test_announce_sets_mode_and_message() {
+        let d = daemon_for_tests();
+        d.announce(
+            Some(ActiveMode::DirectUsb),
+            "Connecting to SteelSeries HID...",
+        );
+        let g = d.state.lock().unwrap();
+        assert_eq!(g.active_mode, ActiveMode::DirectUsb);
+        assert_eq!(
+            g.last_error.as_deref(),
+            Some("Connecting to SteelSeries HID...")
+        );
     }
 
     #[test]
@@ -1301,95 +1214,6 @@ mod tests {
         let g = d.state.lock().unwrap();
         assert!(g.hwinfo_connected);
         assert!(g.last_error.is_none());
-    }
-
-    #[test]
-    fn test_announce_connecting_hwinfo_sets_status() {
-        let d = daemon_for_tests();
-        d.announce_connecting_hwinfo();
-        assert_eq!(
-            d.state.lock().unwrap().last_error.as_deref(),
-            Some("Connecting to HWiNFO...")
-        );
-    }
-
-    #[test]
-    fn test_after_hwinfo_connected_clears_error() {
-        let d = daemon_for_tests();
-        d.state.lock().unwrap().last_error = Some("prev".to_string());
-        d.after_hwinfo_connected();
-        let g = d.state.lock().unwrap();
-        assert!(g.hwinfo_connected);
-        assert!(g.last_error.is_none());
-    }
-
-    #[test]
-    fn test_announce_connecting_direct_usb_sets_mode() {
-        let d = daemon_for_tests();
-        d.announce_connecting_direct_usb();
-        let g = d.state.lock().unwrap();
-        assert_eq!(g.active_mode, ActiveMode::DirectUsb);
-        assert!(g.last_error.as_deref().unwrap().contains("HID"));
-    }
-
-    #[test]
-    fn test_announce_connecting_gamesense_sets_mode() {
-        let d = daemon_for_tests();
-        d.announce_connecting_gamesense();
-        let g = d.state.lock().unwrap();
-        assert_eq!(g.active_mode, ActiveMode::GameSense);
-        assert!(g.last_error.as_deref().unwrap().contains("SteelSeries"));
-    }
-
-    #[test]
-    fn test_after_direct_usb_connected_sets_flags() {
-        let d = daemon_for_tests();
-        d.state.lock().unwrap().gg_connected = true; // ensure it gets flipped
-        d.after_direct_usb_connected();
-        let g = d.state.lock().unwrap();
-        assert!(g.usb_connected);
-        assert!(!g.gg_connected);
-        assert!(g.last_error.is_none());
-    }
-
-    #[test]
-    fn test_after_gamesense_connected_sets_flags() {
-        let d = daemon_for_tests();
-        d.state.lock().unwrap().usb_connected = true;
-        d.after_gamesense_connected();
-        let g = d.state.lock().unwrap();
-        assert!(g.gg_connected);
-        assert!(!g.usb_connected);
-    }
-
-    #[test]
-    fn test_record_connect_failure_writes_state() {
-        let d = daemon_for_tests();
-        let err = anyhow!("boom");
-        d.record_connect_failure(&err);
-        assert!(d
-            .state
-            .lock()
-            .unwrap()
-            .last_error
-            .as_deref()
-            .unwrap()
-            .contains("Connect failed"));
-    }
-
-    #[test]
-    fn test_record_tick_failure_writes_state() {
-        let d = daemon_for_tests();
-        let err = anyhow!("tick err");
-        d.record_tick_failure(&err);
-        assert!(d
-            .state
-            .lock()
-            .unwrap()
-            .last_error
-            .as_deref()
-            .unwrap()
-            .contains("Tick error"));
     }
 
     #[test]

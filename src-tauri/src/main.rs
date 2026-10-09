@@ -104,36 +104,21 @@ fn parse_expected_battery(s: Option<&str>) -> Option<u8> {
     s.and_then(|v| v.parse::<u8>().ok()).filter(|v| *v <= 100)
 }
 
-/// Position of the named flag in the argv slice (if present).
-fn find_flag_position(args: &[String], flag: &str) -> Option<usize> {
-    args.iter().position(|a| a == flag)
-}
-
 /// Whether argv requests opening the settings window on launch (`--settings`).
 fn wants_open_settings(args: &[String]) -> bool {
-    find_flag_position(args, "--settings").is_some()
+    args.iter().any(|a| a == "--settings")
 }
 
-/// Validate that argv contains at least one more arg after the given flag position.
-fn has_required_arg_after(args: &[String], flag_pos: usize) -> bool {
-    args.len() >= flag_pos + 2
-}
-
-/// Validate "expected battery" value parsed from a string, 0..=100 only. Used by --discover-all-battery.
-fn validate_expected_battery_strict(s: &str) -> Option<u8> {
-    s.parse::<u8>().ok().filter(|v| *v <= 100)
-}
-
-/// Pure helper: execute "--discover-all-battery" given the argv and the flag's position.
+/// Execute "--discover-all-battery" given argv and the flag's position.
 /// On success returns the expected battery value used (for testing).
 fn run_discover_all_battery(args: &[String], pos: usize) -> Result<u8, String> {
-    if !has_required_arg_after(args, pos) {
-        return Err(format!(
+    let raw = args.get(pos + 1).ok_or_else(|| {
+        format!(
             "Usage: {} --discover-all-battery <EXPECTED_BATTERY>",
             args[0]
-        ));
-    }
-    let expected = validate_expected_battery_strict(&args[pos + 1])
+        )
+    })?;
+    let expected = parse_expected_battery(Some(raw))
         .ok_or_else(|| "Expected battery must be 0-100".to_string())?;
     let hid_api =
         hidapi::HidApi::new().map_err(|e| format!("Failed to initialize HID API: {}", e))?;
@@ -142,18 +127,18 @@ fn run_discover_all_battery(args: &[String], pos: usize) -> Result<u8, String> {
     Ok(expected)
 }
 
-/// Pure helper: execute "--discover-mouse-battery" given argv and flag position.
+/// Execute "--discover-mouse-battery" given argv and the flag's position.
 fn run_discover_mouse_battery(
     args: &[String],
     pos: usize,
 ) -> Result<(u16, Option<u16>, Option<u8>), String> {
-    if !has_required_arg_after(args, pos) {
-        return Err(format!(
+    let raw_vid = args.get(pos + 1).ok_or_else(|| {
+        format!(
             "Usage: {} --discover-mouse-battery <VID> [PID] [EXPECTED]",
             args[0]
-        ));
-    }
-    let vid = parse_hex_u16(&args[pos + 1]).ok_or_else(|| "Invalid VID format".to_string())?;
+        )
+    })?;
+    let vid = parse_hex_u16(raw_vid).ok_or_else(|| "Invalid VID format".to_string())?;
     let pid = parse_optional_pid(args.get(pos + 2).map(String::as_str));
     let expected = parse_expected_battery(args.get(pos + 3).map(String::as_str));
     let hid_api = hidapi::HidApi::new().map_err(|e| format!("Failed to init HID API: {}", e))?;
@@ -162,28 +147,23 @@ fn run_discover_mouse_battery(
         .map_err(|e| e.to_string())
 }
 
-fn handle_discovery_flags(args: &[String]) -> bool {
-    if let Some(pos) = find_flag_position(args, "--discover-all-battery") {
-        match run_discover_all_battery(args, pos) {
-            Ok(_) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
+/// Run a discovery flag if one is present, then exit.
+fn handle_discovery_flags(args: &[String]) {
+    let position = |flag: &str| args.iter().position(|a| a == flag);
+    let result = if let Some(pos) = position("--discover-all-battery") {
+        run_discover_all_battery(args, pos).map(|_| ())
+    } else if let Some(pos) = position("--discover-mouse-battery") {
+        run_discover_mouse_battery(args, pos).map(|_| ())
+    } else {
+        return;
+    };
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
         }
     }
-
-    if let Some(pos) = find_flag_position(args, "--discover-mouse-battery") {
-        match run_discover_mouse_battery(args, pos) {
-            Ok(_) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    false
 }
 
 /// Helper used by both menu and tray click handlers: surface the main window.
@@ -451,31 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_flag_position_found_and_not_found() {
-        let args = vec!["prog".to_string(), "--a".to_string(), "--b".to_string()];
-        assert_eq!(find_flag_position(&args, "--a"), Some(1));
-        assert_eq!(find_flag_position(&args, "--b"), Some(2));
-        assert_eq!(find_flag_position(&args, "--c"), None);
-    }
-
-    #[test]
-    fn test_has_required_arg_after() {
-        let args = vec!["prog".into(), "--flag".into(), "val".into()];
-        assert!(has_required_arg_after(&args, 1));
-        // Pos 1 + 2 = 3 > len(3) so missing
-        let short = vec!["prog".into(), "--flag".into()];
-        assert!(!has_required_arg_after(&short, 1));
-    }
-
-    #[test]
-    fn test_validate_expected_battery_strict() {
-        assert_eq!(validate_expected_battery_strict("50"), Some(50));
-        assert_eq!(validate_expected_battery_strict("100"), Some(100));
-        assert_eq!(validate_expected_battery_strict("101"), None);
-        assert_eq!(validate_expected_battery_strict("abc"), None);
-    }
-
-    #[test]
     fn test_run_discover_all_battery_missing_arg() {
         let args = vec!["prog".into(), "--discover-all-battery".into()];
         let r = run_discover_all_battery(&args, 1);
@@ -549,12 +504,6 @@ mod tests {
         ]));
         assert!(!wants_open_settings(&["prog".into()]));
         assert!(!wants_open_settings(&["prog".into(), "--setting".into()]));
-    }
-
-    #[test]
-    fn test_handle_discovery_flags_no_flags_returns_false() {
-        let args = vec!["prog".into(), "normal-run".into()];
-        assert!(!handle_discovery_flags(&args));
     }
 
     #[test]

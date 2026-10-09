@@ -15,16 +15,11 @@ pub fn connect_steelseries() -> Result<GameSenseClient, anyhow::Error> {
 pub const HID_VENDOR_ID: u16 = 0x1038;
 pub const HID_USAGE_PAGE: u16 = 0xFFC0;
 
-/// Pure-data predicate used by `is_oled_capable` — testable without HidApi.
-pub fn matches_oled_ids(vendor_id: u16, usage_page: u16) -> bool {
-    vendor_id == HID_VENDOR_ID && usage_page == HID_USAGE_PAGE
-}
-
 /// Predicate matching SteelSeries OLED-capable HID interfaces.
 /// Filters by VID + usage_page only — PID is not constrained so multiple
 /// devices (Arctis variants, Apex Pro, etc.) can be selected.
 pub fn is_oled_capable(d: &hidapi::DeviceInfo) -> bool {
-    matches_oled_ids(d.vendor_id(), d.usage_page())
+    d.vendor_id() == HID_VENDOR_ID && d.usage_page() == HID_USAGE_PAGE
 }
 
 /// Pure picker: returns the index of the chosen OLED device, or None.
@@ -48,16 +43,11 @@ pub fn list_oled_devices(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
     api.device_list().filter(|d| is_oled_capable(d)).collect()
 }
 
-/// Pure vendor predicate — testable without HidApi.
-pub fn is_steelseries_vendor(vendor_id: u16) -> bool {
-    vendor_id == HID_VENDOR_ID
-}
-
 /// Lists ALL SteelSeries HID interfaces (no usage-page filter), for the
 /// device-support report. `list_oled_devices` remains the connect filter.
 pub fn list_steelseries_interfaces(api: &HidApi) -> Vec<&hidapi::DeviceInfo> {
     api.device_list()
-        .filter(|d| is_steelseries_vendor(d.vendor_id()))
+        .filter(|d| d.vendor_id() == HID_VENDOR_ID)
         .collect()
 }
 
@@ -219,21 +209,6 @@ mod tests {
         let display_name = "HWiNFO_Stats";
         assert!(!display_name.is_empty());
         assert!(display_name.len() <= 32); // GameSense has display name limits
-    }
-
-    #[test]
-    fn test_matches_oled_ids_true() {
-        assert!(matches_oled_ids(HID_VENDOR_ID, HID_USAGE_PAGE));
-    }
-
-    #[test]
-    fn test_matches_oled_ids_wrong_vendor() {
-        assert!(!matches_oled_ids(0x1234, HID_USAGE_PAGE));
-    }
-
-    #[test]
-    fn test_matches_oled_ids_wrong_usage_page() {
-        assert!(!matches_oled_ids(HID_VENDOR_ID, 0x1234));
     }
 
     #[test]
@@ -402,11 +377,5 @@ mod tests {
         let error_string = wrapped_error.to_string();
         assert!(error_string.contains("Failed to connect"));
         assert!(error_string.contains("Permission denied"));
-    }
-
-    #[test]
-    fn test_is_steelseries_vendor() {
-        assert!(is_steelseries_vendor(0x1038));
-        assert!(!is_steelseries_vendor(0x046D));
     }
 }
