@@ -444,6 +444,8 @@ impl<R: Runtime> Daemon<R> {
         let ini =
             Ini::load_from_file("conf.ini").map_err(|e| anyhow!("Load conf.ini failed: {}", e))?;
         self.config = AppConfig::from_ini(&ini)?;
+        // A reload can shrink the page list; never keep pointing past its end.
+        self.page_counter = 0;
 
         self.weather_reader.stop();
         self.weather_reader = crate::weather::WeatherReader::spawn(&self.config.weather);
@@ -836,6 +838,21 @@ mod tests {
         cfg.is_summary = false;
         let err = lines_for(&cfg, &build_hwinfo(&[])).unwrap_err();
         assert!(format!("{}", err).contains("Page 0 missing"));
+    }
+
+    #[test]
+    fn test_build_display_lines_errors_past_last_page() {
+        // Documents why load_config resets page_counter: a counter left past a
+        // shrunken page list fails every tick.
+        let mut cfg = base_config();
+        cfg.is_summary = false;
+        cfg.custom_sensors = vec![Vec::new()];
+        let hw = build_hwinfo(&[]);
+        let mut mouse = MouseBatteryReader::new();
+        let mut media = MediaReader::new();
+        let weather = crate::weather::WeatherReader::disabled();
+        assert!(build_display_lines(&cfg, &hw, 0, &mut mouse, &mut media, &weather, None).is_ok());
+        assert!(build_display_lines(&cfg, &hw, 1, &mut mouse, &mut media, &weather, None).is_err());
     }
 
     #[test]
