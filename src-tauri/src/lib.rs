@@ -265,10 +265,6 @@ struct View {
     len: usize,
 }
 
-// SAFETY: the view is a read-only mapping owned by this struct; nothing ties
-// it to the thread that created it.
-unsafe impl Send for View {}
-
 impl View {
     fn open() -> Result<Self> {
         let name: Vec<u16> = OsStr::new(MAP_NAME).encode_wide().chain(once(0)).collect();
@@ -300,6 +296,11 @@ impl View {
 
     fn bytes(&self) -> &[u8] {
         // SAFETY: `ptr` is a live mapping of `len` readable bytes until drop.
+        // HWiNFO writes this memory concurrently, so the bytes can change
+        // between reads. Every offset used for indexing is validated against
+        // the slice length from values copied out once per pull, so a
+        // concurrent rewrite can produce stale or torn values but not an
+        // out-of-bounds read.
         unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
     }
 }

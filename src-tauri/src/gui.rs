@@ -845,7 +845,7 @@ mod tests {
         let shared = mock_shared(base_config());
         app.manage(shared.clone());
 
-        // Each #[command] wrapper delegates to its `_impl` fn. Call them directly via app.state().
+        // Call the #[command] wrappers directly via app.state().
         let state: tauri::State<Shared> = app.state();
         let status = get_status(state.clone()).unwrap();
         assert!(!status.hwinfo_connected);

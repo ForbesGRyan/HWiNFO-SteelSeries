@@ -207,7 +207,7 @@ pub fn icon_by_name(name: &str) -> Option<&'static [u8; 8]> {
 
 /// Delimiter wrapping an inline icon name inside a display line, e.g.
 /// `"\u{1}cpu\u{1}42°C"`. Uses SOH (U+0001) so it can never collide with a
-/// user label, sensor value, or unit. `format_custom_value` emits these; the
+/// user label, sensor value, or unit. `format_custom_lines` emits these; the
 /// renderer parses them out.
 pub const ICON_DELIM: char = '\u{1}';
 

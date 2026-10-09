@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_run_sensors_media_returns_cached_value() {
-        // MediaReader with is_playing=true and a populated title returns Some → labels/units/values set.
+        // MediaReader with is_playing=true and a populated title returns Some → slot populated.
         let props = make_page(&[
             ("sensor_0", "MEDIA_TITLE"),
             ("label_0", "T:"),
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_run_sensors_unknown_conversion_ignored() {
-        // Unknown convert_ value hits the _ arm — leaves value unchanged.
+        // An unrecognised convert_ value leaves the value unchanged.
         let props = make_page(&[("sensor_0", "S;R"), ("convert_0", "unknown-unit")]);
         let hwinfo = build_hwinfo(&[("S", "R", 42.0)]);
         let mut mouse = MouseBatteryReader::new();
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_run_sensors_malformed_no_semicolon_skipped() {
-        // No ';' separator → logs error and continues; buffers untouched.
+        // No ';' separator → logs error and continues; slot left empty.
         let props = make_page(&[("sensor_0", "NoSeparator")]);
         let hwinfo = build_hwinfo(&[("NoSeparator", "X", 1.0)]);
         let mut mouse = MouseBatteryReader::new();

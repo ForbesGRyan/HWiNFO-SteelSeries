@@ -370,13 +370,12 @@ Font size only affects the Direct USB render path. In GameSense mode, SteelSerie
 
 ### "Disconnected from HWiNFO" Error
 
-**Problem**: The OLED displays "Disconnected FROM HWiNFO"
+**Problem**: The OLED displays "Disconnected FROM HWiNFO" because HWiNFO has stopped updating its sensor data. The application recovers by itself once HWiNFO is running again with Shared Memory Support enabled; there is no need to restart it.
 
 **Solutions**:
 1. Verify HWiNFO is running with the Sensors window open
 2. Ensure "Shared Memory Support" is enabled in HWiNFO settings
-3. Restart both HWiNFO and this application
-4. Try running HWiNFO as Administrator
+3. Try running HWiNFO as Administrator
 
 ### OLED Screen Not Updating
 
@@ -459,18 +458,30 @@ cargo test
 
 ```
 HWiNFO-SteelSeries/
-├── src/
-│   ├── lib.rs           # HWiNFO shared memory interface
-│   ├── main.rs          # Application entry point
-│   ├── connect.rs       # Connection handlers
-│   ├── settings.rs      # Configuration loading and parsing
-│   ├── steelseries.rs   # SteelSeries GG API
-│   ├── utils.rs         # Helper functions
-│   ├── console_utils.rs # Console window management
-│   └── consts.rs        # Constants
-├── assets/              # Images and icons
-├── conf.ini             # User configuration (generated)
-└── Cargo.toml           # Rust project manifest
+├── src-tauri/
+│   ├── src/
+│   │   ├── lib.rs            # HWiNFO shared memory reader
+│   │   ├── main.rs           # Startup, tray menu, Tauri command registration
+│   │   ├── daemon.rs         # Background loop: pull sensors, render, send to display
+│   │   ├── settings.rs       # conf.ini parsing (AppConfig)
+│   │   ├── utils.rs          # Sensor resolution and text line layout
+│   │   ├── render.rs         # Bitmap and icon rendering for direct USB
+│   │   ├── devices.rs        # Direct-USB device registry and packet protocols
+│   │   ├── connect.rs        # HID device discovery and connection
+│   │   ├── gui.rs            # Tauri commands for the settings window
+│   │   ├── state.rs          # State shared between daemon and UI
+│   │   ├── report.rs         # Device-support report
+│   │   ├── media.rs          # Media sensors (MEDIA_*)
+│   │   ├── weather.rs        # Weather sensors (WEATHER_*)
+│   │   ├── mouse_battery.rs  # MOUSE_BATTERY sensor
+│   │   ├── steelseries.rs    # GameSense screen handler definition
+│   │   ├── console_utils.rs  # Console window management
+│   │   └── consts.rs         # Constants
+│   ├── ui/                   # Settings window front end
+│   ├── assets/               # Images and icons
+│   └── Cargo.toml            # Rust project manifest
+├── conf.ini                  # User configuration (generated)
+└── Cargo.toml                # Workspace manifest
 ```
 
 ## Contributing

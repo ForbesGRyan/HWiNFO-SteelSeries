@@ -917,10 +917,6 @@ mod tests {
         mock_app().app_handle().clone()
     }
 
-    // Daemon is generic over Runtime via AppHandle. The actual struct uses tauri::AppHandle
-    // (default runtime = wry::Wry). We can only construct Daemon::new with AppHandle<Wry>,
-    // which mock_app() does NOT provide. So we test the pure helpers + structural pieces only.
-
     fn fresh_shared() -> Shared {
         Arc::new(Mutex::new(SharedState::new(base_config())))
     }
@@ -1046,59 +1042,6 @@ mod tests {
         assert!(!d.take_reload_request());
     }
 
-    /// Mock display driver that records calls without doing I/O.
-    struct MockDriver {
-        trigger_calls: usize,
-        blank_calls: usize,
-        white_calls: usize,
-        stop_calls: usize,
-        next_trigger_err: bool,
-    }
-    impl MockDriver {
-        fn new() -> Self {
-            Self {
-                trigger_calls: 0,
-                blank_calls: 0,
-                white_calls: 0,
-                stop_calls: 0,
-                next_trigger_err: false,
-            }
-        }
-    }
-    impl DisplayDriver for MockDriver {
-        fn trigger_frame(
-            &mut self,
-            _event: &str,
-            _i: isize,
-            _lines: &[String],
-            _buf: &OledBuffer,
-        ) -> Result<(), anyhow::Error> {
-            self.trigger_calls += 1;
-            if self.next_trigger_err {
-                self.next_trigger_err = false;
-                Err(anyhow!("mock trigger err"))
-            } else {
-                Ok(())
-            }
-        }
-        fn send_blank(&mut self) -> Result<(), anyhow::Error> {
-            self.blank_calls += 1;
-            Ok(())
-        }
-        fn send_white(&mut self) -> Result<(), anyhow::Error> {
-            self.white_calls += 1;
-            Ok(())
-        }
-        fn stop_heartbeat(&mut self) -> Result<(), anyhow::Error> {
-            self.stop_calls += 1;
-            Ok(())
-        }
-    }
-
-    fn install_mock_driver(d: &mut Daemon<MockRuntime>) {
-        d.oled = Some(Box::new(MockDriver::new()));
-    }
-
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -1136,6 +1079,10 @@ mod tests {
             self.0.stop.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
+    }
+
+    fn install_mock_driver(d: &mut Daemon<MockRuntime>) {
+        d.oled = Some(Box::new(CountingDriver(Arc::new(Calls::default()))));
     }
 
     #[test]

@@ -10,8 +10,7 @@ pub fn connect_steelseries() -> Result<GameSenseClient, anyhow::Error> {
         .map_err(|e| anyhow::anyhow!("SteelSeries GG not reachable ({})", e))
 }
 
-/// HID device identification parameters for SteelSeries OLED devices.
-/// These are extracted as constants to make them testable and configurable.
+/// SteelSeries USB vendor ID and the HID usage page of its OLED interfaces.
 pub const HID_VENDOR_ID: u16 = 0x1038;
 pub const HID_USAGE_PAGE: u16 = 0xFFC0;
 
@@ -165,52 +164,6 @@ pub fn connect_hid(
 mod tests {
     use super::*;
 
-    // ==========================================================================
-    // Pure Logic Tests (Extracted Functions)
-    // ==========================================================================
-
-    /// Test that find_hid_device returns an error when device is not found.
-    /// This test creates an empty HidApi (no devices) and verifies the error.
-    #[test]
-    fn test_find_hid_device_not_found_error_message() {
-        // We can't easily mock HidApi, but we can verify the error format
-        // by checking the error message we construct
-        let error = anyhow::anyhow!("OLED device not found");
-        assert_eq!(error.to_string(), "OLED device not found");
-    }
-
-    #[test]
-    fn test_hid_device_open_error_message_format() {
-        // Test that the error message format is correct
-        let original_error = "Access denied";
-        let error = anyhow::anyhow!("Failed to open HID device: {}", original_error);
-        assert_eq!(
-            error.to_string(),
-            "Failed to open HID device: Access denied"
-        );
-    }
-
-    // ==========================================================================
-    // GameSense Client Configuration Tests
-    // ==========================================================================
-
-    #[test]
-    fn test_gamesense_game_name_is_valid() {
-        // Game name should be uppercase alphanumeric, no spaces
-        let game_name = "HWINFO";
-        assert!(game_name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
-        assert!(!game_name.contains(' '));
-    }
-
-    #[test]
-    fn test_gamesense_display_name_is_human_readable() {
-        let display_name = "HWiNFO_Stats";
-        assert!(!display_name.is_empty());
-        assert!(display_name.len() <= 32); // GameSense has display name limits
-    }
-
     #[test]
     fn test_pick_oled_index_empty_returns_none() {
         assert_eq!(pick_oled_index(&[], ""), None);
@@ -344,7 +297,7 @@ mod tests {
         assert!(msg.contains("SteelSeries Something (PID 0x1234)"));
         assert!(msg.contains("unknown device (PID 0xABCD)"));
         assert!(msg.contains("not yet supported for direct USB"));
-        // The fail-fast check in connect_hid keys off this exact suffix.
+        // The settings UI matches on this suffix.
         assert!(msg.ends_with(UNSUPPORTED_ERROR_SUFFIX));
     }
 
@@ -366,16 +319,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn test_connection_error_preserves_context() {
-        let inner_error = "Permission denied";
-        let wrapped_error = anyhow::anyhow!("Failed to connect: {}", inner_error);
-
-        // Error message should contain both the wrapper and original error
-        let error_string = wrapped_error.to_string();
-        assert!(error_string.contains("Failed to connect"));
-        assert!(error_string.contains("Permission denied"));
     }
 }

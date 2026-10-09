@@ -75,6 +75,9 @@ Cargo workspace; the app is the `src-tauri` package (a Tauri 2 app with a tray i
 
 - **CLOCK** / **DATE**: current time / date (optional `;FORMAT` strftime suffix)
 - **BLANK**: Empty sensor slot for spacing
+- **MOUSE_BATTERY**: battery percentage of a supported wireless mouse, read over HID
+- **MEDIA_TITLE** / **MEDIA_ARTIST** / **MEDIA_ALBUM** / **MEDIA_APP**: the playing media session's fields; the slot is hidden when nothing is playing
+- **WEATHER_***: fields from the weather reader (`weather.rs`); the slot is hidden until data arrives or when the field is unset
 - **Unit Conversion**: `convert_X="MB/GB"` divides value by 1024 (for memory sensors)
 
 ### Configuration System
@@ -99,7 +102,7 @@ This is a **Windows-only application** due to:
 - Console window management (Windows API: `GetConsoleWindow`, `ShowWindow`)
 - SteelSeries GG is Windows/macOS only (this app targets Windows)
 
-All Windows API calls are in `lib.rs` (shared memory) and `console_utils.rs` (console visibility).
+All Windows API calls are in `lib.rs` (shared memory) and `console_utils.rs` (console visibility); `media.rs` uses the `windows` crate (WinRT media session).
 
 ## Testing
 
@@ -119,7 +122,7 @@ RUST_LOG=info cargo run   # Default level
 
 - **Console auto-hide**: In release builds, console window auto-hides after 500ms. Shown again on fatal errors.
 - **Disconnection detection**: HWiNFO's header poll time unchanged for 5 ticks shows "Disconnected FROM HWiNFO".
-- **System tray**: Icon embedded from `assets/hwinfo-steelseries-icon.ico`. Right-click menu has "Exit" option.
+- **System tray**: Icon embedded from `assets/hwinfo-steelseries-icon.ico`. Right-click menu has "Settings...", "Reload Config", "Sleep Display", "White Screen" and "Exit".
 - **Page cycling**: In Custom mode with multiple pages, `page_counter` increments every `page_time` seconds (cycle wraps using modulo).
 
 ## Dependencies
